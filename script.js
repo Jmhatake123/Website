@@ -706,11 +706,14 @@ function renderCommandHistory() {
  * dashboard that locks you out at that moment is worse than useless. */
 let faultAckLocalUntil = 0;          // client-side half of the "ask me again in 2 minutes" snooze
 
-// Tracks held||stopped across snapshots so the moment it clears can be caught and explained --
-// otherwise "ESP2 confirmed the resume", "the auto-cancel circuit breaker gave up", "an operator
-// cancelled it", and "ESP2 appears to have restarted" were all indistinguishable: the banner just
-// disappeared in every case, with no way to tell a real recovery from the rig quietly giving up.
-let wasFaultActive = false;
+// Tracks held||stopped SPECIFICALLY (not lockedOut) across snapshots so the moment it clears can be
+// caught and explained -- otherwise "ESP2 confirmed the resume", "the auto-cancel circuit breaker
+// gave up", "an operator cancelled it", and "ESP2 appears to have restarted" were all
+// indistinguishable: the banner just disappeared in every case, with no way to tell a real recovery
+// from the rig quietly giving up. Deliberately excludes lockedOut: lastClearReason is published only
+// by the four esp2Held-clear sites, so a plain actuations-lockout toggle with no fault ever held
+// would otherwise show a stale reason left over from a completely unrelated earlier fault episode.
+let wasHeldOrStopped = false;
 const HELD_CLEAR_TEXT = {
   resumed:         { text: "Confirmed: ESP2 resumed the paused run.", tone: "" },
   cancelled:       { text: "The run was cancelled.", tone: "" },
@@ -732,14 +735,14 @@ function updateFaultBanner() {
   // Nothing wrong -> no banner. A lockout is not a fault, but it must still be visible and
   // reversible, so it raises the banner in a calmer form.
   if (!held && !stopped && !lockedOut) {
-    if (wasFaultActive) {
+    if (wasHeldOrStopped) {
       const clear = HELD_CLEAR_TEXT[f.lastClearReason] || { text: "The hold cleared.", tone: "" };
       setCommandStatus(clear.text, clear.tone);
     }
-    wasFaultActive = false;
+    wasHeldOrStopped = false;
     banner.hidden = true; faultAckLocalUntil = 0; return;
   }
-  wasFaultActive = true;
+  wasHeldOrStopped = wasHeldOrStopped || held || stopped;
 
   // "Do nothing" snooze. Honour whichever of the device's countdown or our own is still running, so
   // the prompt reappears even if the snapshot is stale.

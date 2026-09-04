@@ -154,6 +154,13 @@ button.danger { min-width: 200px; border-color: var(--danger); background: var(-
 .fault-detail { margin-bottom: 0; color: var(--muted); line-height: 1.5; max-width: 900px; }
 .fault-steer { margin: 14px 0 0; padding: 11px 13px; border-left: 4px solid var(--warning); border-radius: 8px; background: var(--surface-muted); color: var(--text); font-size: .88rem; line-height: 1.5; }
 .fault-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+/* Without this, the plain `display:flex` above wins over the browser's own [hidden]{display:none}
+   UA-stylesheet rule (page rules beat UA rules regardless of specificity), so script.js setting
+   rec.hidden=true on #faultRecovery didn't actually hide it -- the 4 recovery buttons (including
+   "Resume normal") stayed visible and clickable during a plain EMERGENCY_STOP or a lockout-only
+   banner, not just the held-fault state they're meant for. Matches the same fix already applied to
+   .fault-banner/.login-screen/.danger-gate above/elsewhere in this file. */
+.fault-actions[hidden] { display: none; }
 .fault-actions button { flex: 0 1 auto; }
 button.warn { border-color: var(--warning); color: var(--warning); }
 /* Subordinate action sitting beside a primary one. Transparent rather than surface-muted, because

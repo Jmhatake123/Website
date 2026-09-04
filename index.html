@@ -26,11 +26,11 @@
       <h2>Smart<br>Irrigation</h2>
     </div>
     <nav class="tabs" aria-label="Dashboard sections">
-      <button class="tab active" data-view="dashboard">Live dashboard</button>
-      <button class="tab" data-view="zones">Zone profiles</button>
-      <button class="tab" data-view="manual">Controls</button>
-      <button class="tab" data-view="manualtest">Manual/Test</button>
-      <button class="tab" data-view="diagnostics">Diagnostics</button>
+      <button type="button" class="tab active" data-view="dashboard">Live dashboard</button>
+      <button type="button" class="tab" data-view="zones">Zone profiles</button>
+      <button type="button" class="tab" data-view="manual">Controls</button>
+      <button type="button" class="tab" data-view="manualtest">Manual/Test</button>
+      <button type="button" class="tab" data-view="diagnostics">Diagnostics</button>
     </nav>
     <div class="system-status" aria-live="polite">
       <p class="status-label">ESP1 state</p>
@@ -40,7 +40,7 @@
       <p class="status-label">Run state</p>
       <span id="sideRunState" class="device-status off">NO ACTIVE RUN</span>
     </div>
-    <button id="contributorsBtn" class="link-button">Contributors &amp; project</button>
+    <button type="button" id="contributorsBtn" class="link-button">Contributors &amp; project</button>
   </aside>
 
   <main class="main-content">
@@ -58,19 +58,19 @@
       </div>
       <p id="faultSteer" class="fault-steer" hidden></p>
       <div id="faultRecovery" class="fault-actions" hidden>
-        <button data-recover="hold">Hold (wait)</button>
-        <button data-recover="release">Release tank</button>
-        <button data-recover="irrigate">Only irrigate</button>
-        <button data-recover="normal">Resume normal</button>
+        <button type="button" data-recover="hold">Hold (wait)</button>
+        <button type="button" data-recover="release">Release tank</button>
+        <button type="button" data-recover="irrigate">Only irrigate</button>
+        <button type="button" data-recover="normal">Resume normal</button>
       </div>
       <div class="fault-actions">
-        <button id="estopRecoverBtn" hidden>Return to normal</button>
-        <button id="enableActBtn" hidden>Re-enable actuations</button>
-        <button id="disableActBtn" class="warn">Disable actuations</button>
-        <button id="rebootNanoBtn">Reboot Nano</button>
-        <button id="rebootEsp2Btn">Reboot ESP2</button>
-        <button id="rebootEsp1Btn">Reboot ESP1</button>
-        <button id="ackFaultBtn">Do nothing (ask again in 2 min)</button>
+        <button type="button" id="estopRecoverBtn" hidden>Return to normal</button>
+        <button type="button" id="enableActBtn" hidden>Re-enable actuations</button>
+        <button type="button" id="disableActBtn" class="warn">Disable actuations</button>
+        <button type="button" id="rebootNanoBtn">Reboot Nano</button>
+        <button type="button" id="rebootEsp2Btn">Reboot ESP2</button>
+        <button type="button" id="rebootEsp1Btn">Reboot ESP1</button>
+        <button type="button" id="ackFaultBtn">Do nothing (ask again in 2 min)</button>
       </div>
       <p id="faultAck" class="field-note" hidden></p>
     </section>
