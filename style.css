@@ -49,6 +49,12 @@ small, .muted, .hint, .field-note { color: var(--muted); }
 .login-screen { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg); }
 .login-screen[hidden] { display: none; }
 .login-card { display: grid; gap: 12px; width: min(100%, 410px); padding: 30px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); }
+/* Without this, the plain `display:grid` above wins over the browser's own [hidden]{display:none}
+   UA-stylesheet rule (same gotcha already fixed elsewhere in this file for .fault-actions/
+   .fault-banner/.login-screen/.danger-gate) -- so showAuthForm()'s signup.hidden=true had no visual
+   effect at all once a second .login-card (the sign-up form) existed, and both forms rendered at
+   once regardless of which was actually .hidden. */
+.login-card[hidden] { display: none; }
 .login-card p { color: var(--muted); line-height: 1.5; }
 .login-card button { border-color: var(--accent); background: var(--accent); color: white; }
 .login-error { min-height: 1.2em; margin: 0; color: var(--danger) !important; font-size: .85rem; }
@@ -278,7 +284,8 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
 
 /* Sign in <-> Sign up switch link under each auth form. */
 .auth-switch { margin: 2px 0 0; font-size: .85rem; color: var(--muted); }
-.auth-switch .link-button { display: inline; width: auto; min-height: 0; padding: 0; margin: 0; font-weight: 700; color: var(--accent); }
+.auth-switch .link-button { display: inline; width: auto; min-height: 0; padding: 0; margin: 0; font-weight: 700; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.auth-switch .link-button:hover { color: var(--text); }
 
 /* Own-account approval status. Same visual family as .fault-banner (danger-toned, above the tabs)
    but a separate class -- this reflects /users/{myUid}, not ESP1's telemetry, and the two must not
