@@ -138,8 +138,15 @@ function currentUserIsSignedIn() {
  * hiding the pending banner and the User Management tab, greying out buttons); the REAL
  * enforcement is the rules themselves, which check the identical literal UID server-side. */
 const OPERATOR_UID = "KaiqrwlOHeVdebbokPxZfcFLZiu2";
+// Same literal UID firebase-rules.json's ESP1-only branches use -- referenced here only for the
+// User Management defense-in-depth exclusion (renderUserManagement()), never for any gating logic.
+const ESP1_DEVICE_UID = "6hNg56ldAaSmpnodG1Xla0vn61O2";
 let myAccountStatus = undefined; // undefined = not loaded yet, null = no record, else the status string
 let myAccountRef = null;
+// Deliberately NOT compared against lastSignInTime -- that raced against how fast the SDK updates
+// it on a fresh sign-in and could re-kick the same session in a loop (see attachUserStatusListener).
+// This just remembers, per page load, the highest kickToken this client has already acted on.
+let lastHandledKickToken = 0;
 
 function isOperator() {
   return Boolean(auth?.currentUser && auth.currentUser.uid === OPERATOR_UID);
@@ -332,8 +339,10 @@ function detachDatabaseListeners() {
 function showAuthForm(which) {
   const login = document.getElementById("loginForm");
   const signup = document.getElementById("signupForm");
+  const reset = document.getElementById("resetForm");
   if (login) login.hidden = which !== "login";
   if (signup) signup.hidden = which !== "signup";
+  if (reset) reset.hidden = which !== "reset";
 }
 
 /* Own-account approval status. Independent of attachDatabaseListeners() above -- this reads
@@ -347,14 +356,19 @@ function attachUserStatusListener(uid) {
   myAccountRef = db.ref(`users/${uid}`);
   myAccountRef.on("value", snapshot => {
     const record = snapshot.val();
-    // Kick: the operator wrote a newer kickToken than this browser's own last real sign-in -- force
-    // this session out immediately. Comparing against lastSignInTime (not a value captured once at
-    // listener-attach time) means this also correctly fires the moment a CLOSED tab reopens and
-    // restores its old session via Firebase's default persistence, not only while already open.
+    // Kick: a kickToken newer than the last one THIS client already handled means the operator
+    // wants this session ended -- sign out immediately. Marking it handled BEFORE calling
+    // signOut() (not comparing against lastSignInTime, which raced against the SDK and could
+    // re-kick the same page in a loop the instant it signed back in) means the normal flow --
+    // signed out, sign back in on this same page -- sees the SAME token next time and does not
+    // re-trigger. A real page reload resets lastHandledKickToken to 0, so a closed tab reopening
+    // still correctly gets kicked once on reconnect if it was kicked while away. A later, genuinely
+    // new Kick writes a bigger token and correctly fires again.
     // Real limit, stated plainly: this only works because this exact client code chooses to
     // cooperate -- it cannot revoke a token already extracted and replayed outside this page.
-    const lastSignIn = Date.parse(auth.currentUser?.metadata?.lastSignInTime || 0) || 0;
-    if (record?.kickToken && record.kickToken > lastSignIn) {
+    const kt = record?.kickToken || 0;
+    if (kt && kt > lastHandledKickToken) {
+      lastHandledKickToken = kt;
       auth.signOut();
       return;
     }
@@ -385,10 +399,13 @@ const ACCOUNT_STATUS_TEXT = {
     title: "Access not approved",
     detail: "The operator reviewed this account and did not approve it for hardware access. You can still see the read-only dashboard."
   },
-  disabled: {
-    title: "Access disabled",
-    detail: "The operator has disabled this account's access. You can still see the read-only dashboard."
+  view_only: {
+    title: "View-only access",
+    detail: "This account can view the irrigation system but cannot operate physical equipment. The operator can restore full access at any time."
   }
+  // No "disabled" entry here on purpose -- a blocked account gets the separate full-screen
+  // #blockedScreen takeover (see renderBlockedScreen()) instead of this banner, and is excluded
+  // below before this lookup ever runs.
 };
 
 function renderAccountStatus(record) {
@@ -459,10 +476,11 @@ function detachUserManagementListener() {
   usersRef = null;
 }
 
-const USER_STATUS_ORDER = { pending: 0, approved: 1, disabled: 2, rejected: 3 };
-// UI label only -- the backend value stays "disabled" (the state Firebase rules already enforce
-// everywhere), matching the request to reuse the existing state rather than invent "blocked".
-const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED" };
+const USER_STATUS_ORDER = { pending: 0, approved: 1, view_only: 2, disabled: 3, rejected: 4 };
+// UI labels only -- the backend values are what Firebase rules actually enforce everywhere; this
+// just controls what word appears on screen, per the explicit ask not to show "disabled" to a
+// normal user when "Blocked" (or "View only") is what's actually meant.
+const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED", view_only: "VIEW ONLY" };
 function renderUserManagement(users) {
   const container = document.getElementById("usersContainer");
   if (!container) return;
@@ -474,16 +492,19 @@ function renderUserManagement(users) {
     const created = u?.createdAt ? new Date(u.createdAt).toLocaleString() : "Unknown";
     // The operator's own row (if they happen to have a /users record at all) gets zero actions --
     // real enforcement is the rules' own auth.uid !== $uid guard on the operator's write branch;
-    // this is the UI half, so there is nothing to accidentally click in the first place.
-    const isSelf = uid === OPERATOR_UID;
+    // this is the UI half, so there is nothing to accidentally click in the first place. Same
+    // exclusion for ESP1's device UID as defense-in-depth, though nothing today ever creates a
+    // /users record for it.
+    const isSelf = uid === OPERATOR_UID || uid === ESP1_DEVICE_UID;
     const actions = [];
     if (!isSelf) {
-      if (status === "pending")  actions.push(["approve", "Approve"], ["reject", "Reject"], ["block", "Block"], ["delete", "Delete"]);
-      if (status === "approved") actions.push(["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
-      if (status === "rejected") actions.push(["approve", "Approve"], ["block", "Block"], ["delete", "Delete"]);
-      if (status === "disabled") actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
+      if (status === "pending")   actions.push(["approve", "Approve"], ["reject", "Reject"], ["view_only", "View-only"], ["delete", "Delete"]);
+      if (status === "approved")  actions.push(["kick", "Kick"], ["view_only", "View-only"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "view_only") actions.push(["restore", "Restore access"], ["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "rejected")  actions.push(["approve", "Approve"], ["view_only", "View-only"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "disabled")  actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
     }
-    const tone = status === "approved" ? "active" : status === "pending" ? "off" : "danger";
+    const tone = status === "approved" ? "active" : (status === "pending" || status === "view_only") ? "off" : "danger";
     const tones = { delete: " danger", block: " warn" };
     const buttons = actions.map(([action, label]) =>
       `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
@@ -524,7 +545,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   if (!button) return;
   const uid = button.dataset.uid;
   const action = button.dataset.userAction;
-  if (!uid || !action || uid === OPERATOR_UID) return; // matches renderUserManagement()'s own guard
+  if (!uid || !action || uid === OPERATOR_UID || uid === ESP1_DEVICE_UID) return; // matches renderUserManagement()'s own guard
   const row = button.closest(".user-row");
   const name = row?.querySelector(".user-row-info strong")?.textContent || "this account";
   const email = row?.dataset.email || "";
@@ -546,10 +567,11 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
     return;
   }
-  const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved" };
+  const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved", view_only: "view_only", restore: "approved" };
   const newStatus = statusMap[action];
   if (!newStatus) return;
   if (action === "block" && !confirm(`Block ${name}? They will immediately lose access.`)) return;
+  if (action === "view_only" && !confirm(`Remove ${name}'s hardware-control access while keeping dashboard access?`)) return;
   run(() => db.ref(`users/${uid}`).update({ status: newStatus }));
 });
 
@@ -1323,6 +1345,38 @@ loginForm?.addEventListener("submit", async event => {
 
 document.getElementById("showSignupBtn")?.addEventListener("click", () => showAuthForm("signup"));
 document.getElementById("showLoginBtn")?.addEventListener("click", () => showAuthForm("login"));
+document.getElementById("showResetBtn")?.addEventListener("click", () => showAuthForm("reset"));
+document.getElementById("showLoginFromResetBtn")?.addEventListener("click", () => showAuthForm("login"));
+
+const resetForm = document.getElementById("resetForm");
+resetForm?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const errorBox = document.getElementById("resetError");
+  const successBox = document.getElementById("resetSuccess");
+  const show = text => { if (errorBox) errorBox.textContent = text; if (successBox) successBox.hidden = true; };
+  if (!auth) { show("Firebase is not configured."); return; }
+  const email = document.getElementById("resetEmail")?.value.trim() || "";
+  show("");
+  if (!email) { show("Enter your email address."); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { show("Enter a valid email address."); return; }
+  const succeed = () => {
+    if (errorBox) errorBox.textContent = "";
+    if (successBox) successBox.hidden = false;
+    resetForm.reset();
+  };
+  try {
+    await auth.sendPasswordResetEmail(email);
+    succeed();
+  } catch (error) {
+    // Deliberately does NOT reveal whether the email is registered -- auth/user-not-found gets the
+    // same success wording a real send would, matching a normal password-reset flow's standard
+    // practice of never confirming or denying an account's existence to an unauthenticated caller.
+    // Only genuinely non-identity-revealing problems (bad format, network) show as errors.
+    if (error.code === "auth/user-not-found") { succeed(); return; }
+    show(FIREBASE_AUTH_ERROR_TEXT[error.code] || `Could not send reset email: ${error.message}`);
+    console.error(error);
+  }
+});
 
 const FIREBASE_AUTH_ERROR_TEXT = {
   "auth/email-already-in-use": "That email is already registered. Try signing in instead.",

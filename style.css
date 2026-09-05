@@ -284,8 +284,11 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
 
 /* Sign in <-> Sign up switch link under each auth form. */
 .auth-switch { margin: 2px 0 0; font-size: .85rem; color: var(--muted); }
-.auth-switch .link-button { display: inline; width: auto; min-height: 0; padding: 0; margin: 0; font-weight: 700; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-.auth-switch .link-button:hover { color: var(--text); }
+/* The base `button` rule fills every button with a solid background + border box -- without
+   resetting those here too, "Create account"/"Sign in"/"Back to Sign In" rendered as a bordered
+   pill instead of plain inline link text. */
+.auth-switch .link-button { display: inline; width: auto; min-height: 0; padding: 0; margin: 0; border: none; background: none; font-weight: 700; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.auth-switch .link-button:hover { color: var(--text); border-color: transparent; transform: none; }
 
 /* Own-account approval status. Same visual family as .fault-banner (danger-toned, above the tabs)
    but a separate class -- this reflects /users/{myUid}, not ESP1's telemetry, and the two must not

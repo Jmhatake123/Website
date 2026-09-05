@@ -15,6 +15,7 @@
       <p>Sign in with an authorized Firebase account to monitor the ESP1 master controller and use the available safe commands.</p>
       <label>Email<input id="loginEmail" type="email" autocomplete="email" required></label>
       <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+      <p class="auth-switch"><button type="button" id="showResetBtn" class="link-button">Forgot password?</button></p>
       <p id="loginError" class="login-error" role="alert"></p>
       <button type="submit">Sign in</button>
       <p class="auth-switch">Don’t have an account? <button type="button" id="showSignupBtn" class="link-button">Create account</button></p>
@@ -35,6 +36,19 @@
       <p id="signupError" class="login-error" role="alert"></p>
       <button type="submit">Sign up</button>
       <p class="auth-switch">Already have an account? <button type="button" id="showLoginBtn" class="link-button">Back to Sign In</button></p>
+    </form>
+
+    <!-- Uses Firebase Auth's own sendPasswordResetEmail() -- this app never sees, stores, or
+         validates a password itself, before or after a reset. -->
+    <form id="resetForm" class="login-card" hidden>
+      <p class="eyebrow">CIT-U Electrical Engineering</p>
+      <h1>Reset your password</h1>
+      <p>Enter the email address on your account and we'll send a link to set a new password.</p>
+      <label>Email<input id="resetEmail" type="email" autocomplete="email" required></label>
+      <p id="resetError" class="login-error" role="alert"></p>
+      <p id="resetSuccess" class="field-note" hidden>Password reset email sent. Check your inbox and follow the link to create a new password.</p>
+      <button type="submit">Send reset email</button>
+      <p class="auth-switch"><button type="button" id="showLoginFromResetBtn" class="link-button">Back to Sign In</button></p>
     </form>
   </div>
 
