@@ -357,19 +357,23 @@ function attachUserStatusListener(uid) {
   myAccountRef.on("value", snapshot => {
     const record = snapshot.val();
     // Kick: a kickToken newer than the last one THIS client already handled means the operator
-    // wants this session ended -- sign out immediately. Marking it handled BEFORE calling
-    // signOut() (not comparing against lastSignInTime, which raced against the SDK and could
-    // re-kick the same page in a loop the instant it signed back in) means the normal flow --
-    // signed out, sign back in on this same page -- sees the SAME token next time and does not
-    // re-trigger. A real page reload resets lastHandledKickToken to 0, so a closed tab reopening
-    // still correctly gets kicked once on reconnect if it was kicked while away. A later, genuinely
-    // new Kick writes a bigger token and correctly fires again.
+    // wants this session ended -- sign out immediately. A kick is a ONE-TIME "please sign in
+    // again," never a standing restriction, so the marker is cleared (the rules' own kickToken
+    // rule permits the record's owner to clear -- never set -- their own kickToken) before signing
+    // out -- otherwise it would linger forever and re-trigger on this account's every later sign-in
+    // AND on every plain page refresh from then on, not just the one time it was meant to fire.
+    // lastHandledKickToken stays as a same-page fallback for the rare case the clear write itself
+    // fails; a real page reload resets it to 0, so a closed tab reopening still correctly gets
+    // kicked once on reconnect if it was kicked while away, and a later, genuinely new Kick (a
+    // bigger token) still correctly fires again.
     // Real limit, stated plainly: this only works because this exact client code chooses to
     // cooperate -- it cannot revoke a token already extracted and replayed outside this page.
     const kt = record?.kickToken || 0;
     if (kt && kt > lastHandledKickToken) {
       lastHandledKickToken = kt;
-      auth.signOut();
+      myAccountRef.child("kickToken").remove()
+        .catch(error => console.warn("Could not clear kickToken", error))
+        .finally(() => auth.signOut());
       return;
     }
     myAccountStatus = record ? record.status : null;
@@ -399,9 +403,9 @@ const ACCOUNT_STATUS_TEXT = {
     title: "Access not approved",
     detail: "The operator reviewed this account and did not approve it for hardware access. You can still see the read-only dashboard."
   },
-  view_only: {
-    title: "View-only access",
-    detail: "This account can view the irrigation system but cannot operate physical equipment. The operator can restore full access at any time."
+  restricted: {
+    title: "Restricted access",
+    detail: "This account can view the irrigation system but cannot operate physical equipment. The operator can unrestrict it to restore full access at any time."
   }
   // No "disabled" entry here on purpose -- a blocked account gets the separate full-screen
   // #blockedScreen takeover (see renderBlockedScreen()) instead of this banner, and is excluded
@@ -476,11 +480,11 @@ function detachUserManagementListener() {
   usersRef = null;
 }
 
-const USER_STATUS_ORDER = { pending: 0, approved: 1, view_only: 2, disabled: 3, rejected: 4 };
+const USER_STATUS_ORDER = { pending: 0, approved: 1, restricted: 2, disabled: 3, rejected: 4 };
 // UI labels only -- the backend values are what Firebase rules actually enforce everywhere; this
 // just controls what word appears on screen, per the explicit ask not to show "disabled" to a
-// normal user when "Blocked" (or "View only") is what's actually meant.
-const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED", view_only: "VIEW ONLY" };
+// normal user when "Blocked" (or "Restricted") is what's actually meant.
+const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED", restricted: "RESTRICTED" };
 function renderUserManagement(users) {
   const container = document.getElementById("usersContainer");
   if (!container) return;
@@ -498,13 +502,13 @@ function renderUserManagement(users) {
     const isSelf = uid === OPERATOR_UID || uid === ESP1_DEVICE_UID;
     const actions = [];
     if (!isSelf) {
-      if (status === "pending")   actions.push(["approve", "Approve"], ["reject", "Reject"], ["view_only", "View-only"], ["delete", "Delete"]);
-      if (status === "approved")  actions.push(["kick", "Kick"], ["view_only", "View-only"], ["block", "Block"], ["delete", "Delete"]);
-      if (status === "view_only") actions.push(["restore", "Restore access"], ["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
-      if (status === "rejected")  actions.push(["approve", "Approve"], ["view_only", "View-only"], ["block", "Block"], ["delete", "Delete"]);
-      if (status === "disabled")  actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
+      if (status === "pending")    actions.push(["approve", "Approve"], ["reject", "Reject"], ["restrict", "Restrict"], ["delete", "Delete"]);
+      if (status === "approved")   actions.push(["kick", "Kick"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "rejected")   actions.push(["approve", "Approve"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "disabled")   actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
     }
-    const tone = status === "approved" ? "active" : (status === "pending" || status === "view_only") ? "off" : "danger";
+    const tone = status === "approved" ? "active" : (status === "pending" || status === "restricted") ? "off" : "danger";
     const tones = { delete: " danger", block: " warn" };
     const buttons = actions.map(([action, label]) =>
       `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
@@ -567,11 +571,11 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
     return;
   }
-  const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved", view_only: "view_only", restore: "approved" };
+  const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved", restrict: "restricted", unrestrict: "approved" };
   const newStatus = statusMap[action];
   if (!newStatus) return;
   if (action === "block" && !confirm(`Block ${name}? They will immediately lose access.`)) return;
-  if (action === "view_only" && !confirm(`Remove ${name}'s hardware-control access while keeping dashboard access?`)) return;
+  if (action === "restrict" && !confirm(`Remove ${name}'s hardware-control access while keeping dashboard access?`)) return;
   run(() => db.ref(`users/${uid}`).update({ status: newStatus }));
 });
 
