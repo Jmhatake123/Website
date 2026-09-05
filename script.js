@@ -1024,9 +1024,21 @@ document.getElementById("logoutBtn")?.addEventListener("click", () => {
   releaseManualHold();
   auth?.signOut().catch(error => setCommandStatus(`Sign out failed: ${error.message}`, "error"));
 });
-// A closed tab or a backgrounded phone should hand the rig back at once, not 60 s later.
+// A closed tab (pagehide -- actually going away: close/navigate/BFCache) hands the rig back at once.
+// A merely BACKGROUNDED tab (visibilitychange) gets a short grace period instead of an instant release
+// -- confirmed live that switching to check something for a few seconds and coming straight back was
+// dropping an active hold every time, forcing a fresh request-and-wait cycle for no operational reason.
 window.addEventListener("pagehide", () => releaseManualHold());
-document.addEventListener("visibilitychange", () => { if (document.hidden) releaseManualHold(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (mtHoldTimer && !mtHideTimer) {
+      mtHideTimer = setTimeout(() => { mtHideTimer = null; if (document.hidden) releaseManualHold(); }, MT_HIDE_GRACE_MS);
+    }
+  } else if (mtHideTimer) {
+    clearTimeout(mtHideTimer);
+    mtHideTimer = null;
+  }
+});
 document.getElementById("transferPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "transfer" }));
 document.getElementById("boosterPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "booster" }));
 document.getElementById("mixerBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "mixer" }));
@@ -1076,9 +1088,13 @@ let mtArmed = false;
  * which a 20 s keep-alive would grow without bound and fill with noise.
  *
  * ESP1 owns the deadline and only refreshes its lease when `seq` CHANGES, so a tab left open on a
- * dead machine stops refreshing and the rig frees itself. Releasing on pagehide/visibilitychange as
- * well as on tab-switch just makes that happen sooner than the 60 s lease. */
+ * dead machine stops refreshing and the rig frees itself. Releasing on pagehide/tab-switch just makes
+ * that happen sooner than the 60 s lease. A merely backgrounded tab (visibilitychange) gets a short
+ * grace period instead -- see MT_HIDE_GRACE_MS below -- rather than dropping the hold on every glance
+ * away. */
 let mtHoldTimer = null;
+let mtHideTimer = null;
+const MT_HIDE_GRACE_MS = 15000; // < the 20 s keep-alive, so a genuinely abandoned tab still gives up the hold promptly
 
 function writeManualHold(want) {
   if (!currentUserIsSignedIn()) return Promise.resolve(false);
@@ -1094,6 +1110,7 @@ function requestManualHold() {
 }
 
 function releaseManualHold() {
+  if (mtHideTimer) { clearTimeout(mtHideTimer); mtHideTimer = null; }
   if (mtHoldTimer) { clearInterval(mtHoldTimer); mtHoldTimer = null; }
   writeManualHold(false);
 }
