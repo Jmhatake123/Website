@@ -24,12 +24,13 @@
       ".read": "auth != null && auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2'",
       "$uid": {
         ".read": "auth != null && (auth.uid === $uid || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2')",
-        ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('status').val() === 'pending') || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2')",
+        ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('status').val() === 'pending') || (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' && auth.uid !== $uid))",
         ".validate": "newData.hasChildren(['name', 'email', 'status', 'createdAt'])",
         "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80" },
         "email": { ".validate": "newData.isString() && newData.val().length > 0" },
         "status": { ".validate": "newData.val() === 'pending' || newData.val() === 'approved' || newData.val() === 'rejected' || newData.val() === 'disabled'" },
-        "createdAt": { ".validate": "newData.isNumber()" }
+        "createdAt": { ".validate": "newData.isNumber()" },
+        "kickToken": { ".validate": "newData.isNumber()" }
       }
     }
   }

@@ -301,3 +301,6 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
 .user-row-info strong { overflow-wrap: anywhere; }
 .user-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .user-action { min-height: 36px; padding: 7px 12px; font-size: .84rem; }
+/* button.danger/button.warn are styled for standalone full-size buttons (200px min-width, 100% width
+   on mobile) -- neither makes sense for a small action button sitting in a row of siblings. */
+.user-action.danger, .user-action.warn { min-width: 0; width: auto; }

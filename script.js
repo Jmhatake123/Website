@@ -253,6 +253,7 @@ function initializeFirebase() {
         updateDashboard();
         renderCommandHistory();
         renderAccountStatus(null);
+        renderBlockedScreen();
         if (loginScreen) loginScreen.hidden = false;
         showAuthForm("login");
         if (logoutButton) logoutButton.hidden = true;
@@ -342,16 +343,30 @@ function attachUserStatusListener(uid) {
   detachUserStatusListener();
   myAccountStatus = undefined;
   renderAccountStatus(undefined);
+  renderBlockedScreen();
   myAccountRef = db.ref(`users/${uid}`);
   myAccountRef.on("value", snapshot => {
     const record = snapshot.val();
+    // Kick: the operator wrote a newer kickToken than this browser's own last real sign-in -- force
+    // this session out immediately. Comparing against lastSignInTime (not a value captured once at
+    // listener-attach time) means this also correctly fires the moment a CLOSED tab reopens and
+    // restores its old session via Firebase's default persistence, not only while already open.
+    // Real limit, stated plainly: this only works because this exact client code chooses to
+    // cooperate -- it cannot revoke a token already extracted and replayed outside this page.
+    const lastSignIn = Date.parse(auth.currentUser?.metadata?.lastSignInTime || 0) || 0;
+    if (record?.kickToken && record.kickToken > lastSignIn) {
+      auth.signOut();
+      return;
+    }
     myAccountStatus = record ? record.status : null;
     renderAccountStatus(record);
+    renderBlockedScreen();
     syncControlAvailability();
   }, error => {
     console.warn("Could not read account status", error);
     myAccountStatus = null;
     renderAccountStatus(null);
+    renderBlockedScreen();
     syncControlAvailability();
   });
 }
@@ -385,7 +400,10 @@ function renderAccountStatus(record) {
   // branches below, or the sign-out path's renderAccountStatus(null) call (after
   // detachUserStatusListener() has already reset myAccountStatus to undefined) would flash this
   // banner with "Loading your account status..." on the login screen.
-  if (!currentUserIsSignedIn() || isOperator() || myAccountStatus === "approved") { banner.hidden = true; return; }
+  // "disabled" (blocked) gets its own full-screen takeover (#blockedScreen, see renderBlockedScreen())
+  // instead of this banner -- a blocked account should see nothing else on the page at all, not a
+  // dismissible banner over an otherwise-normal dashboard.
+  if (!currentUserIsSignedIn() || isOperator() || myAccountStatus === "approved" || myAccountStatus === "disabled") { banner.hidden = true; return; }
   banner.hidden = false;
   if (myAccountStatus === undefined) {
     if (title) title.textContent = "Loading your account status…";
@@ -399,6 +417,19 @@ function renderAccountStatus(record) {
   if (title) title.textContent = text.title;
   if (detail) detail.textContent = text.detail;
 }
+
+/* Full-screen takeover for a blocked ("disabled") account -- deliberately bypasses the fault banner,
+ * the account-status banner, and the normal dashboard entirely. Re-checked on every account-status
+ * snapshot (see attachUserStatusListener()), so an Unblock takes this away live without a reload,
+ * same as every other status change on this page. */
+function renderBlockedScreen() {
+  const screen = document.getElementById("blockedScreen");
+  if (!screen) return;
+  screen.hidden = !(currentUserIsSignedIn() && !isOperator() && myAccountStatus === "disabled");
+}
+document.getElementById("blockedSignOutBtn")?.addEventListener("click", () => {
+  auth?.signOut().catch(error => console.error(error));
+});
 
 /* User Management (operator-only). The tab/section being hidden from non-operators is a UI
  * convenience -- the actual boundary is /users' ".read" rule, which only the operator UID passes,
@@ -429,6 +460,9 @@ function detachUserManagementListener() {
 }
 
 const USER_STATUS_ORDER = { pending: 0, approved: 1, disabled: 2, rejected: 3 };
+// UI label only -- the backend value stays "disabled" (the state Firebase rules already enforce
+// everywhere), matching the request to reuse the existing state rather than invent "blocked".
+const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED" };
 function renderUserManagement(users) {
   const container = document.getElementById("usersContainer");
   if (!container) return;
@@ -438,36 +472,85 @@ function renderUserManagement(users) {
   container.innerHTML = rows.map(([uid, u]) => {
     const status = u?.status || "unknown";
     const created = u?.createdAt ? new Date(u.createdAt).toLocaleString() : "Unknown";
+    // The operator's own row (if they happen to have a /users record at all) gets zero actions --
+    // real enforcement is the rules' own auth.uid !== $uid guard on the operator's write branch;
+    // this is the UI half, so there is nothing to accidentally click in the first place.
+    const isSelf = uid === OPERATOR_UID;
     const actions = [];
-    if (status === "pending") actions.push(["approve", "Approve"], ["reject", "Reject"]);
-    if (status === "approved") actions.push(["disable", "Disable"]);
-    if (status === "rejected" || status === "disabled") actions.push(["approve", "Re-enable"]);
+    if (!isSelf) {
+      if (status === "pending")  actions.push(["approve", "Approve"], ["reject", "Reject"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "approved") actions.push(["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "rejected") actions.push(["approve", "Approve"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "disabled") actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
+    }
     const tone = status === "approved" ? "active" : status === "pending" ? "off" : "danger";
+    const tones = { delete: " danger", block: " warn" };
     const buttons = actions.map(([action, label]) =>
-      `<button type="button" class="user-action" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
+      `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
     ).join("");
-    return `<article class="user-row">
+    return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
       <div class="user-row-info">
-        <strong>${escapeHtml(u?.name || "(no name)")}</strong>
+        <strong>${escapeHtml(u?.name || "(no name)")}${isSelf ? " (you, the operator)" : ""}</strong>
         <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
         <span class="muted">Registered: ${escapeHtml(created)}</span>
       </div>
-      <span class="device-status ${tone}">${escapeHtml(status.toUpperCase())}</span>
+      <span class="device-status ${tone}">${escapeHtml(STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
       <div class="user-row-actions">${buttons}</div>
     </article>`;
   }).join("");
 }
+/* The one privileged operation this static site cannot do itself: deleting another user's
+ * Firebase Auth identity. Calls the operator-only endpoint in delete-user-api/ (a separate Vercel
+ * project -- see its own file for why: no client SDK call can delete a different uid's account,
+ * only the Admin SDK can, which only runs in a trusted server, not here). The bearer token proves
+ * to that server who is actually asking, the same way Firebase's own rules trust auth.uid. */
+async function deleteUserAccount(uid) {
+  const url = window.DELETE_USER_API_URL;
+  if (!url || url.includes("YOUR-PROJECT")) {
+    throw new Error("Delete-user API is not configured yet -- set window.DELETE_USER_API_URL in firebase-config.js.");
+  }
+  const idToken = await auth.currentUser.getIdToken();
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
+    body: JSON.stringify({ uid })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+  return result;
+}
 document.getElementById("usersContainer")?.addEventListener("click", event => {
   const button = event.target.closest("[data-user-action]");
   if (!button) return;
-  const statusMap = { approve: "approved", reject: "rejected", disable: "disabled" };
-  const newStatus = statusMap[button.dataset.userAction];
   const uid = button.dataset.uid;
-  if (!newStatus || !uid) return;
-  button.disabled = true;
-  db.ref(`users/${uid}`).update({ status: newStatus })
-    .catch(error => alert(`Could not update this account: ${error.message}`))
-    .finally(() => { button.disabled = false; });
+  const action = button.dataset.userAction;
+  if (!uid || !action || uid === OPERATOR_UID) return; // matches renderUserManagement()'s own guard
+  const row = button.closest(".user-row");
+  const name = row?.querySelector(".user-row-info strong")?.textContent || "this account";
+  const email = row?.dataset.email || "";
+  const run = write => { button.disabled = true; write().catch(error => alert(`Could not update this account: ${error.message}`)).finally(() => { button.disabled = false; }); };
+
+  if (action === "delete") {
+    // Deliberately the strongest confirmation of the three (a plain confirm() for the others) --
+    // this is the one truly irreversible action. Routed through delete-user-api/ (a separate
+    // Vercel project), not a direct database write: no client-side API can delete another uid's
+    // Firebase Auth identity, only the Admin SDK can, which only runs there. That endpoint deletes
+    // both the Auth account and /users/{uid} in one trusted call.
+    const typed = prompt(`Delete ${name}? Their account (login and all) will be permanently deleted -- they would need to sign up again as a brand-new account. This cannot be undone.\n\nType the account's email to confirm:\n${email}`);
+    if (typed === null || typed.trim() !== email) return;
+    run(() => deleteUserAccount(uid));
+    return;
+  }
+  if (action === "kick") {
+    if (!confirm(`Force ${name} to sign in again?`)) return;
+    run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
+    return;
+  }
+  const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved" };
+  const newStatus = statusMap[action];
+  if (!newStatus) return;
+  if (action === "block" && !confirm(`Block ${name}? They will immediately lose access.`)) return;
+  run(() => db.ref(`users/${uid}`).update({ status: newStatus }));
 });
 
 function writeZoneProfile(zone) {
@@ -1214,8 +1297,24 @@ loginForm?.addEventListener("submit", async event => {
   }
   if (errorBox) errorBox.textContent = "";
   try {
-    await auth.signInWithEmailAndPassword(document.getElementById("loginEmail").value.trim(), document.getElementById("loginPassword").value);
+    const credential = await auth.signInWithEmailAndPassword(document.getElementById("loginEmail").value.trim(), document.getElementById("loginPassword").value);
     loginForm.reset();
+    // Delete in User Management now removes the Auth account too (via the deleteUserAccount Cloud
+    // Function), so this specific gap no longer applies to that path -- but a signed-in account with
+    // no /users/{uid} record can still happen for other reasons (created outside this app's sign-up
+    // form, or a record lost some other way). Recreate a fresh pending record here rather than leave
+    // it stuck: the same shape and the same rule (!data.exists() && status:"pending") the sign-up
+    // form itself relies on.
+    const uid = credential.user.uid;
+    const existing = await db.ref(`users/${uid}`).once("value");
+    if (!existing.exists()) {
+      db.ref(`users/${uid}`).set({
+        name: credential.user.email,
+        email: credential.user.email,
+        status: "pending",
+        createdAt: firebase.database.ServerValue.TIMESTAMP
+      }).catch(error => console.warn("Could not re-create account record after sign-in", error));
+    }
   } catch (error) {
     if (errorBox) errorBox.textContent = "Sign-in failed. Check your email and password.";
     console.error(error);

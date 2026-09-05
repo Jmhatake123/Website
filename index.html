@@ -38,6 +38,21 @@
     </form>
   </div>
 
+  <!-- Full-screen takeover for a blocked ("disabled") account -- distinct from #loginScreen (not
+       signed in) and the read-only dashboard pending/rejected accounts still see. Reuses
+       .login-screen/.login-card so it is already correctly full-viewport and hide/show-safe -- both
+       [hidden] overrides exist and were verified this session. Shown/hidden from
+       attachUserStatusListener() in script.js, never from the fault-banner/account-status-banner
+       machinery, which this deliberately bypasses (a blocked account should see nothing else at all). -->
+  <div id="blockedScreen" class="login-screen" hidden>
+    <div class="login-card">
+      <p class="eyebrow">CIT-U Electrical Engineering</p>
+      <h1>Access blocked</h1>
+      <p>Your account has been blocked by the operator. Please contact the system operator.</p>
+      <button type="button" id="blockedSignOutBtn">Sign out</button>
+    </div>
+  </div>
+
   <aside class="sidebar">
     <div>
       <p class="eyebrow">CIT-U EE</p>
