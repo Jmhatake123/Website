@@ -230,3 +230,67 @@ dialog a { color: var(--accent); }
 button.gate-back { border-color: var(--success); background: var(--success); color: #05231a; font-weight: 800; }
 button.gate-proceed { border-color: var(--border); background: var(--surface-muted); color: var(--muted); }
 button.gate-proceed:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+
+/* Info icons. One shared popover (#infoPopover in index.html), repositioned per click, backs every
+   ".info-icon" button on the page -- see initInfoIcons() in script.js. Purely additive UI: never
+   nested inside an actuating button (kept as a sibling via .btn-with-info / .label-row instead), so
+   it cannot itself trigger a pump/valve/relay click, and it adds no vertical space to a card since
+   it sits inline with the heading/label text it explains. */
+.info-icon {
+  position: relative;
+  display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center;
+  width: 13px; height: 13px; min-height: 0; margin-left: 6px; padding: 0;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface-muted);
+  color: var(--muted); font-size: .58rem; font-style: italic; font-weight: 800; line-height: 1;
+  vertical-align: middle; transform: translateY(-1px);
+}
+/* The visible circle stays small (~13px, per spec) but the actual tappable area is expanded via this
+   invisible pseudo-element -- a small icon with only its own box as the hit target is hard to tap
+   accurately on a phone. inset:-7px gives roughly a 27x27px target without growing what's drawn. */
+.info-icon::after { content: ""; position: absolute; inset: -7px; }
+.info-icon:hover, .info-icon:focus-visible, .info-icon[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); background: var(--surface); }
+.info-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
+
+/* Groups logically-related buttons tighter than the surrounding .control-grid/.config-actions gap
+   (10-16px), so e.g. the 3 reboot buttons read as one cluster distinct from disable/enable, instead
+   of every button in a panel sitting in one undifferentiated row. Layout-only -- no id/class/handler
+   changes to the buttons themselves. */
+.control-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Wraps an actuating button + its info icon as one inline group without changing the button's own
+   click target -- used wherever the icon would otherwise have to sit inside the button itself. */
+.btn-with-info { display: inline-flex; align-items: center; gap: 8px; }
+/* Keeps a label's leading text + icon on the SAME grid row as each other (labels on this page are
+   `display:grid`, text over control) instead of the icon becoming its own row under the control. */
+.label-row { display: inline-flex; align-items: center; }
+
+.info-popover {
+  position: fixed; z-index: 30; width: min(320px, calc(100vw - 24px));
+  padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+  font-size: .86rem; line-height: 1.55;
+}
+.info-popover[hidden] { display: none; }
+.info-popover-title { margin: 0 28px 6px 0; color: var(--accent); font-size: .74rem; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+.info-popover-text { margin: 0; color: var(--text); }
+.info-popover-close { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; min-height: 0; padding: 0; border-radius: 999px; }
+
+/* Sign in <-> Sign up switch link under each auth form. */
+.auth-switch { margin: 2px 0 0; font-size: .85rem; color: var(--muted); }
+.auth-switch .link-button { display: inline; width: auto; min-height: 0; padding: 0; margin: 0; font-weight: 700; color: var(--accent); }
+
+/* Own-account approval status. Same visual family as .fault-banner (danger-toned, above the tabs)
+   but a separate class -- this reflects /users/{myUid}, not ESP1's telemetry, and the two must not
+   be conflated by sharing one class that updateFaultBanner() also toggles. */
+.account-banner { margin-bottom: 26px; padding: 20px; border: 1px solid rgb(242 174 73 / .65); border-left: 6px solid var(--warning); border-radius: 13px; background: rgb(242 174 73 / .08); box-shadow: var(--shadow); }
+.account-banner[hidden] { display: none; }
+.account-banner h2 { margin-bottom: 6px; }
+
+/* User Management (operator-only). */
+.user-list { display: grid; gap: 12px; }
+.user-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.user-row-info { display: grid; gap: 2px; flex: 1 1 220px; min-width: 0; }
+.user-row-info strong { overflow-wrap: anywhere; }
+.user-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.user-action { min-height: 36px; padding: 7px 12px; font-size: .84rem; }

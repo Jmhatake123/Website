@@ -17,6 +17,24 @@
       <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required></label>
       <p id="loginError" class="login-error" role="alert"></p>
       <button type="submit">Sign in</button>
+      <p class="auth-switch">Don’t have an account? <button type="button" id="showSignupBtn" class="link-button">Create account</button></p>
+    </form>
+
+    <!-- New accounts are created here but start locked out of every control -- see the Firebase
+         rules on /users/{uid}: a user can only ever create their OWN record, forced to status
+         "pending"; only the operator UID can change it afterward. This form never grants access
+         itself, it only registers a request for the operator to act on. -->
+    <form id="signupForm" class="login-card" hidden>
+      <p class="eyebrow">CIT-U Electrical Engineering</p>
+      <h1>Create account</h1>
+      <p>New accounts start as <strong>pending</strong><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About pending approval" data-info-title="Pending approval" data-info-text="Your account has been created, but the operator has not approved your access yet. You can sign in and see the read-only dashboard while you wait, but every control that would affect real hardware stays blocked until you're approved.">i</button> and cannot use any control until the operator approves the account. You can still sign in and see the read-only dashboard while you wait.</p>
+      <label>Name<input id="signupName" type="text" autocomplete="name" required></label>
+      <label>Email<input id="signupEmail" type="email" autocomplete="email" required></label>
+      <label>Password<input id="signupPassword" type="password" autocomplete="new-password" minlength="6" required></label>
+      <label>Confirm password<input id="signupConfirm" type="password" autocomplete="new-password" minlength="6" required></label>
+      <p id="signupError" class="login-error" role="alert"></p>
+      <button type="submit">Sign up</button>
+      <p class="auth-switch">Already have an account? <button type="button" id="showLoginBtn" class="link-button">Back to Sign In</button></p>
     </form>
   </div>
 
@@ -31,9 +49,13 @@
       <button type="button" class="tab" data-view="manual">Controls</button>
       <button type="button" class="tab" data-view="manualtest">Manual/Test</button>
       <button type="button" class="tab" data-view="diagnostics">Diagnostics</button>
+      <!-- Shown only to the operator UID (see refreshOperatorUI() in script.js) -- hiding this tab
+           from everyone else is a convenience, not the security boundary; the real enforcement is
+           the operator-only write rule on /users/{uid} in firebase-rules.json. -->
+      <button type="button" class="tab" data-view="users" id="usersTab" hidden>User Management</button>
     </nav>
     <div class="system-status" aria-live="polite">
-      <p class="status-label">ESP1 state</p>
+      <p class="status-label">ESP1 state<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the ESP1 status block" data-info-title="ESP1 status" data-info-text="These three lines show, at a glance, what ESP1 is currently doing (its state), whether this dashboard has a fresh live snapshot from it, and whether a run is currently active.">i</button></p>
       <span id="systemState" class="device-status off">WAITING FOR DATA</span>
       <p class="status-label">ESP1 connection</p>
       <span id="sideConnection" class="device-status off">NOT CONNECTED</span>
@@ -58,21 +80,35 @@
       </div>
       <p id="faultSteer" class="fault-steer" hidden></p>
       <div id="faultRecovery" class="fault-actions" hidden>
-        <button type="button" data-recover="hold">Hold (wait)</button>
-        <button type="button" data-recover="release">Release tank</button>
-        <button type="button" data-recover="irrigate">Only irrigate</button>
-        <button type="button" data-recover="normal">Resume normal</button>
+        <span class="btn-with-info"><button type="button" data-recover="hold">Hold (wait)</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Hold (wait)" data-info-title="Hold (wait)" data-info-text="Acknowledges the fault and keeps the system paused exactly as it is -- nothing is dumped, resumed, or changed. Use this if you want more time before deciding what to do.">i</button></span>
+        <span class="btn-with-info"><button type="button" data-recover="release">Release tank</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Release tank" data-info-title="Release tank" data-info-text="Empties whatever is currently in the mixing tank out to its column as-is, instead of waiting to resume the original run.">i</button></span>
+        <span class="btn-with-info"><button type="button" data-recover="irrigate">Only irrigate</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Only irrigate" data-info-title="Only irrigate" data-info-text="Tops the mixing tank up with plain water only, with no further nutrient dosing, and delivers it instead of resuming the original fertigation.">i</button></span>
+        <span class="btn-with-info"><button type="button" data-recover="normal">Resume normal</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Resume normal" data-info-title="Resume normal" data-info-text="Tries to resume the paused run exactly where it left off, including any nutrient dosing that was in progress.">i</button></span>
       </div>
       <div class="fault-actions">
-        <button type="button" id="estopRecoverBtn" hidden>Return to normal</button>
-        <button type="button" id="enableActBtn" hidden>Re-enable actuations</button>
-        <button type="button" id="disableActBtn" class="warn">Disable actuations</button>
-        <button type="button" id="rebootNanoBtn">Reboot Nano</button>
-        <button type="button" id="rebootEsp2Btn">Reboot ESP2</button>
-        <button type="button" id="rebootEsp1Btn">Reboot ESP1</button>
-        <button type="button" id="ackFaultBtn">Do nothing (ask again in 2 min)</button>
+        <span class="btn-with-info"><button type="button" id="estopRecoverBtn" hidden>Return to normal</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Return to normal" data-info-title="Return to normal" data-info-text="Brings the system back from a full Emergency Stop. ESP1 re-checks and re-powers ESP2 before trusting it again, rather than just clearing the alarm.">i</button></span>
+        <div class="control-cluster">
+          <span class="btn-with-info"><button type="button" id="enableActBtn" hidden>Re-enable actuations</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Re-enable actuations" data-info-title="Re-enable actuations" data-info-text="Turns actuations back on after they were disabled, allowing scheduled runs, pump exercises, and forced runs to operate again.">i</button></span>
+          <span class="btn-with-info"><button type="button" id="disableActBtn" class="warn">Disable actuations</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Disable actuations" data-info-title="Disable actuations" data-info-text="Immediately stops any run in progress and blocks every pump, valve, and scheduled run from operating again until you re-enable it. This affects the real hardware immediately, and the setting survives a reboot. Sensors, logging, and uploads keep working.">i</button></span>
+        </div>
+        <div class="control-cluster">
+          <span class="btn-with-info"><button type="button" id="rebootNanoBtn">Reboot Nano</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot Nano" data-info-title="Reboot Nano" data-info-text="Restarts the Arduino Nano, the small controller that reads the soil, NPK, and environment sensors. Sensor readings pause briefly while it restarts.">i</button></span>
+          <span class="btn-with-info"><button type="button" id="rebootEsp2Btn">Reboot ESP2</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot ESP2" data-info-title="Reboot ESP2" data-info-text="Restarts ESP2, the controller that actually drives the pumps and valves. Avoid this while a run is in progress, since it interrupts whatever ESP2 is doing.">i</button></span>
+          <span class="btn-with-info"><button type="button" id="rebootEsp1Btn">Reboot ESP1</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot ESP1" data-info-title="Reboot ESP1" data-info-text="Restarts ESP1, the main controller running this whole system, including this dashboard's connection. The dashboard loses contact for about 15 seconds while it restarts.">i</button></span>
+        </div>
+        <span class="btn-with-info"><button type="button" id="ackFaultBtn">Do nothing (ask again in 2 min)</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Do nothing" data-info-title="Do nothing (ask again in 2 min)" data-info-text="Quietly acknowledges this banner on your dashboard only, for 2 minutes, without sending anything to the rig. The fault itself is unaffected -- this just stops the banner demanding attention for a little while.">i</button></span>
       </div>
       <p id="faultAck" class="field-note" hidden></p>
+    </section>
+
+    <!-- Own account's approval status. Independent of the fault banner above -- this reflects
+         /users/{myUid}/status, not ESP1's telemetry. Hidden entirely once approved (or for the
+         operator, who doesn't need a record of their own to count as approved -- see
+         isApprovedUser() in script.js). -->
+    <section id="accountStatusBanner" class="account-banner" hidden aria-live="assertive">
+      <p class="eyebrow">Account status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About account status" data-info-title="Account status" data-info-text="The operator decides which registered accounts are allowed to access the irrigation system. Approval is required before an account can use any control that affects the physical equipment -- pumps, valves, the mixer, emergency stop, forced runs, and Manual/Test.">i</button></p>
+      <h2 id="accountStatusTitle">--</h2>
+      <p id="accountStatusDetail" class="fault-detail">--</p>
     </section>
 
     <header class="topbar">
@@ -81,7 +117,7 @@
         <h1>ESP1 live operations</h1>
       </div>
       <div class="topbar-actions">
-        <span class="connection-status"><i id="connectionDot" class="online-dot"></i><span id="connectionStatus">Firebase not configured</span></span>
+        <span class="connection-status"><i id="connectionDot" class="online-dot"></i><span id="connectionStatus">Firebase not configured</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About connection status" data-info-title="Connection status" data-info-text="Shows whether this dashboard currently has a live, working connection to Firebase -- separate from whether ESP1 itself is online, which the sidebar status block shows.">i</button></span>
         <button id="theme-toggle" type="button">Light theme</button>
         <button id="logoutBtn" type="button" hidden>Sign out</button>
       </div>
@@ -96,23 +132,23 @@
         <div id="liveAge" class="snapshot-age">Waiting for first snapshot</div>
       </div>
       <div class="card-grid metric-grid">
-        <article class="card"><h3>Reservoir level</h3><p id="reservoirLevel">Unavailable</p></article>
-        <article class="card"><h3>Mixing tank level</h3><p id="mixingLevel">Unavailable</p></article>
-        <article class="card"><h3>System flow</h3><p id="flowRate">Unavailable</p></article>
-        <article class="card"><h3>Air temperature</h3><p id="temperature">Unavailable</p></article>
-        <article class="card"><h3>Ambient humidity</h3><p id="humidity">Unavailable</p></article>
-        <article class="card"><h3>Light level</h3><p id="lightLevel">Unavailable</p></article>
-        <article class="card"><h3>Mix tank pH</h3><p id="waterPH">Unavailable</p></article>
-        <article class="card"><h3>Mix tank EC</h3><p id="waterEC">Unavailable</p></article>
-        <article class="card"><h3>Battery voltage</h3><p id="batteryVoltage">Unavailable</p></article>
-        <article class="card"><h3>Battery charge</h3><p id="batteryPercent">Unavailable</p></article>
-        <article class="card"><h3>Battery current</h3><p id="batteryCurrent">Unavailable</p></article>
-        <article class="card"><h3>Battery power</h3><p id="batteryPower">Unavailable</p></article>
-        <article class="card"><h3>Power source</h3><p id="powerSource">Unavailable</p></article>
+        <article class="card"><h3>Reservoir level<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reservoir level" data-info-title="Reservoir level" data-info-text="How much water is in the main reservoir tank, measured by an ultrasonic sensor. The system checks this before starting a run, and irrigation is blocked if the level is too low to protect the pump.">i</button></h3><p id="reservoirLevel">Unavailable</p></article>
+        <article class="card"><h3>Mixing tank level<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mixing tank level" data-info-title="Mixing tank level" data-info-text="How much water and nutrient mix is currently in the mixing tank, tracked from the system's own flow meters rather than a level sensor. The tank needs enough room, and enough liquid, before certain steps can run.">i</button></h3><p id="mixingLevel">Unavailable</p></article>
+        <article class="card"><h3>System flow<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About System flow" data-info-title="System flow" data-info-text="How fast water is currently moving through the system's flow meters, in liters per minute. It reads zero whenever no pump is actively running.">i</button></h3><p id="flowRate">Unavailable</p></article>
+        <article class="card"><h3>Air temperature<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Air temperature" data-info-title="Air temperature" data-info-text="The air temperature around the plants, measured at the rig. This is for monitoring only -- it does not currently trigger any automatic action.">i</button></h3><p id="temperature">Unavailable</p></article>
+        <article class="card"><h3>Ambient humidity<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Ambient humidity" data-info-title="Ambient humidity" data-info-text="The humidity of the air around the plants. Like temperature, this is shown for monitoring only.">i</button></h3><p id="humidity">Unavailable</p></article>
+        <article class="card"><h3>Light level<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Light level" data-info-title="Light level" data-info-text="How much light is currently reaching the plants, measured in lux. This is for monitoring only.">i</button></h3><p id="lightLevel">Unavailable</p></article>
+        <article class="card"><h3>Mix tank pH<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mix tank pH" data-info-title="Mix tank pH" data-info-text="The acidity/alkalinity of the water in the mixing tank after mixing. The system checks this against a safe range and reports a fault if it is outside that range, but it does not automatically add pH adjuster to correct it.">i</button></h3><p id="waterPH">Unavailable</p></article>
+        <article class="card"><h3>Mix tank EC<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mix tank EC" data-info-title="Mix tank EC" data-info-text="How concentrated (nutrient-rich) the mixed water is, measured in mS/cm. Like pH, it is checked against a safe range but is not automatically corrected.">i</button></h3><p id="waterEC">Unavailable</p></article>
+        <article class="card"><h3>Battery voltage<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery voltage" data-info-title="Battery voltage" data-info-text="The voltage of the system's battery bank, read from the rig's own sensor -- one of the ways the rig tracks how much solar-stored power is available.">i</button></h3><p id="batteryVoltage">Unavailable</p></article>
+        <article class="card"><h3>Battery charge<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery charge" data-info-title="Battery charge" data-info-text="An estimate of how full the battery is, shown as a percentage.">i</button></h3><p id="batteryPercent">Unavailable</p></article>
+        <article class="card"><h3>Battery current<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery current" data-info-title="Battery current" data-info-text="How much current is currently flowing to or from the battery, in amps.">i</button></h3><p id="batteryCurrent">Unavailable</p></article>
+        <article class="card"><h3>Battery power<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery power" data-info-title="Battery power" data-info-text="How much power the system is drawing right now, in watts -- voltage multiplied by current.">i</button></h3><p id="batteryPower">Unavailable</p></article>
+        <article class="card"><h3>Power source<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Power source" data-info-title="Power source" data-info-text="Whether the rig is currently running on solar/battery power or another source, as reported by ESP1.">i</button></h3><p id="powerSource">Unavailable</p></article>
       </div>
 
       <article class="panel run-panel">
-        <div class="panel-heading"><div><h3>Run progress</h3><p id="runSummary">No active irrigation or fertigation run reported by ESP1.</p></div><span id="runStateBadge" class="device-status off">IDLE</span></div>
+        <div class="panel-heading"><div><h3>Run progress<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Run progress" data-info-title="Run progress" data-info-text="The live status of whatever irrigation or fertigation run is currently in progress: which stage it's on, how far along it is, and how much water and nutrient have been delivered so far. Shows 'no active run' when the system is idle.">i</button></h3><p id="runSummary">No active irrigation or fertigation run reported by ESP1.</p></div><span id="runStateBadge" class="device-status off">IDLE</span></div>
         <div class="progress-layout">
           <div><span class="status-label">Current stage</span><strong id="runStage">Unavailable</strong></div>
           <div><span class="status-label">Stage progress</span><strong id="runStageProgress">Unavailable</strong></div>
@@ -120,22 +156,22 @@
           <div><span class="status-label">Nutrient delivery</span><strong id="runDoseProgress">Unavailable</strong></div>
         </div>
         <div class="pump-lamps">
-          <div><span class="status-label">Transfer pump</span><span id="transferPumpStatus" class="device-status off">OFF</span></div>
-          <div><span class="status-label">Booster pump</span><span id="boosterPumpStatus" class="device-status off">OFF</span></div>
-          <div><span class="status-label">Tank mixer</span><span id="mixerPumpStatus" class="device-status off">OFF</span></div>
+          <div><span class="status-label">Transfer pump<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the Transfer pump lamp" data-info-title="Transfer pump" data-info-text="Shows whether the transfer pump (reservoir to mixing tank) is ON or OFF right now, as reported live by the rig.">i</button></span><span id="transferPumpStatus" class="device-status off">OFF</span></div>
+          <div><span class="status-label">Booster pump<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the Booster pump lamp" data-info-title="Booster pump" data-info-text="Shows whether the booster pump (mixing tank to the plant columns) is ON or OFF right now.">i</button></span><span id="boosterPumpStatus" class="device-status off">OFF</span></div>
+          <div><span class="status-label">Tank mixer<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the Tank mixer lamp" data-info-title="Tank mixer" data-info-text="Shows whether the mixing tank's stirrer is ON or OFF right now.">i</button></span><span id="mixerPumpStatus" class="device-status off">OFF</span></div>
         </div>
       </article>
 
       <article class="panel command-panel">
-        <div class="panel-heading"><div><h3>Command status</h3><p>Only ESP1 statuses such as accepted, completed, failed, or rejected confirm command handling.</p></div></div>
+        <div class="panel-heading"><div><h3>Command status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Command status" data-info-title="Command status" data-info-text="What happened to the last command you sent from this dashboard -- for example accepted, completed, failed, or rejected. Only ESP1's own reply counts as confirmation; a 'queued' message just means the request was sent.">i</button></h3><p>Only ESP1 statuses such as accepted, completed, failed, or rejected confirm command handling.</p></div></div>
         <p id="commandStatus" class="command-status" aria-live="polite">No dashboard command has been sent in this session.</p>
         <div id="commandHistory" class="command-history"><p class="muted">No command history received yet.</p></div>
       </article>
     </section>
 
     <section class="view" id="zones">
-      <h2>Three physical zone profiles</h2>
-      <p class="hint">A, B, and C remain the physical ESP1 zone identifiers. Crop profiles are dashboard planning notes only: the current ESP1 firmware does not read them to start or change an irrigation run.</p>
+      <h2>Three physical zone profiles<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About physical zones vs crop profiles" data-info-title="Physical zones vs. crop profiles" data-info-text="A, B, and C are the physical zones wired to ESP1 -- they always exist and always mean the same columns. The crop profile below is separate, website-only planning information layered on top of a zone; changing it never changes ESP1 by itself, and ESP1 has no concept of 'crop' at all.">i</button></h2>
+      <p class="hint">A, B, and C are the physical zone names used by ESP1 — they identify the actual irrigation columns wired to the controller. The crop profile below is planning information stored on this website only: it helps you keep track of what crop and nutrient targets belong to each zone, but selecting a crop here does not by itself change anything on ESP1 or start a run.</p>
       <div id="dynamic-zones-container"></div>
     </section>
 
@@ -146,27 +182,31 @@
       <!-- Always reachable, unlike the copies in the fault banner: the banner only appears once
            something is already wrong, and disabling actuations is most useful *before* that. Both
            sets of buttons call the same handlers. -->
-      <h3>System control</h3>
+      <h3>System control<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About System control" data-info-title="System control" data-info-text="These controls work at any time, not just during a fault. Disabling actuations is the fastest way to make sure nothing can run -- for example before doing maintenance at the rig.">i</button></h3>
       <p class="hint">Available at any time, not just during a fault. Disabling actuations keeps every sensor, log and upload running but blocks scheduled runs, pump exercises and forced runs — and it survives a reboot, so a power blip cannot quietly re-arm the pumps. Re-enable from here or from the LCD (Settings &gt; Enable Actuations, which appears only while disabled).</p>
       <div class="control-grid">
-        <button id="disableActBtn2" class="warn" type="button">Disable actuations</button>
-        <button id="enableActBtn2" type="button">Re-enable actuations</button>
-        <button id="rebootNanoBtn2" type="button">Reboot Nano</button>
-        <button id="rebootEsp2Btn2" type="button">Reboot ESP2</button>
-        <button id="rebootEsp1Btn2" type="button">Reboot ESP1</button>
+        <div class="control-cluster">
+          <span class="btn-with-info"><button id="disableActBtn2" class="warn" type="button">Disable actuations</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Disable actuations" data-info-title="Disable actuations" data-info-text="Immediately stops any run in progress and blocks every pump, valve, and scheduled run from operating again until you re-enable it. This affects the real hardware immediately, and the setting survives a reboot. Sensors, logging, and uploads keep working.">i</button></span>
+          <span class="btn-with-info"><button id="enableActBtn2" type="button">Re-enable actuations</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Re-enable actuations" data-info-title="Re-enable actuations" data-info-text="Turns actuations back on after they were disabled, allowing scheduled runs, pump exercises, and forced runs to operate again.">i</button></span>
+        </div>
+        <div class="control-cluster">
+          <span class="btn-with-info"><button id="rebootNanoBtn2" type="button">Reboot Nano</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot Nano" data-info-title="Reboot Nano" data-info-text="Restarts the Arduino Nano, the small controller that reads the soil, NPK, and environment sensors. Sensor readings pause briefly while it restarts.">i</button></span>
+          <span class="btn-with-info"><button id="rebootEsp2Btn2" type="button">Reboot ESP2</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot ESP2" data-info-title="Reboot ESP2" data-info-text="Restarts ESP2, the controller that actually drives the pumps and valves. Avoid this while a run is in progress, since it interrupts whatever ESP2 is doing.">i</button></span>
+          <span class="btn-with-info"><button id="rebootEsp1Btn2" type="button">Reboot ESP1</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot ESP1" data-info-title="Reboot ESP1" data-info-text="Restarts ESP1, the main controller running this whole system, including this dashboard's connection. The dashboard loses contact for about 15 seconds while it restarts.">i</button></span>
+        </div>
       </div>
 
       <article class="emergency-panel">
-        <div><h3>Emergency system stop</h3><p>Immediately queues an ESP1 emergency-stop request. It is never blocked by the normal 10-second cooldown or by stale live telemetry. “Queued” is not physical-stop confirmation; wait for ESP1’s command status. Use <strong>Return to normal</strong> in the banner above to come back out.</p></div>
+        <div><h3>Emergency system stop<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Emergency system stop" data-info-title="Emergency system stop" data-info-text="Stops active system operations as fast as the system allows: it immediately queues an emergency-stop request to the rig, and is never blocked by the normal 10-second cooldown. Use it when there is a problem or you need everything stopped right away. 'Queued' is not confirmation the stop happened -- wait for ESP1's own status, then use Return to normal in the banner to come back out.">i</button></h3><p>Immediately queues an ESP1 emergency-stop request. It is never blocked by the normal 10-second cooldown or by stale live telemetry. “Queued” is not physical-stop confirmation; wait for ESP1’s command status. Use <strong>Return to normal</strong> in the banner above to come back out.</p></div>
         <button id="emergencyStop" class="danger" type="button">Emergency stop now</button>
       </article>
 
       <section class="forced-section">
-        <h3>Forced irrigation / fertigation</h3>
+        <h3>Forced irrigation / fertigation<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Forced irrigation / fertigation" data-info-title="Forced irrigation / fertigation" data-info-text="Starts a real run right now, outside of the normal schedule. It still cannot override hardware safety -- ESP1 refuses it if the system is not idle or the reservoir is too low.">i</button></h3>
         <p class="hint">Sends a real <code>FORCE_RUN</code> work order. This overrides the schedule, the soil-moisture threshold and serviced-today — it does <strong>not</strong> override hardware safety, and ESP1 still refuses it unless the system is idle and the reservoir is above its low mark. Leave every nutrient at 0 for plain irrigation; any non-zero dose makes it a fertigation.</p>
         <form id="forceRunForm" class="force-form">
           <div class="force-row">
-            <label>Destination columns
+            <label><span class="label-row">Destination columns<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Destination columns" data-info-title="Destination columns" data-info-text="Choose which physical zone -- or zones A and B together -- this forced run should water.">i</button></span>
               <select id="forceColumns" required>
                 <option value="A">Column A</option>
                 <option value="B">Column B</option>
@@ -174,15 +214,15 @@
                 <option value="AB">A + B together</option>
               </select>
             </label>
-            <label>Water to mix tank (L)
+            <label><span class="label-row">Water to mix tank (L)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Water to mix tank" data-info-title="Water to mix tank (L)" data-info-text="How many liters of water to prepare for this run, up to 20 liters per request.">i</button></span>
               <input id="forceLiters" type="number" min="0.1" max="20" step="0.1" required>
             </label>
-            <label title="ESP1 counts down before starting, on both the LCD and this page. Either can cancel during the countdown.">Start delay (seconds)
+            <label title="ESP1 counts down before starting, on both the LCD and this page. Either can cancel during the countdown."><span class="label-row">Start delay (seconds)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Start delay" data-info-title="Start delay (seconds)" data-info-text="How many seconds to count down before the run actually starts. You, or the person at the LCD, can still cancel during this countdown.">i</button></span>
               <input id="forceDelay" type="number" min="0" max="300" step="5" value="30">
             </label>
           </div>
           <fieldset class="dose-fieldset">
-            <legend>Nutrients (mL) — leave at 0 for irrigation</legend>
+            <legend>Nutrients (mL) — leave at 0 for irrigation<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About nutrient doses" data-info-title="Nutrients (mL)" data-info-text="How many milliliters of each nutrient concentrate to add, up to 500 mL each. Leave all three at 0 for plain irrigation with no fertigation.">i</button></legend>
             <div class="force-row">
               <label>Nutrient A<input id="forceDoseA" type="number" min="0" max="500" step="1" value="0" required></label>
               <label>Nutrient B<input id="forceDoseB" type="number" min="0" max="500" step="1" value="0" required></label>
@@ -190,7 +230,7 @@
             </div>
           </fieldset>
           <p class="field-note">Limits mirror the firmware: at most 20 L total per request and 500 mL per nutrient. Mixing time and run duration are not settable — ESP1 mixes for its compiled duration and runs to the metered volume, not to a clock. ESP1 re-checks safety when the countdown expires, so a fault or a falling reservoir during the delay cancels the run instead of starting it late.</p>
-          <button type="submit">Queue forced run</button>
+          <span class="btn-with-info"><button type="submit">Queue forced run</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Queue forced run" data-info-title="Queue forced run" data-info-text="Sends this forced run request to ESP1. ESP1 re-checks that the system is still safe right before the countdown ends, so a fault or low reservoir during the wait cancels the run instead of starting it late.">i</button></span>
           <p id="forceRunResult" class="control-result" aria-live="polite"></p>
         </form>
 
@@ -206,8 +246,8 @@
       </section>
 
       <article class="panel limitation-panel">
-        <h3>Distribution valves / solenoids</h3>
-        <p>There are deliberately no Valve A/B/C buttons. ESP1 rejects a standalone remote solenoid request as “not a remotely safe control”, and there is no relay feedback to confirm what a valve actually did, so such a button would report success it cannot verify. Valves are opened only as part of a work order, where ESP2 sequences and closes them.</p>
+        <h3>Distribution valves / solenoids<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Distribution valves" data-info-title="Distribution valves / solenoids" data-info-text="There are no direct valve buttons on purpose. A valve only opens as part of a full run sequence that ESP2 controls and closes safely -- a standalone valve button could leave one open with nothing to confirm it closed again.">i</button></h3>
+        <p>Distribution valves and solenoids control where water is sent — they open the path to a specific irrigation column. This system does not operate them independently from this webpage: a valve only opens and closes as part of a full irrigation or fertigation run, sequenced by ESP1 and ESP2 together. There is deliberately no standalone Valve A/B/C button, because there is no way for this page to confirm a valve actually closed again afterward.</p>
       </article>
     </section>
 
@@ -216,7 +256,7 @@
          a stop must never sit behind a warning that has to be dismissed first. -->
     <section class="view" id="manualtest">
       <div id="mtGate" class="danger-gate">
-        <p class="eyebrow">Direct hardware control</p>
+        <p class="eyebrow">Direct hardware control<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Direct hardware control" data-info-title="Direct hardware control" data-info-text="Everything on this tab operates a real relay the instant you press it, with none of the automatic safety checks a scheduled run goes through. Opening this tab also pauses all automatic operation until you leave it.">i</button></p>
         <h2>This tab drives the hardware directly</h2>
         <p class="fault-detail">
           Every control here energises a relay immediately — pumps, valves and the mixer — with none of
@@ -242,13 +282,13 @@
 
         <article class="panel">
           <div class="panel-heading">
-            <div><h3>Preventive pump exercise</h3><p>ESP1 runs each pump briefly every 2 days so it cannot seize between irrigations. Turning it off stops that entirely — useful on a battery rig, or when the mixer would otherwise spin in an empty tank.</p></div>
+            <div><h3>Preventive pump exercise<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Preventive pump exercise" data-info-title="Preventive pump exercise" data-info-text="The rig briefly runs each pump every 2 days on its own, just to keep them from seizing between irrigations. Turn this off if you don't want that -- for example if the mixing tank is empty.">i</button></h3><p>ESP1 runs each pump briefly every 2 days so it cannot seize between irrigations. Turning it off stops that entirely — useful on a battery rig, or when the mixer would otherwise spin in an empty tank.</p></div>
             <span id="exState" class="device-status off">--</span>
           </div>
           <div class="control-grid">
             <label>State<select id="exEnabled"><option value="1">On</option><option value="0">Off</option></select></label>
             <label>Run each pump for (seconds)<input id="exSeconds" type="number" min="1" max="10" step="1" value="5"></label>
-            <button id="exSaveBtn" type="button">Save exercise setting</button>
+            <span class="btn-with-info"><button id="exSaveBtn" type="button">Save exercise setting</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Save exercise setting" data-info-title="Save exercise setting" data-info-text="Sends this on/off state and duration to ESP1 as the new preventive-exercise setting.">i</button></span>
           </div>
           <p id="exResult" class="control-result" aria-live="polite"></p>
         </article>
@@ -256,12 +296,12 @@
         <h3>Five-second preventive exercises</h3>
         <p class="hint">The firmware’s own maintenance run: pump only, no valve, no destination.</p>
         <div class="control-grid">
-          <button id="transferPumpBtn" type="button">Exercise transfer pump</button>
-          <button id="boosterPumpBtn" type="button">Exercise booster pump</button>
-          <button id="mixerBtn" type="button">Exercise tank mixer</button>
+          <span class="btn-with-info"><button id="transferPumpBtn" type="button">Exercise transfer pump</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise transfer pump" data-info-title="Transfer pump" data-info-text="Runs the transfer pump (reservoir to mixing tank) by itself for a few seconds, then stops automatically -- a quick way to check the pump still works without starting a real run.">i</button></span>
+          <span class="btn-with-info"><button id="boosterPumpBtn" type="button">Exercise booster pump</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise booster pump" data-info-title="Booster pump" data-info-text="Runs the booster pump (mixing tank to the columns) by itself for a few seconds, then stops automatically.">i</button></span>
+          <span class="btn-with-info"><button id="mixerBtn" type="button">Exercise tank mixer</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise tank mixer" data-info-title="Tank mixer" data-info-text="Runs the mixing tank's stirrer by itself for a few seconds, then stops automatically.">i</button></span>
         </div>
 
-        <h3>Timed pulses</h3>
+        <h3>Timed pulses<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Timed pulses" data-info-title="Timed pulses" data-info-text="Runs the chosen pump or valve combination for the number of seconds you set, then stops automatically. The pH pumps dispense a corrosive adjuster directly into the mixing tank when pulsed, so only use them when you actually mean to -- the page asks you to confirm first.">i</button></h3>
         <p class="hint">Drives the same relay combinations the LCD Testing screen offers, but on a timer rather than a held button. Transfer runs as the <em>fill</em> combination (reservoir valve + pump), because running that pump against a shut valve dead-heads it.</p>
         <div class="control-grid">
           <label>Target<select id="pulseTarget">
@@ -279,19 +319,19 @@
             <option value="phDn">pH DOWN pump (corrosive)</option>
           </select></label>
           <label>Duration (seconds)<input id="pulseSeconds" type="number" min="1" max="15" step="1" value="5"></label>
-          <button id="pulseBtn" type="button">Run pulse</button>
+          <span class="btn-with-info"><button id="pulseBtn" type="button">Run pulse</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Run pulse" data-info-title="Run pulse" data-info-text="Sends this exact pump/valve combination and duration to ESP1 to run right now. For the pH pumps you are asked to confirm first, since they dispense a corrosive adjuster.">i</button></span>
         </div>
         <p id="pulseVolumeNote" class="field-note"></p>
         <p id="pulseResult" class="control-result" aria-live="polite">No pulse has been run in this session.</p>
 
         <article class="panel">
           <div class="panel-heading">
-            <div><h3>Flow meters</h3><p>All eight meters. ESP2 is powered down between runs, so these are read by a sweep rather than streamed — run one, then compare against a pulse.</p></div>
+            <div><h3>Flow meters<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Flow meters" data-info-title="Flow meters" data-info-text="Powers up ESP2 briefly to read all eight flow meters at once, since they are not streamed continuously. Run this, then compare the numbers against a pump pulse to check a meter is working.">i</button></h3><p>All eight meters. ESP2 is powered down between runs, so these are read by a sweep rather than streamed — run one, then compare against a pulse.</p></div>
             <span id="mtSweepState" class="device-status off">ESP2 IDLE</span>
           </div>
           <div class="control-grid">
             <label>Sweep length (seconds)<input id="mtSweepSeconds" type="number" min="10" max="120" step="10" value="60"></label>
-            <button id="mtSweepBtn" type="button">Run flow sweep</button>
+            <span class="btn-with-info"><button id="mtSweepBtn" type="button">Run flow sweep</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Run flow sweep" data-info-title="Run flow sweep" data-info-text="Tells ESP2 to power up for the length you set and report all eight flow meters, then power back down.">i</button></span>
           </div>
           <div id="mtFlowGrid" class="diagnostics-grid"><p class="muted">No sweep has run in this session.</p></div>
         </article>
@@ -299,27 +339,39 @@
     </section>
 
     <section class="view" id="diagnostics">
-      <div class="section-heading"><div><h2>ESP1 diagnostics</h2><p class="hint">Actual diagnostics published by ESP1. Credentials, tokens, keys, and private service values are never displayed — only whether a service is configured.</p></div></div>
+      <div class="section-heading"><div><h2>ESP1 diagnostics<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ESP1 diagnostics" data-info-title="ESP1 diagnostics" data-info-text="The actual diagnostic values ESP1 currently publishes -- for example whether GSM, WiFi, and other services are configured. Credentials and keys themselves are never shown, only whether they're set.">i</button></h2><p class="hint">Actual diagnostics published by ESP1. Credentials, tokens, keys, and private service values are never displayed — only whether a service is configured.</p></div></div>
       <div id="diagnosticsGrid" class="diagnostics-grid"><p class="muted">Waiting for an ESP1 diagnostics snapshot.</p></div>
 
       <article class="panel raw-panel">
         <div class="panel-heading">
-          <div><h3>Raw sensor readings</h3><p>Pre-conversion values, the same ones the LCD Sensor Diag pages show. A converted reading can look plausible while the raw one is railed, which is what makes these worth having.</p></div>
+          <div><h3>Raw sensor readings<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Raw sensor readings" data-info-title="Raw sensor readings" data-info-text="Sensor values before any conversion is applied -- the same raw numbers the LCD's Sensor Diag screen shows. A converted reading can look normal even when the raw value underneath is stuck at its limit, which is what makes this view useful for spotting a failing sensor.">i</button></h3><p>Pre-conversion values, the same ones the LCD Sensor Diag pages show. A converted reading can look plausible while the raw one is railed, which is what makes these worth having.</p></div>
           <span id="rawEsp2Sweep" class="device-status off">ESP2 IDLE</span>
         </div>
         <div id="rawNanoGrid" class="diagnostics-grid"><p class="muted">Waiting for Nano data.</p></div>
-        <h4>ESP2 sensors</h4>
+        <h4>ESP2 sensors<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ESP2 sensors" data-info-title="ESP2 sensors" data-info-text="Powers up ESP2 briefly to read its pH, EC, current, and other sensors, then powers it back down. ESP2 is normally powered off between runs, so this is the only way to see a live reading outside of an actual run.">i</button></h4>
         <p class="hint">ESP2 is powered down between runs, so its sensors are not streamed continuously. Running a sweep powers it up, reads pH / EC / current / PZEM / flow counters, then powers it back off. Idle-only.</p>
         <div class="control-grid">
           <label>Sweep length (seconds)<input id="sweepSeconds" type="number" min="10" max="120" step="10" value="60"></label>
-          <button id="sweepBtn" type="button">Run ESP2 sweep</button>
+          <span class="btn-with-info"><button id="sweepBtn" type="button">Run ESP2 sweep</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Run ESP2 sweep" data-info-title="Run ESP2 sweep" data-info-text="Tells ESP2 to power up for the length you set, read its sensors, then power back down.">i</button></span>
         </div>
         <div id="rawEsp2Grid" class="diagnostics-grid"><p class="muted">No sweep has run in this session.</p></div>
       </article>
       <article class="panel event-panel">
-        <div class="panel-heading"><div><h3>Recent ESP1 events</h3><p>The last 12 events worth seeing remotely — faults, irrigation and fertigation starts with their receipts, LCD and dashboard tests, received SMS commands, and anything ESP1 refused. Routine housekeeping is filtered out on the device so it cannot push these off the list. Newest first; the complete log is on ESP1’s SD card, and this list resets when ESP1 restarts.</p></div></div>
+        <div class="panel-heading"><div><h3>Recent ESP1 events<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Recent ESP1 events" data-info-title="Recent ESP1 events" data-info-text="The last 12 things ESP1 thought were worth showing here remotely -- faults, run receipts, LCD/dashboard tests, received text commands, and anything ESP1 refused. The complete history is stored on ESP1's SD card; this list resets whenever ESP1 restarts.">i</button></h3><p>The last 12 events worth seeing remotely — faults, irrigation and fertigation starts with their receipts, LCD and dashboard tests, received SMS commands, and anything ESP1 refused. Routine housekeeping is filtered out on the device so it cannot push these off the list. Newest first; the complete log is on ESP1’s SD card, and this list resets when ESP1 restarts.</p></div></div>
         <div id="diagnosticEvents" class="event-list"><p class="muted">No event data reported yet.</p></div>
       </article>
+    </section>
+
+    <!-- Only ever shown to the operator UID -- see refreshOperatorUI() in script.js. Real enforcement
+         is the operator-only rule on /users/{uid} in firebase-rules.json, not this tab being hidden. -->
+    <section class="view" id="users">
+      <div class="section-heading">
+        <div>
+          <h2>User Management<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About User Management" data-info-title="User Management" data-info-text="Only the designated operator account can see this tab. It lists every registered account so the operator can approve, reject, disable, or re-enable access to hardware controls.">i</button></h2>
+          <p class="hint">Approving an account is enforced by Firebase security rules, not just this page — a pending, rejected, or disabled account cannot send a hardware command even if it bypasses this dashboard entirely.</p>
+        </div>
+      </div>
+      <div id="usersContainer" class="user-list"><p class="muted">Loading accounts…</p></div>
     </section>
   </main>
 
@@ -330,6 +382,15 @@
     <ul><li>Christian Jay A. Tibon</li><li>Mark Bon Q. Compuesto</li><li>Johnbert Kyle T. Nacor</li><li>John Michael N. Sugian</li><li>John Ray C. Lagamayo</li><li>John Christopher S. Cabrillos</li></ul>
     <p><a href="https://github.com/JKyle-N/Smart-Irrigation" target="_blank" rel="noreferrer">View the Smart Irrigation project on GitHub</a></p>
   </dialog>
+
+  <!-- Shared info-icon popover. One instance, repositioned and refilled per click by
+       openInfoPopoverFor() in script.js -- see initInfoIcons() there. Sits outside every .view so
+       it can appear above whichever tab is open. -->
+  <div id="infoPopover" class="info-popover" role="dialog" aria-modal="false" hidden>
+    <button type="button" class="info-popover-close" aria-label="Close explanation">×</button>
+    <p class="info-popover-title"></p>
+    <p class="info-popover-text"></p>
+  </div>
 
   <script src="firebase-config.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-app-compat.js"></script>

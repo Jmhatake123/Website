@@ -132,6 +132,22 @@ function currentUserIsSignedIn() {
   return Boolean(firebaseReady && auth?.currentUser);
 }
 
+/* User approval -----------------------------------------------------------------------------
+ * A signed-in account is not automatically allowed to touch hardware -- see /users/{uid} in
+ * firebase-rules.json. This constant and these two helpers are for UI purposes only (showing/
+ * hiding the pending banner and the User Management tab, greying out buttons); the REAL
+ * enforcement is the rules themselves, which check the identical literal UID server-side. */
+const OPERATOR_UID = "KaiqrwlOHeVdebbokPxZfcFLZiu2";
+let myAccountStatus = undefined; // undefined = not loaded yet, null = no record, else the status string
+let myAccountRef = null;
+
+function isOperator() {
+  return Boolean(auth?.currentUser && auth.currentUser.uid === OPERATOR_UID);
+}
+function isApprovedUser() {
+  return isOperator() || myAccountStatus === "approved";
+}
+
 function setDeviceStatus(id, text, tone = "off") {
   const element = document.getElementById(id);
   if (!element) return;
@@ -155,7 +171,12 @@ function setCommandStatus(text, tone = "") {
 
 function syncControlAvailability() {
   const signedIn = currentUserIsSignedIn();
-  const normalAllowed = signedIn && deviceIsFresh();
+  const approved = isApprovedUser();
+  // A signed-in-but-not-yet-approved account must see every actuating control as unavailable, same
+  // as a signed-out one -- approval is a separate axis from freshness/cooldown, not a replacement
+  // for it, so it is ANDed into every gate below rather than only checked at queueCommand() time.
+  const notApprovedTitle = "Your account is awaiting operator approval before it can use this control.";
+  const normalAllowed = signedIn && approved && deviceIsFresh();
   // Every actuating control needs a fresh snapshot: ESP1 will refuse anything that arrives while it
   // is not idle, and without live data the page cannot tell "idle" from "device offline".
   // The pulse and the ESP2 sweep both reach the rig, so they belong with the other actuating
@@ -164,29 +185,30 @@ function syncControlAvailability() {
     const button = document.getElementById(id);
     if (!button) return;
     button.disabled = !normalAllowed;
-    button.title = normalAllowed ? "" : "Sign in and wait for a fresh ESP1 snapshot before starting a normal test.";
+    button.title = normalAllowed ? "" : (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before starting a normal test.";
   });
 
   const forceButton = document.querySelector("#forceRunForm button[type=submit]");
   if (forceButton) {
     forceButton.disabled = !normalAllowed;
-    forceButton.title = normalAllowed ? "" : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.";
+    forceButton.title = normalAllowed ? "" : (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.";
   }
 
-  // Emergency stop is intentionally independent of live-data freshness and the normal cooldown.
+  // Emergency stop is intentionally independent of live-data freshness and the normal cooldown --
+  // but NOT independent of approval, which is a distinct safety gate, not a staleness workaround.
   const emergency = document.getElementById("emergencyStop");
   if (emergency) {
-    emergency.disabled = !signedIn;
-    emergency.title = signedIn ? "" : "Sign in before sending an emergency-stop request.";
+    emergency.disabled = !signedIn || !approved;
+    emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !approved ? notApprovedTitle : "";
   }
 
-  // Recovery + lockout + reboot: signed-in only, deliberately NOT freshness-gated. A stale snapshot
-  // is often exactly why you are reaching for these.
+  // Recovery + lockout + reboot: signed-in AND approved, deliberately NOT freshness-gated. A stale
+  // snapshot is often exactly why you are reaching for these.
   ["disableActBtn2", "enableActBtn2", "rebootNanoBtn2", "rebootEsp2Btn2", "rebootEsp1Btn2"].forEach(id => {
     const b = document.getElementById(id);
     if (!b) return;
-    b.disabled = !signedIn;
-    b.title = signedIn ? "" : "Sign in to use the system controls.";
+    b.disabled = !signedIn || !approved;
+    b.title = !signedIn ? "Sign in to use the system controls." : !approved ? notApprovedTitle : "";
   });
   // Only one of disable/re-enable is meaningful at a time; show the one that applies.
   const locked = Boolean(liveData.diagnostics?.actuationsDisabled);
@@ -212,6 +234,8 @@ function initializeFirebase() {
       const logoutButton = document.getElementById("logoutBtn");
       if (!user) {
         detachDatabaseListeners();
+        detachUserStatusListener();
+        detachUserManagementListener();
         // Any live Manual/Test keep-alive interval from this session must not survive sign-out --
         // otherwise it keeps firing every 20s regardless of auth state, and on a shared terminal a
         // later, different user signing in (without ever opening Manual/Test themselves) could have
@@ -228,15 +252,20 @@ function initializeFirebase() {
         commandData = [];
         updateDashboard();
         renderCommandHistory();
+        renderAccountStatus(null);
         if (loginScreen) loginScreen.hidden = false;
+        showAuthForm("login");
         if (logoutButton) logoutButton.hidden = true;
         setConnection(false, "Sign in required");
         syncControlAvailability();
+        refreshOperatorUI();
         return;
       }
       if (loginScreen) loginScreen.hidden = true;
       if (logoutButton) logoutButton.hidden = false;
       attachDatabaseListeners();
+      attachUserStatusListener(user.uid);
+      refreshOperatorUI();
       syncControlAvailability();
     });
   } catch (error) {
@@ -299,6 +328,148 @@ function detachDatabaseListeners() {
   databaseListenersAttached = false;
 }
 
+function showAuthForm(which) {
+  const login = document.getElementById("loginForm");
+  const signup = document.getElementById("signupForm");
+  if (login) login.hidden = which !== "login";
+  if (signup) signup.hidden = which !== "signup";
+}
+
+/* Own-account approval status. Independent of attachDatabaseListeners() above -- this reads
+ * /users/{myUid}, not ESP1's telemetry, and drives the account-status banner plus
+ * isApprovedUser()'s gating everywhere else on the page. */
+function attachUserStatusListener(uid) {
+  detachUserStatusListener();
+  myAccountStatus = undefined;
+  renderAccountStatus(undefined);
+  myAccountRef = db.ref(`users/${uid}`);
+  myAccountRef.on("value", snapshot => {
+    const record = snapshot.val();
+    myAccountStatus = record ? record.status : null;
+    renderAccountStatus(record);
+    syncControlAvailability();
+  }, error => {
+    console.warn("Could not read account status", error);
+    myAccountStatus = null;
+    renderAccountStatus(null);
+    syncControlAvailability();
+  });
+}
+function detachUserStatusListener() {
+  if (myAccountRef) myAccountRef.off();
+  myAccountRef = null;
+  myAccountStatus = undefined;
+}
+
+const ACCOUNT_STATUS_TEXT = {
+  pending: {
+    title: "Waiting for operator approval",
+    detail: "Your account has been created, but the operator has not approved your access yet. You can see the read-only dashboard while you wait, but every control that would affect real hardware stays blocked until you're approved."
+  },
+  rejected: {
+    title: "Access not approved",
+    detail: "The operator reviewed this account and did not approve it for hardware access. You can still see the read-only dashboard."
+  },
+  disabled: {
+    title: "Access disabled",
+    detail: "The operator has disabled this account's access. You can still see the read-only dashboard."
+  }
+};
+
+function renderAccountStatus(record) {
+  const banner = document.getElementById("accountStatusBanner");
+  const title = document.getElementById("accountStatusTitle");
+  const detail = document.getElementById("accountStatusDetail");
+  if (!banner) return;
+  // Signed-out is not "loading" or any other status -- must be checked before the undefined/pending
+  // branches below, or the sign-out path's renderAccountStatus(null) call (after
+  // detachUserStatusListener() has already reset myAccountStatus to undefined) would flash this
+  // banner with "Loading your account status..." on the login screen.
+  if (!currentUserIsSignedIn() || isOperator() || myAccountStatus === "approved") { banner.hidden = true; return; }
+  banner.hidden = false;
+  if (myAccountStatus === undefined) {
+    if (title) title.textContent = "Loading your account status…";
+    if (detail) detail.textContent = "--";
+    return;
+  }
+  const text = ACCOUNT_STATUS_TEXT[myAccountStatus] || {
+    title: "Setting up your account…",
+    detail: "If this doesn't change in a moment, refresh the page. A brand-new account's record can take a second to appear."
+  };
+  if (title) title.textContent = text.title;
+  if (detail) detail.textContent = text.detail;
+}
+
+/* User Management (operator-only). The tab/section being hidden from non-operators is a UI
+ * convenience -- the actual boundary is /users' ".read" rule, which only the operator UID passes,
+ * so this listener is only ever attached in the first place when isOperator() is true. */
+let usersRef = null;
+function refreshOperatorUI() {
+  const tab = document.getElementById("usersTab");
+  const op = isOperator();
+  if (tab) tab.hidden = !op;
+  if (op) attachUserManagementListener(); else detachUserManagementListener();
+  if (!op && document.querySelector('.tab[data-view="users"]')?.classList.contains("active")) {
+    document.querySelector('.tab[data-view="dashboard"]')?.click();
+  }
+}
+function attachUserManagementListener() {
+  if (usersRef) return;
+  usersRef = db.ref("users");
+  usersRef.on("value", snapshot => {
+    renderUserManagement(snapshot.val() || {});
+  }, error => {
+    const container = document.getElementById("usersContainer");
+    if (container) container.innerHTML = `<p class="muted">Could not load accounts: ${escapeHtml(error.message)}</p>`;
+  });
+}
+function detachUserManagementListener() {
+  if (usersRef) usersRef.off();
+  usersRef = null;
+}
+
+const USER_STATUS_ORDER = { pending: 0, approved: 1, disabled: 2, rejected: 3 };
+function renderUserManagement(users) {
+  const container = document.getElementById("usersContainer");
+  if (!container) return;
+  const rows = Object.entries(users);
+  if (!rows.length) { container.innerHTML = `<p class="muted">No registered accounts yet.</p>`; return; }
+  rows.sort((a, b) => (USER_STATUS_ORDER[a[1]?.status] ?? 9) - (USER_STATUS_ORDER[b[1]?.status] ?? 9));
+  container.innerHTML = rows.map(([uid, u]) => {
+    const status = u?.status || "unknown";
+    const created = u?.createdAt ? new Date(u.createdAt).toLocaleString() : "Unknown";
+    const actions = [];
+    if (status === "pending") actions.push(["approve", "Approve"], ["reject", "Reject"]);
+    if (status === "approved") actions.push(["disable", "Disable"]);
+    if (status === "rejected" || status === "disabled") actions.push(["approve", "Re-enable"]);
+    const tone = status === "approved" ? "active" : status === "pending" ? "off" : "danger";
+    const buttons = actions.map(([action, label]) =>
+      `<button type="button" class="user-action" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
+    ).join("");
+    return `<article class="user-row">
+      <div class="user-row-info">
+        <strong>${escapeHtml(u?.name || "(no name)")}</strong>
+        <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
+        <span class="muted">Registered: ${escapeHtml(created)}</span>
+      </div>
+      <span class="device-status ${tone}">${escapeHtml(status.toUpperCase())}</span>
+      <div class="user-row-actions">${buttons}</div>
+    </article>`;
+  }).join("");
+}
+document.getElementById("usersContainer")?.addEventListener("click", event => {
+  const button = event.target.closest("[data-user-action]");
+  if (!button) return;
+  const statusMap = { approve: "approved", reject: "rejected", disable: "disabled" };
+  const newStatus = statusMap[button.dataset.userAction];
+  const uid = button.dataset.uid;
+  if (!newStatus || !uid) return;
+  button.disabled = true;
+  db.ref(`users/${uid}`).update({ status: newStatus })
+    .catch(error => alert(`Could not update this account: ${error.message}`))
+    .finally(() => { button.disabled = false; });
+});
+
 function writeZoneProfile(zone) {
   if (!currentUserIsSignedIn()) return;
   db.ref(`irrigation/config/zones/${zone.id}`).set({
@@ -313,6 +484,14 @@ function queueCommand(type, payload = {}, options = {}) {
   const emergency = Boolean(options.emergency);
   if (!currentUserIsSignedIn()) {
     setCommandStatus("Sign in before sending a command.", "error");
+    return Promise.resolve(false);
+  }
+  // The single choke point every command type funnels through -- covers every button on every tab,
+  // including the fault banner's copies, without needing an approval check hunted down at each one
+  // individually. Firebase rules enforce the identical check server-side; this is the client-side
+  // half, for a clean message instead of a silent rules rejection.
+  if (!isApprovedUser()) {
+    setCommandStatus("Your account is awaiting operator approval before it can send commands to the rig.", "error");
     return Promise.resolve(false);
   }
   if (!emergency && !deviceIsFresh()) {
@@ -368,29 +547,30 @@ function renderZonesUI() {
   activeZones.forEach(zone => {
     const block = document.createElement("article");
     block.className = "zone-block";
+    const info = (title, text) => `<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${title}" data-info-title="${title}" data-info-text="${text}">i</button>`;
     block.innerHTML = `
       <div class="zone-header">
         <div><p class="eyebrow">Physical zone ${zone.id}</p><h3>${escapeHtml(zone.name)}</h3></div>
         <div class="zone-selectors">
-          <label>Crop<select id="cropSelect${zone.id}"></select></label>
-          <label>Growth stage<select id="growthStage${zone.id}"></select></label>
+          <label><span class="label-row">Crop${info("Crop selection", "Pick the crop growing in this physical zone. This is a planning note for the dashboard only -- the current firmware does not read it automatically. To actually change how the rig runs, fill the targets below from this crop and press Send to ESP1.")}</span><select id="cropSelect${zone.id}"></select></label>
+          <label><span class="label-row">Growth stage${info("Growth stage", "Pick the crop's current growth stage. Like the crop choice, this only updates the reference numbers shown on this page -- it does not by itself change anything on the rig.")}</span><select id="growthStage${zone.id}"></select></label>
         </div>
       </div>
       <div class="card-grid matrix-grid">
-        <article class="card matrix-card"><h3>Nitrogen</h3><p id="nitrogen${zone.id}">Unavailable</p><small id="targetN${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Phosphorus</h3><p id="phosphorus${zone.id}">Unavailable</p><small id="targetP${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Potassium</h3><p id="potassium${zone.id}">Unavailable</p><small id="targetK${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil pH</h3><p id="soilPH${zone.id}">Unavailable</p><small id="targetPH${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil EC</h3><p id="soilEC${zone.id}">Unavailable</p><small id="targetEC${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil moisture</h3><p id="soil${zone.id}">Unavailable</p><small id="targetMoisture${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>NPK probe moisture</h3><p id="npkMoist${zone.id}">Unavailable</p><small>Blended into the figure at left when it agrees</small></article>
-        <article class="card matrix-card"><h3>Soil temperature</h3><p id="soilTemp${zone.id}">Unavailable</p><small>Root zone, from the 7-in-1 probe</small></article>
+        <article class="card matrix-card"><h3>Nitrogen${info("Nitrogen", "The nitrogen level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target. Red text means the reading is below that target.")}</h3><p id="nitrogen${zone.id}">Unavailable</p><small id="targetN${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Phosphorus${info("Phosphorus", "The phosphorus level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="phosphorus${zone.id}">Unavailable</p><small id="targetP${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Potassium${info("Potassium", "The potassium level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="potassium${zone.id}">Unavailable</p><small id="targetK${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil pH${info("Soil pH", "How acidic or alkaline the soil is in this zone, measured by the 7-in-1 probe.")}</h3><p id="soilPH${zone.id}">Unavailable</p><small id="targetPH${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil EC${info("Soil EC", "How concentrated the nutrients are in this zone's soil, measured by the probe.")}</h3><p id="soilEC${zone.id}">Unavailable</p><small id="targetEC${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil moisture${info("Soil moisture", "How damp the soil is in this zone. The schedule compares this against a threshold to decide when a run should start.")}</h3><p id="soil${zone.id}">Unavailable</p><small id="targetMoisture${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>NPK probe moisture${info("NPK probe moisture", "A second, independent moisture reading from the NPK probe itself, blended into the main soil moisture figure when the two readings agree.")}</h3><p id="npkMoist${zone.id}">Unavailable</p><small>Blended into the figure at left when it agrees</small></article>
+        <article class="card matrix-card"><h3>Soil temperature${info("Soil temperature", "The soil temperature at the root zone, from the 7-in-1 probe.")}</h3><p id="soilTemp${zone.id}">Unavailable</p><small>Root zone, from the 7-in-1 probe</small></article>
       </div>
       <div class="zone-config">
-        <h4>Firmware settings for column ${zone.id}</h4>
+        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "These are the real settings ESP1 uses to run this column -- separate from the crop profile above, which is only a planning note. Any field left blank here is not changed; only fields you fill in are updated.")}</h4>
         <p class="field-note">Unlike the crop profile above, these are sent to ESP1 and change how it runs. Blank fields are left unchanged. Use "Fill targets from crop profile" to copy the selected crop and stage into the N/P/K/pH boxes, then review and send.</p>
         <div class="force-row">
-          <label>Operation<select id="cfgMode${zone.id}">
+          <label><span class="label-row">Operation${info("Operation", "Auto lets the schedule run both irrigation and nutrient dosing for this column, whenever its own timing and soil threshold say to. Irrigation only keeps the same schedule but skips dosing entirely, delivering plain water.")}</span><select id="cfgMode${zone.id}">
             <option value="">(unchanged)</option>
             <option value="AUTO">Auto — irrigation + fertigation</option>
             <option value="IRRIGATION_ONLY">Irrigation only</option>
@@ -398,14 +578,15 @@ function renderZonesUI() {
           <label>Column enabled<select id="cfgEnabled${zone.id}">
             <option value="">(unchanged)</option><option value="1">Enabled</option><option value="0">Disabled</option>
           </select></label>
-          <label>Schedule<select id="cfgSched${zone.id}">
+          <label><span class="label-row">Schedule${info("Schedule", "Automatic window lets the rig decide timing on its own. Manual window makes it run only within the start/end time you set below.")}</span><select id="cfgSched${zone.id}">
             <option value="">(unchanged)</option><option value="0">Automatic window</option><option value="1">Manual window</option>
           </select></label>
         </div>
-        <div class="force-row">
+        <div id="cfgWinRow${zone.id}" class="force-row" hidden>
           <label>Window start<input id="cfgWinStart${zone.id}" type="time"></label>
           <label>Window end<input id="cfgWinEnd${zone.id}" type="time"></label>
         </div>
+        <p id="cfgWinNote${zone.id}" class="field-note" hidden>Window start/end only apply when Schedule is set to Manual window, and are only sent while that's selected.</p>
         <div class="force-row">
           <label>Target N (ppm)<input id="cfgN${zone.id}" type="number" min="0" max="2000" step="1"></label>
           <label>Target P (ppm)<input id="cfgP${zone.id}" type="number" min="0" max="2000" step="1"></label>
@@ -413,8 +594,8 @@ function renderZonesUI() {
           <label>Target pH<input id="cfgPH${zone.id}" type="number" min="3" max="9" step="0.1"></label>
         </div>
         <div class="config-actions">
-          <button type="button" id="cfgFromCrop${zone.id}" class="secondary">Fill targets from crop profile</button>
-          <button type="button" id="cfgSave${zone.id}">Send to ESP1</button>
+          <span class="btn-with-info"><button type="button" id="cfgFromCrop${zone.id}" class="secondary">Fill targets from crop profile</button>${info("Fill targets from crop profile", "Copies the selected crop and stage's reference N, P, K, and pH numbers into the boxes above so you can review them before sending. This button alone does not change anything on the rig.")}</span>
+          <span class="btn-with-info"><button type="button" id="cfgSave${zone.id}">Send to ESP1</button>${info("Send to ESP1", "Sends the settings above to ESP1 as a real command. ESP1 checks each value is within a safe range before accepting it; anything left blank is unchanged.")}</span>
         </div>
         <p id="cfgResult${zone.id}" class="control-result" aria-live="polite"></p>
       </div>
@@ -443,7 +624,23 @@ function renderZonesUI() {
       writeZoneProfile(zone);
     });
     updateZoneTargets(zone);
+
+    // Window start/end only mean anything under Manual window -- hide them otherwise rather than
+    // deleting whatever value they hold, and re-check on every change so switching back to Manual
+    // later shows the value again instead of forcing it to be retyped.
+    const schedSelect = block.querySelector(`#cfgSched${zone.id}`);
+    schedSelect?.addEventListener("change", () => updateWindowVisibility(zone.id));
+    updateWindowVisibility(zone.id);
   });
+}
+
+function updateWindowVisibility(zoneId) {
+  const schedSelect = document.getElementById(`cfgSched${zoneId}`);
+  const row = document.getElementById(`cfgWinRow${zoneId}`);
+  const note = document.getElementById(`cfgWinNote${zoneId}`);
+  const manual = schedSelect?.value === "1";
+  if (row) row.hidden = !manual;
+  if (note) note.hidden = !manual;
 }
 
 function populateStageOptions(zone, stageSelect) {
@@ -912,11 +1109,16 @@ function submitColumnConfig(id) {
   if (en !== "") payload.enabled = en === "1";
   const sm = document.getElementById(`cfgSched${id}`)?.value;
   if (sm !== "") payload.schedMode = Number(sm);
-  const ws = hhmmToMinutes(document.getElementById(`cfgWinStart${id}`)?.value);
-  const we = hhmmToMinutes(document.getElementById(`cfgWinEnd${id}`)?.value);
-  if (ws !== null) payload.winStart = ws;
-  if (we !== null) payload.winEnd = we;
-  if (ws !== null && we !== null && ws === we) { show("Window start and end cannot be the same. Nothing was sent."); return; }
+  // Window fields only apply -- and are only sent -- while Manual window is the value about to be
+  // submitted; a leftover value from an earlier edit must not sneak in once switched back to
+  // Automatic (or left at "(unchanged)"), matching updateWindowVisibility()'s identical "1" check.
+  if (sm === "1") {
+    const ws = hhmmToMinutes(document.getElementById(`cfgWinStart${id}`)?.value);
+    const we = hhmmToMinutes(document.getElementById(`cfgWinEnd${id}`)?.value);
+    if (ws !== null) payload.winStart = ws;
+    if (we !== null) payload.winEnd = we;
+    if (ws !== null && we !== null && ws === we) { show("Window start and end cannot be the same. Nothing was sent."); return; }
+  }
   // Bounds mirror the firmware's own applyColumnTarget() (0-2000 ppm, pH 3-9) -- checked here too so
   // a mistyped value is refused before it round-trips to ESP1 and back, matching the pattern
   // submitForceRun() already uses for its own fields. The HTML min/max attributes alone never fire
@@ -1020,6 +1222,49 @@ loginForm?.addEventListener("submit", async event => {
   }
 });
 
+document.getElementById("showSignupBtn")?.addEventListener("click", () => showAuthForm("signup"));
+document.getElementById("showLoginBtn")?.addEventListener("click", () => showAuthForm("login"));
+
+const FIREBASE_AUTH_ERROR_TEXT = {
+  "auth/email-already-in-use": "That email is already registered. Try signing in instead.",
+  "auth/invalid-email": "That doesn't look like a valid email address.",
+  "auth/weak-password": "Password must be at least 6 characters.",
+  "auth/network-request-failed": "Network error -- check your connection and try again."
+};
+
+const signupForm = document.getElementById("signupForm");
+signupForm?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const errorBox = document.getElementById("signupError");
+  const show = text => { if (errorBox) errorBox.textContent = text; };
+  if (!auth || !db) { show("Firebase is not configured."); return; }
+  const name = document.getElementById("signupName")?.value.trim() || "";
+  const email = document.getElementById("signupEmail")?.value.trim() || "";
+  const password = document.getElementById("signupPassword")?.value || "";
+  const confirm = document.getElementById("signupConfirm")?.value || "";
+  show("");
+  if (!name) { show("Enter your name."); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { show("Enter a valid email address."); return; }
+  if (password.length < 6) { show("Password must be at least 6 characters."); return; }
+  if (password !== confirm) { show("Passwords do not match."); return; }
+  try {
+    const credential = await auth.createUserWithEmailAndPassword(email, password);
+    // New account: forced to status "pending" both here and by the rules -- see /users/{uid} in
+    // firebase-rules.json, which refuses any OTHER status on a self-created record. Approval is a
+    // separate, operator-only write from this point on.
+    await db.ref(`users/${credential.user.uid}`).set({
+      name,
+      email,
+      status: "pending",
+      createdAt: firebase.database.ServerValue.TIMESTAMP
+    });
+    signupForm.reset();
+  } catch (error) {
+    show(FIREBASE_AUTH_ERROR_TEXT[error.code] || `Could not create account: ${error.message}`);
+    console.error(error);
+  }
+});
+
 document.getElementById("logoutBtn")?.addEventListener("click", () => {
   releaseManualHold();
   auth?.signOut().catch(error => setCommandStatus(`Sign out failed: ${error.message}`, "error"));
@@ -1097,7 +1342,9 @@ let mtHideTimer = null;
 const MT_HIDE_GRACE_MS = 15000; // < the 20 s keep-alive, so a genuinely abandoned tab still gives up the hold promptly
 
 function writeManualHold(want) {
-  if (!currentUserIsSignedIn()) return Promise.resolve(false);
+  // The one other write path toward hardware outside queueCommand() -- same approval gate, both
+  // client-side (here) and server-side (the rules on /irrigation/manual).
+  if (!currentUserIsSignedIn() || !isApprovedUser()) return Promise.resolve(false);
   return db.ref("irrigation/manual").set({ seq: Date.now(), want })
     .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
 }
@@ -1339,8 +1586,72 @@ setInterval(() => {
   updateFaultBanner();
 }, 1000);
 
+/* Info icons ------------------------------------------------------------------------------------
+ * Small "i" buttons beside features across every tab, each carrying its own explanation in
+ * data-info-title / data-info-text. One shared popover is repositioned per click rather than one
+ * hidden panel per icon -- with ~50 of these on the page, a per-icon panel would add real markup
+ * weight and could drift out of sync with the feature it sits beside; a single popover cannot.
+ * Pure UI: reads no live data, sends no command, and is never nested inside an actuating button's
+ * own clickable area, so it cannot itself trigger a pump/valve/relay action. */
+let infoOpenerEl = null;
+
+function closeInfoPopover() {
+  const pop = document.getElementById("infoPopover");
+  if (!pop || pop.hidden) return;
+  pop.hidden = true;
+  if (infoOpenerEl) infoOpenerEl.setAttribute("aria-expanded", "false");
+  const opener = infoOpenerEl;
+  infoOpenerEl = null;
+  opener?.focus();
+}
+
+function openInfoPopoverFor(icon) {
+  const pop = document.getElementById("infoPopover");
+  if (!pop) return;
+  pop.querySelector(".info-popover-title").textContent = icon.dataset.infoTitle || "";
+  pop.querySelector(".info-popover-text").textContent = icon.dataset.infoText || "";
+  pop.hidden = false;
+  icon.setAttribute("aria-expanded", "true");
+  infoOpenerEl = icon;
+
+  // Position after it is visible, so its real size is known, then clamp inside the viewport --
+  // a card near the right/bottom edge must not push the popover off-screen.
+  const iconRect = icon.getBoundingClientRect();
+  const popRect = pop.getBoundingClientRect();
+  const margin = 12;
+  let left = iconRect.left;
+  let top = iconRect.bottom + 8;
+  if (left + popRect.width > window.innerWidth - margin) left = window.innerWidth - popRect.width - margin;
+  if (left < margin) left = margin;
+  if (top + popRect.height > window.innerHeight - margin) top = iconRect.top - popRect.height - 8;
+  if (top < margin) top = margin;
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+
+  pop.querySelector(".info-popover-close")?.focus();
+}
+
+function initInfoIcons() {
+  document.addEventListener("click", event => {
+    const icon = event.target.closest(".info-icon");
+    if (icon) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (infoOpenerEl === icon) closeInfoPopover();
+      else openInfoPopoverFor(icon);
+      return;
+    }
+    const pop = document.getElementById("infoPopover");
+    if (pop && !pop.hidden && !pop.contains(event.target)) closeInfoPopover();
+  });
+  document.addEventListener("keydown", event => { if (event.key === "Escape") closeInfoPopover(); });
+  window.addEventListener("resize", closeInfoPopover);
+  document.querySelector("#infoPopover .info-popover-close")?.addEventListener("click", closeInfoPopover);
+}
+
 renderZonesUI();
 updateDashboard();
 renderCommandHistory();
 syncControlAvailability();
+initInfoIcons();
 initializeFirebase();
