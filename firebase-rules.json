@@ -7,7 +7,7 @@
       },
       "config": {
         ".read": "auth != null",
-        ".write": "auth != null"
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')"
       },
       "manual": {
         ".read": "auth != null",

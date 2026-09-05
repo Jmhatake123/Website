@@ -381,10 +381,15 @@ function attachUserStatusListener(uid) {
         .finally(() => auth.signOut());
       return;
     }
+    const wasApproved = myAccountStatus === "approved";
     myAccountStatus = record ? record.status : null;
     renderAccountStatus(record);
     renderBlockedScreen();
     syncControlAvailability();
+    // Block/Restrict must release an in-progress Manual/Test hold immediately, the same way Kick's
+    // forced sign-out already does via onAuthStateChanged -- otherwise the rig stays out of
+    // automatic for up to the full 60s lease after the operator believes access was cut off at once.
+    if (wasApproved && myAccountStatus !== "approved") releaseManualHold();
   }, error => {
     console.warn("Could not read account status", error);
     myAccountStatus = null;
@@ -1541,6 +1546,10 @@ function renderManualHold() {
 
   if (note) {
     if (!onTab) note.textContent = "";
+    // Checked ahead of every other branch, including freshness/"held" -- a non-approved account's
+    // request is silently never granted (writeManualHold() no-ops), so without this it was
+    // indistinguishable from "the page is broken" or "ESP1 is offline."
+    else if (!isApprovedUser()) note.textContent = "Your account is awaiting operator approval before it can use this control.";
     // Checked ahead of every state branch, including "held" -- a stale snapshot can't be trusted to
     // mean the rig is still there, and telling the operator "Manual mode active" from stale data would
     // be actively misleading.
@@ -1554,7 +1563,7 @@ function renderManualHold() {
   // Proceed only becomes usable once the rig has granted the hold.
   if (proceed) {
     proceed.disabled = (state !== "held");
-    proceed.title = (state === "held") ? "" : "The rig has not granted manual mode yet.";
+    proceed.title = (state === "held") ? "" : !isApprovedUser() ? "Your account is awaiting operator approval before it can use this control." : "The rig has not granted manual mode yet.";
   }
   // Revoked or refused while already inside: drop the controls and stop re-requesting.
   if (onTab && mtArmed && state !== "held") {
@@ -1775,6 +1784,9 @@ function closeInfoPopover() {
 function openInfoPopoverFor(icon) {
   const pop = document.getElementById("infoPopover");
   if (!pop) return;
+  // A different icon was already open: reset its own expanded state before this one claims it, or
+  // both end up marked aria-expanded="true" at once even though only one popover instance exists.
+  if (infoOpenerEl && infoOpenerEl !== icon) infoOpenerEl.setAttribute("aria-expanded", "false");
   pop.querySelector(".info-popover-title").textContent = icon.dataset.infoTitle || "";
   pop.querySelector(".info-popover-text").textContent = icon.dataset.infoText || "";
   pop.hidden = false;
