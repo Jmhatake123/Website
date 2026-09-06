@@ -202,8 +202,24 @@ function syncControlAvailability() {
 
   const forceButton = document.querySelector("#forceRunForm button[type=submit]");
   if (forceButton) {
-    forceButton.disabled = !normalAllowed;
-    forceButton.title = normalAllowed ? "" : (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.";
+    // C-H2 workaround (audit): the CURRENTLY-FLASHED ESP1 firmware's FORCE_RUN idle-gate does not
+    // check actuationsDisabled or an in-progress run at ARM time -- only at fire time, inside
+    // forceTick()/sendForceWorkOrder(). That means a request submitted right now could be accepted
+    // and armed (a live countdown shown) and then silently abort seconds later. Pre-checking the
+    // same conditions here, from data ESP1 already publishes, stops the doomed request from ever
+    // being sent instead of letting it fail invisibly downstream. This cannot see every condition
+    // the firmware checks (the LCD menu state and another session's Manual/Test hold aren't
+    // published anywhere) so it narrows the window without fully closing it -- only a reflash does.
+    const fd = liveData.diagnostics || {};
+    const busyState = liveData.system?.state && liveData.system.state !== "IDLE_STATE";
+    const busy = Boolean(busyState) || Boolean(fd.actuationsDisabled) || Boolean(fd.fault?.held) ||
+                 Boolean(fd.system?.workOrderActive) || Boolean(fd.system?.pendingRun);
+    forceButton.disabled = !normalAllowed || busy;
+    forceButton.title = !normalAllowed
+      ? ((signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.")
+      : busy
+        ? "Blocked right now: the controller is not idle, a fault is held, or actuations are disabled -- starting would only be accepted and then silently fail. Resolve that first."
+        : "";
   }
 
   // Emergency stop is intentionally independent of live-data freshness and the normal cooldown --
@@ -943,7 +959,7 @@ function renderDiagnostics() {
     ["Firebase", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
     ["ThingSpeak", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
     ["Supabase logs", [["Configured", booleanText(d.supabase?.configured, "Configured", "Not configured")], ["Upload", booleanText(d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.supabase?.lastUploadedDay) : "No completed upload"]]],
-    ["System", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Pending run", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault, "None")], ["Fault time", rawText(d.system?.lastFaultTime, "None")]]],
+    ["System", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Pending run", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")]]],
     ["ESP2", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last response age", formatAge(d.esp2?.lastResponseAgeMs)]]],
     ["Nano & sensors", [["Last sample age", formatAge(d.nano?.lastSampleAgeMs)], ["Environment", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
     ["RTC / SD", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")]]],
@@ -994,6 +1010,36 @@ function formatTimestamp(timestamp) {
   return new Date(value).toLocaleString();
 }
 
+// C-H1 workaround (audit): the CURRENTLY-FLASHED ESP1 firmware rejects FORCE_RUN with the single
+// generic string "system is not safely idle" for any of 7 different internal conditions, with no
+// way to tell which one fired. A reflash would fix this at the source (the dev-tree firmware already
+// gives a specific reason); until then, cross-reference the diagnostics fields ESP1 already
+// publishes to narrow it down as far as the data actually allows. Three of the seven conditions
+// (uiMode, pendingExercise, a remote diag id) are not published anywhere and stay genuinely unknown
+// -- this says so rather than guessing.
+function explainNotSafelyIdle() {
+  const d = liveData.diagnostics || {};
+  const state = liveData.system?.state || "";
+  if (Boolean(d.fault?.held) || state === "EMERGENCY_STOP") return "a fault is currently held — see the fault banner above and choose a recovery";
+  if (Boolean(d.system?.workOrderActive) || Boolean(d.system?.pendingRun)) return "a run is already in progress";
+  if (Boolean(d.actuationsDisabled)) return "actuations are currently disabled";
+  if (state && state !== "IDLE_STATE") return `the controller is not idle (reported state: ${state})`;
+  return "a condition this dashboard cannot see directly (possibly a pump test running, the LCD menu open, or another session's Manual/Test hold) — check the Diagnostics tab or the LCD";
+}
+
+// New-F2 (audit): the 8 short codes forceTick() can pass to forceAbort() (ESP1/src/main.cpp, both
+// trees) -- see the inline decode in renderCommandHistory() above.
+const FORCE_ABORT_REASONS = {
+  ACTUATIONS_OFF: "actuations were disabled",
+  NOT_IDLE:       "the controller was no longer idle",
+  IN_MENU:        "someone was using the LCD",
+  WEB_MANUAL:     "the Manual/Test tab had taken control",
+  BUSY:           "another run or test was in progress",
+  HELD:           "a fault was held",
+  RES_LOW:        "the reservoir was too low",
+  COL_DISABLED:   "the target column was disabled"
+};
+
 function renderCommandHistory() {
   const container = document.getElementById("commandHistory");
   if (!container) return;
@@ -1014,7 +1060,22 @@ function renderCommandHistory() {
     badge.textContent = rawText(command.status, "unknown");
     top.append(name, badge);
     const detail = document.createElement("p");
-    detail.textContent = `${formatTimestamp(command.requestedAt)} — ${rawText(command.detail, "Awaiting ESP1 status")}`;
+    let detailText = rawText(command.detail, "Awaiting ESP1 status");
+    // New-F1 (audit): DIAG_SWEEP shares the same generic "not safely idle" wording as FORCE_RUN used
+    // to (diagRemoteStart() has since been given specific reasons in the dev-tree firmware, but the
+    // OLD flashed firmware's DIAG_SWEEP path -- and any other command that ever reuses this literal
+    // text -- still benefits from the same best-guess decoding). explainNotSafelyIdle() doesn't
+    // reference either command by name, so it's safe to reuse for both.
+    if ((command.type === "FORCE_RUN" || command.type === "DIAG_SWEEP") && /not safely idle/i.test(detailText)) {
+      detailText += ` — likely reason: ${explainNotSafelyIdle()}`;
+    }
+    if (command.type === "FORCE_RUN") {
+      // New-F2 (audit): forceTick()'s fire-time abort reports one of 8 short internal codes verbatim
+      // (e.g. "cancelled before start: RES_LOW"). Swap in the matching phrase when recognised.
+      detailText = detailText.replace(/cancelled before start: (\S+)/,
+        (full, c) => `cancelled before start: ${FORCE_ABORT_REASONS[c] || c}`);
+    }
+    detail.textContent = `${formatTimestamp(command.requestedAt)} — ${detailText}`;
     row.append(top, detail);
     container.appendChild(row);
   });
@@ -1042,6 +1103,29 @@ const HELD_CLEAR_TEXT = {
   auto_cancelled:  { text: "The rig gave up retrying and auto-cancelled the run after repeated identical faults — this was not a successful recovery.", tone: "error" },
   esp2_restarted:  { text: "ESP2 appears to have restarted rather than confirming the resume — the paused run may not have continued as expected.", tone: "error" }
 };
+
+// Diagnostic-detail decoder for fault codes that carry extra machine-readable detail after the
+// location (ESP1's holdFault() "|pulses=" for FLOW_FAIL, and the equivalent enrichment on
+// SOIL_MISSING). Returns "" for anything it doesn't recognise so callers can just append when
+// non-empty, rather than guessing at codes this hasn't been told about.
+function explainFaultCode(code) {
+  const text = String(code || "");
+  const flow = text.match(/^FLOW_FAIL\s+(\S+)\|pulses=(\d+)/);
+  if (flow) {
+    const stage = flow[1], pulses = Number(flow[2]);
+    return pulses === 0
+      ? `Zero flow pulses were counted during the ${stage} stage — consistent with a dead pump, a closed/stuck valve, or a disconnected flow sensor.`
+      : `Flow started (${pulses} pulses counted) then stalled during the ${stage} stage — consistent with an air lock, a weakening pump, or a sensor only partially in the flow path.`;
+  }
+  const soil = text.match(/^SOIL_MISSING\s+(COL_[ABC])\|(\S+)\|raw=(-?\d+),(-?\d+)/);
+  if (soil) {
+    const [, col, reason, r1, r2] = soil;
+    return reason === "PROBE_DIVERGE"
+      ? `${col}'s two soil probes disagree beyond tolerance (raw ${r1}/${r2}) — the NPK sensor is covering the reading for now, but one probe likely needs attention.`
+      : `${col} has no usable soil reading (raw ${r1}/${r2}) — check that column's probe wiring/connector.`;
+  }
+  return "";
+}
 
 function updateFaultBanner() {
   const banner = document.getElementById("faultBanner");
@@ -1085,8 +1169,9 @@ function updateFaultBanner() {
   setText("faultTitle", held ? rawText(f.code, "Fault reported by ESP2")
                        : stopped ? "The system is stopped"
                        : "Monitoring only — nothing will run");
+  const faultExplain = held ? explainFaultCode(f.code) : "";
   setText("faultDetail", held
-    ? `Reported ${rawText(f.at, "at an unknown time")}. ESP2 is paused with the actuator bank de-energised; pick how to continue.`
+    ? `Reported ${rawText(f.at, "at an unknown time")}. ESP2 is paused with the actuator bank de-energised; pick how to continue.` + (faultExplain ? ` ${faultExplain}` : "")
     : stopped
       ? "All actuators are off and ESP2 is unpowered. Returning to normal re-powers and re-validates ESP2 before anything runs."
       : "Sensors, logging and telemetry are still running. Scheduled runs, pump exercises and forced runs are all blocked until actuations are re-enabled.");
@@ -1517,7 +1602,16 @@ function writeManualHold(want) {
   // The one other write path toward hardware outside queueCommand() -- same approval gate, both
   // client-side (here) and server-side (the rules on /irrigation/manual).
   if (!currentUserIsSignedIn() || !isApprovedUser()) return Promise.resolve(false);
-  return db.ref("irrigation/manual").set({ seq: Date.now(), want })
+  // C-H4/R workaround (audit): the CURRENTLY-FLASHED ESP1 firmware parses this into a 32-bit `long`
+  // (`long seq = doc["seq"] | -1`). A raw Date.now() (~1.7e12) doesn't fit a 32-bit long, so
+  // ArduinoJson's `|` silently falls back to -1 on EVERY poll -- seq != webManualSeq then never
+  // becomes newly true, and Manual/Test's "Proceed" gate can never re-arm on that hardware. Sending
+  // whole seconds instead keeps a monotonically increasing value that fits a 32-bit long until 2038,
+  // fixing this without a reflash. 1-second resolution is coarser than the 20 s keep-alive interval
+  // this is used with, so it cannot collide in normal use. The unflashed dev-tree firmware already
+  // reads this as int64_t and accepts either form, so this is compatible with both trees.
+  const seq = Math.floor(Date.now() / 1000);
+  return db.ref("irrigation/manual").set({ seq, want })
     .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
 }
 
