@@ -1124,6 +1124,55 @@ function explainFaultCode(code) {
       ? `${col}'s two soil probes disagree beyond tolerance (raw ${r1}/${r2}) — the NPK sensor is covering the reading for now, but one probe likely needs attention.`
       : `${col} has no usable soil reading (raw ${r1}/${r2}) — check that column's probe wiring/connector.`;
   }
+  // New-F3/F4/F5 (audit): same decode pattern, for the three fault codes that gained measured-value
+  // detail in this pass (ESP2/src/main.cpp -- PWR_FAIL/SAFE_STOP,MIXER_OC/DOSE_TIMEOUT).
+  const overcurrent = text.match(/^PWR_FAIL\s+OVERCURRENT\|i=([\d.]+)/);
+  if (overcurrent) return `Current draw hit ${overcurrent[1]}A during this stage — check for a jammed pump/valve or a wiring fault.`;
+  const voltage = text.match(/^PWR_FAIL\s+VOLTAGE\|v=([\d.]+)\|(LOW|HIGH)/);
+  if (voltage) return voltage[2] === "LOW"
+    ? `AC supply sagged to ${voltage[1]}V — check the mains/inverter output and connections.`
+    : `AC supply spiked to ${voltage[1]}V — check the mains/inverter output.`;
+  const noCurrent = text.match(/^PWR_FAIL\s+NO_CURRENT\|i=([\d.]+)/);
+  if (noCurrent) return `The pump was commanded on but drew almost no current (${noCurrent[1]}A) for too long — likely a failed pump, tripped breaker, or loose wiring.`;
+  const mixerOc = text.match(/^SAFE_STOP\s+MIXER_OC\|i=([\d.]+)/);
+  if (mixerOc) return `The mixer motor drew ${mixerOc[1]}A, over its safety limit — check for a jammed impeller or motor fault.`;
+  const dose = text.match(/^DOSE_TIMEOUT\s+(NUT_[ABC])\|delivered=([\d.]+)/);
+  if (dose) {
+    const [, nut, ml] = dose;
+    return Number(ml) === 0
+      ? `${nut}'s dosing pump timed out with zero mL delivered — likely a dead pump or an unprimed line.`
+      : `${nut}'s dosing pump timed out after only ${ml} mL — likely a weak pump or a partial blockage.`;
+  }
+  // New-F6/F7/F8 (audit): PH_FAIL/EC_FAIL now carry the measured value + which bound it crossed;
+  // SENSOR_FAIL,PH|EC now carry which ADC rail was hit. The mixed batch was still delivered either
+  // way (no drain) -- these explain why, not what to do about the run itself.
+  const ph = text.match(/^PH_FAIL\s+(COL_[ABC])\|pH=([\d.]+)\|(LOW|HIGH)/);
+  if (ph) {
+    const [, col, val, dir] = ph;
+    return `${col}'s mixed batch pH read ${val} — too ${dir === "LOW" ? "acidic" : "alkaline"} for the safe window. Delivery still went ahead (no drain); check the pH probe/dosing.`;
+  }
+  const ecFail = text.match(/^EC_FAIL\s+(COL_[ABC])\|EC=([\d.]+)\|(LOW|HIGH)/);
+  if (ecFail) {
+    const [, col, val, dir] = ecFail;
+    return `${col}'s mixed batch EC read ${val} mS/cm — too ${dir === "LOW" ? "dilute" : "concentrated"} for the safe window. Delivery still went ahead (no drain); check dosing amounts/calibration.`;
+  }
+  const sensorFail = text.match(/^SENSOR_FAIL\s+(PH|EC)\|RAILED_(LOW|HIGH)/);
+  if (sensorFail) {
+    const [, which, rail] = sensorFail;
+    return `The ${which === "PH" ? "pH" : "EC"} probe's raw reading is railed ${rail === "LOW" ? "low" : "high"} — consistent with a ${rail === "LOW" ? "shorted" : "disconnected/open"} probe or connector.`;
+  }
+  // New-F9/F10 (audit): same decode pattern for the two most recently enriched fault codes.
+  const batchLow = text.match(/^DOSE_BATCH_LOW\s+(COL_[ABC])\|V=([\d.]+)\|min=([\d.]+)/);
+  if (batchLow) {
+    const [, col, v, min] = batchLow;
+    return `${col}'s planned batch (${v} L) fell under the ${min} L safe minimum, so it watered without dosing this run — this is a WATER_BUDGET_L/FLUSH_PCT/MIXING_TANK_SAFE_MIN tuning question, not a hardware fault.`;
+  }
+  const npkFault = text.match(/^NPK_FAULT\s+(COL_[ABC])\|reason=(\S+)/);
+  if (npkFault) {
+    const [, col, reason] = npkFault;
+    const why = { TIMEOUT: "the sensor never responded — check its power/wiring", BADADDR: "a different device answered — check the Modbus address", BADLEN: "the reply was the wrong length", BADCRC: "the reply failed its checksum — consistent with bus noise/EMI" }[reason] || reason;
+    return `${col} fertigated as irrigation-only this cycle because its NPK probe reading was invalid (${why}).`;
+  }
   return "";
 }
 
