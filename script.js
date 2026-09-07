@@ -638,6 +638,15 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
 
 function writeZoneProfile(zone) {
   if (!currentUserIsSignedIn()) return;
+  // Audit fix (2026-09-08): every other write path (queueCommand, writeManualHold) gates on
+  // isApprovedUser(), not just sign-in. The Firebase rule already rejects this write for a
+  // non-approved account either way, so there was no security gap -- but a pending/rejected account
+  // changing a crop/stage dropdown got a raw PERMISSION_DENIED error instead of the same friendly
+  // "awaiting approval" message shown everywhere else.
+  if (!isApprovedUser()) {
+    setCommandStatus("Your account is awaiting operator approval before it can send commands to the rig.", "error");
+    return;
+  }
   db.ref(`irrigation/config/zones/${zone.id}`).set({
     name: zone.name,
     crop: zone.defaultCrop,
@@ -706,9 +715,39 @@ function queuedStatusText(type, payload, emergency) {
   return `${type.replaceAll("_", " ")} queued. Waiting for ESP1 validation.`;
 }
 
+// Audit fix (2026-09-08): renderZonesUI()'s full teardown runs on every irrigation/config/zones
+// change -- including a DIFFERENT zone's own crop/stage write -- and previously discarded whatever
+// the operator had typed into any zone's not-yet-sent "Firmware settings" form (targets, schedule
+// window, preset) with no warning, since those inputs have no backing data model, only DOM state.
+// Capture the current values before the teardown and restore them onto the freshly rebuilt inputs.
+function captureZoneFormState() {
+  const state = {};
+  const val = id => document.getElementById(id)?.value;
+  activeZones.forEach(zone => {
+    const id = zone.id;
+    state[id] = {
+      cfgMode: val(`cfgMode${id}`), cfgEnabled: val(`cfgEnabled${id}`), cfgSched: val(`cfgSched${id}`),
+      cfgWinStart: val(`cfgWinStart${id}`), cfgWinEnd: val(`cfgWinEnd${id}`),
+      cfgN: val(`cfgN${id}`), cfgP: val(`cfgP${id}`), cfgK: val(`cfgK${id}`), cfgPH: val(`cfgPH${id}`),
+      cfgPreset: val(`cfgPreset${id}`)
+    };
+  });
+  return state;
+}
+
+function restoreZoneFormState(zoneId, saved) {
+  if (!saved) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
+  set(`cfgMode${zoneId}`, saved.cfgMode); set(`cfgEnabled${zoneId}`, saved.cfgEnabled); set(`cfgSched${zoneId}`, saved.cfgSched);
+  set(`cfgWinStart${zoneId}`, saved.cfgWinStart); set(`cfgWinEnd${zoneId}`, saved.cfgWinEnd);
+  set(`cfgN${zoneId}`, saved.cfgN); set(`cfgP${zoneId}`, saved.cfgP); set(`cfgK${zoneId}`, saved.cfgK); set(`cfgPH${zoneId}`, saved.cfgPH);
+  set(`cfgPreset${zoneId}`, saved.cfgPreset);
+}
+
 function renderZonesUI() {
   const container = document.getElementById("dynamic-zones-container");
   if (!container) return;
+  const savedFormState = captureZoneFormState();
   container.innerHTML = "";
   activeZones.forEach(zone => {
     const block = document.createElement("article");
@@ -736,6 +775,12 @@ function renderZonesUI() {
         <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "These are the real settings ESP1 uses to run this column -- separate from the crop profile above, which is only a planning note. Any field left blank here is not changed; only fields you fill in are updated.")}</h4>
         <p class="field-note">Unlike the crop profile above, these are sent to ESP1 and change how it runs. Blank fields are left unchanged. Use "Fill targets from crop profile" to copy the selected crop and stage into the N/P/K/pH boxes, then review and send.</p>
         <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
+        <div class="force-row zone-quick-actions">
+          <span class="btn-with-info"><button type="button" id="zoneAuto${zone.id}" class="secondary">Auto</button>${info("Auto", "Immediately sets this column to Auto (enabled, irrigation + fertigation) -- the same one-step choice as the LCD's Settings > Column Mode screen. Sent right away, same as any other command on this page; requires operator approval.")}</span>
+          <span class="btn-with-info"><button type="button" id="zoneIrrOnly${zone.id}" class="secondary">Irrigation only</button>${info("Irrigation only", "Immediately sets this column to Irrigation only (enabled, water only, no dosing) -- the same one-step choice as the LCD's Settings > Column Mode screen. Sent right away.")}</span>
+          <span class="btn-with-info"><button type="button" id="zoneOff${zone.id}" class="secondary">Off</button>${info("Off", "Immediately disables this column -- the same OFF choice as the LCD's Settings > Column Mode screen. Leaves its stored mode untouched (matching the LCD), so switching back to Auto or Irrigation only later needs its own click.")}</span>
+        </div>
+        <p class="field-note">The three buttons above act immediately, mirroring the LCD's Column Mode control. Everything below is the detailed form (schedule, window, targets, preset) -- still requires "Send to ESP1".</p>
         <div class="force-row">
           <label><span class="label-row">Operation${info("Operation", "Auto lets the schedule run both irrigation and nutrient dosing for this column, whenever its own timing and soil threshold say to. Irrigation only keeps the same schedule but skips dosing entirely, delivering plain water.")}</span><select id="cfgMode${zone.id}">
             <option value="">(unchanged)</option>
@@ -775,6 +820,9 @@ function renderZonesUI() {
     container.appendChild(block);
     block.querySelector(`#cfgSave${zone.id}`)?.addEventListener("click", () => submitColumnConfig(zone.id));
     block.querySelector(`#cfgFromCrop${zone.id}`)?.addEventListener("click", () => fillTargetsFromCrop(zone));
+    block.querySelector(`#zoneAuto${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "AUTO"));
+    block.querySelector(`#zoneIrrOnly${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "IRRIGATION_ONLY"));
+    block.querySelector(`#zoneOff${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, null));
 
     const presetSelect = block.querySelector(`#cfgPreset${zone.id}`);
     FIRMWARE_PRESETS.forEach(name => presetSelect?.add(new Option(name, name)));
@@ -799,6 +847,7 @@ function renderZonesUI() {
       writeZoneProfile(zone);
     });
     updateZoneTargets(zone);
+    restoreZoneFormState(zone.id, savedFormState[zone.id]);
 
     // Window start/end only mean anything under Manual window -- hide them otherwise rather than
     // deleting whatever value they hold, and re-check on every change so switching back to Manual
@@ -1412,6 +1461,26 @@ function updateZoneConfigDisplay(zone) {
     : "Unavailable";
   el.textContent = `Current configuration: ${enabled ? "Enabled" : "Disabled"} — ${enabled ? mode : "n/a"} — ` +
                     `Schedule: ${enabled ? sched : "n/a"} — Targets: ${enabled ? targets : "n/a"}`;
+}
+
+// One-click Auto / Irrigation-only / Off, mirroring the LCD's Column Mode screen exactly: mode is
+// null only for "Off", which -- like the LCD -- disables the column WITHOUT touching its stored
+// mode (COLUMN_ENABLED and col[c].mode are independent on ESP1; re-enabling later needs its own
+// click, same as the physical unit). Sends immediately through the exact same validated SET_COLUMN
+// command and approval gate every other control on this page already uses -- not a new command,
+// not a parallel path, just a one-step shortcut for the two dropdowns below it.
+function quickSetColumnMode(id, mode) {
+  const result = document.getElementById(`cfgResult${id}`);
+  const show = (text, error = false) => {
+    if (!result) return;
+    result.textContent = text;
+    result.className = `control-result${error ? " error" : ""}`;
+  };
+  const payload = { col: id, enabled: mode ? 1 : 0 };
+  if (mode) payload.mode = mode;
+  const label = mode === "AUTO" ? "Auto" : mode === "IRRIGATION_ONLY" ? "Irrigation only" : "Off";
+  show(`Sending "${label}" to ESP1…`);
+  queueCommand("SET_COLUMN", payload);
 }
 
 function submitColumnConfig(id) {

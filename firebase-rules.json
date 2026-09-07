@@ -2,21 +2,32 @@
   "rules": {
     "irrigation": {
       "live": {
-        ".read": "auth != null",
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')",
         ".write": "auth != null && auth.uid === '6hNg56ldAaSmpnodG1Xla0vn61O2'"
       },
       "config": {
-        ".read": "auth != null",
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')",
         ".write": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')"
       },
       "manual": {
-        ".read": "auth != null",
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2' || auth.uid === '6hNg56ldAaSmpnodG1Xla0vn61O2')",
         ".write": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && newData.hasChildren(['seq', 'want']) && newData.child('seq').isNumber() && newData.child('want').isBoolean()"
       },
       "commands": {
-        ".read": "auth != null",
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2' || auth.uid === '6hNg56ldAaSmpnodG1Xla0vn61O2')",
         "$commandId": {
-          ".write": "(auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && !data.exists() && newData.child('source').val() === 'dashboard' && newData.child('status').val() === 'queued') || (auth != null && auth.uid === '6hNg56ldAaSmpnodG1Xla0vn61O2')"
+          ".write": "(auth != null && (root.child('users').child(auth.uid).child('status').val() === 'approved' || auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && !data.exists() && newData.child('source').val() === 'dashboard' && newData.child('status').val() === 'queued') || (auth != null && auth.uid === '6hNg56ldAaSmpnodG1Xla0vn61O2')",
+          "type": {
+            ".validate": "newData.isString() && (newData.val() === 'FORCE_RUN' || newData.val() === 'EMERGENCY_STOP' || newData.val() === 'RECOVER' || newData.val() === 'ESTOP_RECOVER' || newData.val() === 'ENABLE_ACTUATIONS' || newData.val() === 'DISABLE_ACTUATIONS' || newData.val() === 'CANCEL_FORCE' || newData.val() === 'ACK_FAULT' || newData.val() === 'SET_COLUMN' || newData.val() === 'SET_EXERCISE' || newData.val() === 'REBOOT' || newData.val() === 'TEST_PULSE' || newData.val() === 'DIAG_SWEEP' || newData.val() === 'SET_CLOCK' || newData.val() === 'SET_THRESH' || newData.val() === 'RESTORE_DEFAULTS')"
+          },
+          "payload": {
+            "liters":       { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= 20)" },
+            "delaySeconds": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 300)" },
+            "targetN":      { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000)" },
+            "targetP":      { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000)" },
+            "targetK":      { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000)" },
+            "targetPH":     { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 3 && newData.val() <= 9)" }
+          }
         }
       }
     },
