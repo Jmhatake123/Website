@@ -78,6 +78,7 @@
       <button type="button" class="tab" data-view="manual">Controls</button>
       <button type="button" class="tab" data-view="manualtest">Manual/Test</button>
       <button type="button" class="tab" data-view="diagnostics">Diagnostics</button>
+      <button type="button" class="tab" data-view="system">System</button>
       <!-- Shown only to the operator UID (see refreshOperatorUI() in script.js) -- hiding this tab
            from everyone else is a convenience, not the security boundary; the real enforcement is
            the operator-only write rule on /users/{uid} in firebase-rules.json. -->
@@ -388,6 +389,49 @@
       <article class="panel event-panel">
         <div class="panel-heading"><div><h3>Recent ESP1 events<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Recent ESP1 events" data-info-title="Recent ESP1 events" data-info-text="The last 12 things ESP1 thought were worth showing here remotely -- faults, run receipts, LCD/dashboard tests, received text commands, and anything ESP1 refused. The complete history is stored on ESP1's SD card; this list resets whenever ESP1 restarts.">i</button></h3><p>The last 12 events worth seeing remotely — faults, irrigation and fertigation starts with their receipts, LCD and dashboard tests, received SMS commands, and anything ESP1 refused. Routine housekeeping is filtered out on the device so it cannot push these off the list. Newest first; the complete log is on ESP1’s SD card, and this list resets when ESP1 restarts.</p></div></div>
         <div id="diagnosticEvents" class="event-list"><p class="muted">No event data reported yet.</p></div>
+      </article>
+    </section>
+
+    <!-- Remote equivalents of the ESP1 physical LCD Settings-menu items that don't already have a
+         home elsewhere on this site (Schedule/Column Mode/Preset live in Zone Profiles; Pump
+         Exercise/Testing/Sensor Diag live in Manual/Test + Diagnostics; Force Run/Reboot live in
+         Controls). See the website-parity plan for the full 15-function mapping and why WiFi/Setup
+         AP/Lock Screen writes are deliberately not offered here. -->
+    <section class="view" id="system">
+      <div class="section-heading"><div><h2>System<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About System" data-info-title="System" data-info-text="Remote equivalents of the ESP1 LCD Settings-menu items that aren't already covered elsewhere on this site (Zone Profiles, Manual/Test, Diagnostics, and Controls already cover the rest).">i</button></h2><p class="hint">Every control here sends the same command ESP1's own Settings menu results in, validated the same way. Values shown as "Current" are read live from ESP1, not from this form.</p></div></div>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h3>Set Clock<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Set Clock" data-info-title="Set Clock" data-info-text="Sets ESP1's real-time clock (the DS3231 hardware chip), the same one the LCD's own Set Clock screen adjusts. This clock drives every column's irrigation schedule -- a wrong or dead clock can silently stop irrigation from ever starting. There is no seconds or timezone field, matching the LCD.">i</button></h3></div>
+        <p class="hint">ESP1 currently reads: <strong id="sysClockCurrent">Unavailable</strong> (RTC: <span id="sysClockRtcOk">Unavailable</span>)</p>
+        <div class="control-grid">
+          <label>Date<input id="sysClockDate" type="date"></label>
+          <label>Time<input id="sysClockTime" type="time"></label>
+          <button id="sysClockSendBtn" type="button">Send to ESP1</button>
+        </div>
+        <p id="sysClockResult" class="control-result" aria-live="polite"></p>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h3>Thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Thresholds" data-info-title="Thresholds" data-info-text="The same soil start%/stop% and fertigation-gap values as the LCD's Settings > Thresholds screen. Start is when a column becomes eligible to irrigate; stop must always exceed start, enforced by ESP1 regardless of what is sent here.">i</button></h3></div>
+        <div class="control-grid">
+          <label>Soil start % (irrigate below this)<input id="sysThreshStart" type="number" min="0" max="100" step="1"></label>
+          <label>Soil stop % (must exceed start)<input id="sysThreshStop" type="number" min="0" max="100" step="1"></label>
+          <label>Fertigation gap (mg/kg)<input id="sysThreshGap" type="number" min="0" max="500" step="1"></label>
+          <button id="sysThreshSendBtn" type="button">Send to ESP1</button>
+        </div>
+        <p id="sysThreshResult" class="control-result" aria-live="polite"></p>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h3>LCD Lock status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About LCD Lock status" data-info-title="LCD Lock status" data-info-text="Read-only. Shows whether an operator has locked the physical LCD's buttons (Settings > Lock Screen). This is a local, physical-presence feature -- there is deliberately no button here to lock or unlock it remotely; only someone standing at the unit can do that (hold UP+DOWN to unlock).">i</button></h3></div>
+        <p>LCD Lock: <strong id="sysLockStatus">Unavailable</strong></p>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h3>Restore Defaults<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Restore Defaults" data-info-title="Restore Defaults" data-info-text="Resets every column's mode, targets, name, and schedule window, plus the global thresholds, back to factory values -- the same function the LCD's Settings > Restore Defaults runs. Calibration, which columns are physically enabled, and WiFi/ThingSpeak setup are NOT touched. This cannot be undone. Only works while the system is idle.">i</button></h3></div>
+        <p class="hint">Resets per-column modes, targets, names, and schedule windows, plus the global thresholds, to factory defaults. Calibration, column-enabled wiring, and WiFi/ThingSpeak setup are kept. <strong>This cannot be undone.</strong> Only works while ESP1 is idle, same as the LCD.</p>
+        <button id="sysRestoreDefaultsBtn" class="danger" type="button">Restore Defaults…</button>
+        <p id="sysRestoreResult" class="control-result" aria-live="polite"></p>
       </article>
     </section>
 

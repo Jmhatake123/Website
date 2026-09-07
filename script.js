@@ -24,12 +24,18 @@
  *   CANCEL_FORCE       {}   only while a forced run is armed/counting down
  *   ACK_FAULT          {}   dashboard-only snooze; no effect on the rig
  *   SET_COLUMN         { col: "A"|"B"|"C", mode?, enabled?, schedMode?, winStart?, winEnd?,
- *                        targetN?, targetP?, targetK?, targetPH? }   every field but col is
- *                        optional; an absent field is left unchanged, never treated as zero
+ *                        targetN?, targetP?, targetK?, targetPH?, preset? }   every field but col
+ *                        is optional; an absent field is left unchanged, never treated as zero.
+ *                        preset (added for website LCD-parity) is one of FIRMWARE_PRESETS' names
+ *                        below, resolved server-side against ESP1's own preset table -- NOT the
+ *                        same thing as this file's cropDatabase.
  *   SET_EXERCISE       { exerciseEnabled?, exerciseSeconds? }
  *   REBOOT             { target: "nano"|"esp2"|"esp1" }
  *   TEST_PULSE         { target, seconds: 1-15 }   Manual/Test only, dead-man timed on ESP2
  *   DIAG_SWEEP         { seconds? }
+ *   SET_CLOCK          { clkY, clkMo, clkD, clkH, clkMi }   all required together; sets ESP1's RTC
+ *   SET_THRESH         { thStart, thStop, thGap }   all required together; same clamps as the LCD
+ *   RESTORE_DEFAULTS   {}   idle-only; runs the same reset function the LCD's Restore Defaults does
  * Anything else is rejected by ESP1 as "not a remotely safe control", so this page does not offer
  * it. In particular there is no standalone valve command (valves are sequenced inside a work order)
  * and no pH Up/Down dosing target anywhere -- pH is validation-only in the current design; the pH
@@ -45,6 +51,14 @@ const cropDatabase = {
   kamatis: { seedling: { n: 120, p: 50, k: 100, ph: 5.8, ec: 1.2, moisture: 65 }, vegetative: { n: 220, p: 60, k: 180, ph: 6.0, ec: 2.0, moisture: 70 }, flowering: { n: 180, p: 70, k: 250, ph: 6.2, ec: 2.5, moisture: 75 }, fruiting: { n: 160, p: 70, k: 300, ph: 6.5, ec: 2.5, moisture: 80 } },
   basil: { seedling: { n: 60, p: 30, k: 90, ph: 5.5, ec: 0.8, moisture: 60 }, vegetative: { n: 140, p: 45, k: 210, ph: 6.0, ec: 1.4, moisture: 70 } }
 };
+
+// ESP1's OWN built-in crop presets (CROP_PRESETS[], ESP1/src/main.cpp) -- a completely separate,
+// smaller, firmware-resolved list from cropDatabase above. cropDatabase is this website's own
+// planning convenience and never leaves the browser on its own; these 4 names are sent verbatim as
+// SET_COLUMN's "preset" field and looked up on ESP1 against its real table. Mirrors the firmware
+// constant the same way FORCE_MAX_LITERS/FORCE_MAX_DOSE_ML already do below -- keep in sync if the
+// firmware table ever changes.
+const FIRMWARE_PRESETS = ["PECHAY", "TOMATO_S1", "TOMATO_S2", "TOMATO_S3"];
 
 const readableCropNames = {
   pechay: "Pechay", kangkong: "Kangkong", sitaw: "Sitaw", talong: "Talong",
@@ -244,6 +258,18 @@ function syncControlAvailability() {
   const e2 = document.getElementById("enableActBtn2");
   if (d2) d2.hidden = locked;
   if (e2) e2.hidden = !locked;
+
+  // Restore Defaults: signed-in + approved, like the reboot buttons, PLUS idle-gated -- ESP1
+  // refuses this one outright unless sysState is IDLE_STATE, matching the LCD's own gate.
+  const restoreBtn = document.getElementById("sysRestoreDefaultsBtn");
+  if (restoreBtn) {
+    const notIdle = liveData.system?.state && liveData.system.state !== "IDLE_STATE";
+    restoreBtn.disabled = !signedIn || !approved || Boolean(notIdle);
+    restoreBtn.title = !signedIn ? "Sign in to use the system controls."
+                      : !approved ? notApprovedTitle
+                      : notIdle ? "ESP1 must be idle to restore defaults, same as the LCD menu."
+                      : "";
+  }
 }
 
 function initializeFirebase() {
@@ -709,6 +735,7 @@ function renderZonesUI() {
       <div class="zone-config">
         <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "These are the real settings ESP1 uses to run this column -- separate from the crop profile above, which is only a planning note. Any field left blank here is not changed; only fields you fill in are updated.")}</h4>
         <p class="field-note">Unlike the crop profile above, these are sent to ESP1 and change how it runs. Blank fields are left unchanged. Use "Fill targets from crop profile" to copy the selected crop and stage into the N/P/K/pH boxes, then review and send.</p>
+        <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
         <div class="force-row">
           <label><span class="label-row">Operation${info("Operation", "Auto lets the schedule run both irrigation and nutrient dosing for this column, whenever its own timing and soil threshold say to. Irrigation only keeps the same schedule but skips dosing entirely, delivering plain water.")}</span><select id="cfgMode${zone.id}">
             <option value="">(unchanged)</option>
@@ -733,6 +760,11 @@ function renderZonesUI() {
           <label>Target K (ppm)<input id="cfgK${zone.id}" type="number" min="0" max="2000" step="1"></label>
           <label>Target pH<input id="cfgPH${zone.id}" type="number" min="3" max="9" step="0.1"></label>
         </div>
+        <div class="force-row">
+          <label><span class="label-row">Firmware preset${info("Firmware preset", "ESP1's own built-in crop presets (separate from the crop profile/database above) -- picking one and sending applies its N, P, K, and pH targets directly on ESP1, the same as the LCD's Settings > Preset screen or a SET,COL_x,PRESET,<name> text command. Leave at (none) to use the boxes above instead.")}</span><select id="cfgPreset${zone.id}">
+            <option value="">(none -- use boxes above)</option>
+          </select></label>
+        </div>
         <div class="config-actions">
           <span class="btn-with-info"><button type="button" id="cfgFromCrop${zone.id}" class="secondary">Fill targets from crop profile</button>${info("Fill targets from crop profile", "Copies the selected crop and stage's reference N, P, K, and pH numbers into the boxes above so you can review them before sending. This button alone does not change anything on the rig.")}</span>
           <span class="btn-with-info"><button type="button" id="cfgSave${zone.id}">Send to ESP1</button>${info("Send to ESP1", "Sends the settings above to ESP1 as a real command. ESP1 checks each value is within a safe range before accepting it; anything left blank is unchanged.")}</span>
@@ -743,6 +775,9 @@ function renderZonesUI() {
     container.appendChild(block);
     block.querySelector(`#cfgSave${zone.id}`)?.addEventListener("click", () => submitColumnConfig(zone.id));
     block.querySelector(`#cfgFromCrop${zone.id}`)?.addEventListener("click", () => fillTargetsFromCrop(zone));
+
+    const presetSelect = block.querySelector(`#cfgPreset${zone.id}`);
+    FIRMWARE_PRESETS.forEach(name => presetSelect?.add(new Option(name, name)));
 
     const cropSelect = block.querySelector(`#cropSelect${zone.id}`);
     const stageSelect = block.querySelector(`#growthStage${zone.id}`);
@@ -884,6 +919,7 @@ function updateDashboard() {
     const z = liveData.sensors?.zones?.[zone.id] || {};
     setText(`npkMoist${zone.id}`, numberText(z.npkMoisture, 1, "%"));
     setText(`soilTemp${zone.id}`, numberText(z.soilTemperature, 1, "°C"));
+    updateZoneConfigDisplay(zone);
   });
 
   renderDiagnostics();
@@ -893,6 +929,7 @@ function updateDashboard() {
   renderManualHold();
   updateFaultBanner();
   updateForceArmed();
+  updateSystemTab();
   syncControlAvailability();
 }
 
@@ -1350,6 +1387,32 @@ function hhmmToMinutes(value) {
   if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
   return h * 60 + m;
 }
+function minutesToHhmm(mins) {
+  if (!hasValue(mins)) return "--:--";
+  const m = ((Number(mins) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+// Column Mode website parity: a read-only summary of what ESP1 ACTUALLY has stored for this column
+// right now, from live telemetry -- distinct from the edit form below it, which is write-only and
+// always defaults to "(unchanged)"/blank. Never invents a value: shows "Unavailable" field-by-field
+// exactly like every other live reading on this page when the snapshot hasn't reported it yet.
+function updateZoneConfigDisplay(zone) {
+  const el = document.getElementById(`cfgCurrent${zone.id}`);
+  if (!el) return;
+  const z = liveData.sensors?.zones?.[zone.id];
+  if (!z || !hasValue(z.enabled)) { el.textContent = "Current configuration: Unavailable"; return; }
+  const enabled = Boolean(z.enabled);
+  const mode = rawText(z.mode, "Unavailable");
+  const sched = z.schedMode === 1 ? `Manual ${minutesToHhmm(z.winStart)}-${minutesToHhmm(z.winEnd)}`
+              : z.schedMode === 0 ? `Auto ${minutesToHhmm(z.winStart)}-${minutesToHhmm(z.winEnd)}`
+              : "Unavailable";
+  const targets = ["targetN", "targetP", "targetK", "targetPH"].every(k => hasValue(z[k]))
+    ? `N ${z.targetN} / P ${z.targetP} / K ${z.targetK} ppm, pH ${z.targetPH}`
+    : "Unavailable";
+  el.textContent = `Current configuration: ${enabled ? "Enabled" : "Disabled"} — ${enabled ? mode : "n/a"} — ` +
+                    `Schedule: ${enabled ? sched : "n/a"} — Targets: ${enabled ? targets : "n/a"}`;
+}
 
 function submitColumnConfig(id) {
   const result = document.getElementById(`cfgResult${id}`);
@@ -1367,6 +1430,11 @@ function submitColumnConfig(id) {
   if (en !== "") payload.enabled = en === "1";
   const sm = document.getElementById(`cfgSched${id}`)?.value;
   if (sm !== "") payload.schedMode = Number(sm);
+  // Firmware preset (separate from the crop-profile "Fill targets" convenience below): resolved by
+  // ESP1 against its own CROP_PRESETS table. An explicit N/P/K/pH box below still overrides its own
+  // field even when a preset is also selected -- same precedence ESP1 applies server-side.
+  const preset = document.getElementById(`cfgPreset${id}`)?.value;
+  if (preset) payload.preset = preset;
   // Window fields only apply -- and are only sent -- while Manual window is the value about to be
   // submitted; a leftover value from an earlier edit must not sneak in once switched back to
   // Automatic (or left at "(unchanged)"), matching updateWindowVisibility()'s identical "1" check.
@@ -1627,6 +1695,55 @@ document.getElementById("ackFaultBtn")?.addEventListener("click", () => {
   updateFaultBanner();
 });
 document.getElementById("cancelForceBtn")?.addEventListener("click", () => queueCommand("CANCEL_FORCE", {}, { emergency: true }));
+
+/* ---- System tab: Set Clock, Thresholds, Restore Defaults, Lock Screen status ------------------
+ * Remote equivalents of the ESP1 LCD Settings-menu items that don't already live elsewhere on this
+ * site. Each one is a thin wrapper around queueCommand() -- same approval gate, same validated
+ * command path as everything else -- not a second, competing implementation. */
+document.getElementById("sysClockSendBtn")?.addEventListener("click", () => {
+  const result = document.getElementById("sysClockResult");
+  const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
+  const dateVal = document.getElementById("sysClockDate")?.value;
+  const timeVal = document.getElementById("sysClockTime")?.value;
+  if (!dateVal || !timeVal) { show("Pick both a date and a time first. Nothing was sent."); return; }
+  const [y, mo, d] = dateVal.split("-").map(Number);
+  const [h, mi] = timeVal.split(":").map(Number);
+  if (![y, mo, d, h, mi].every(Number.isFinite)) { show("Date/time could not be read. Nothing was sent."); return; }
+  if (!confirm(`Set ESP1's clock to ${dateVal} ${timeVal}? This affects every column's irrigation schedule.`)) return;
+  show("Sending to ESP1…", false);
+  queueCommand("SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi });
+});
+
+document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
+  const result = document.getElementById("sysThreshResult");
+  const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
+  const start = Number(document.getElementById("sysThreshStart")?.value);
+  const stop  = Number(document.getElementById("sysThreshStop")?.value);
+  const gap   = Number(document.getElementById("sysThreshGap")?.value);
+  if (![start, stop, gap].every(Number.isFinite)) { show("Fill in all three fields with numbers. Nothing was sent."); return; }
+  if (start < 0 || start > 100 || stop < 0 || stop > 100) { show("Start/stop must be 0-100. Nothing was sent."); return; }
+  if (gap < 0 || gap > 500) { show("Gap must be 0-500. Nothing was sent."); return; }
+  show("Sending to ESP1…", false);
+  queueCommand("SET_THRESH", { thStart: start, thStop: stop, thGap: gap });
+});
+
+document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () => {
+  const result = document.getElementById("sysRestoreResult");
+  const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
+  if (!confirm("Restore Defaults? This resets every column's mode, targets, name, and schedule window, " +
+               "plus the global thresholds, to factory values. This CANNOT be undone. Calibration, " +
+               "column-enabled wiring, and WiFi/ThingSpeak setup are kept.")) return;
+  show("Sending to ESP1…", false);
+  queueCommand("RESTORE_DEFAULTS", {});
+});
+
+// Read-only: current device time/RTC health (for Set Clock) and LCD Lock status. No write path is
+// offered for the lock -- see the info tooltip on that panel for why.
+function updateSystemTab() {
+  setText("sysClockCurrent", rawText(liveData.system?.deviceTime, "Unavailable"));
+  setText("sysClockRtcOk", booleanText(liveData.system?.rtcOk, "OK", "Not OK"));
+  setText("sysLockStatus", booleanText(liveData.diagnostics?.system?.lcdLocked, "Locked", "Unlocked"));
+}
 
 /* ---- Manual/Test tab -------------------------------------------------------------------------
  * Everything here energises a relay immediately, so the tab opens behind a gate that re-arms every
