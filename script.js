@@ -322,6 +322,7 @@ function initializeFirebase() {
     auth.onAuthStateChanged(user => {
       const loginScreen = document.getElementById("loginScreen");
       const logoutButton = document.getElementById("logoutBtn");
+      const currentUserEmailEl = document.getElementById("currentUserEmail");
       if (!user) {
         detachDatabaseListeners();
         detachUserStatusListener();
@@ -349,6 +350,7 @@ function initializeFirebase() {
         if (loginScreen) loginScreen.hidden = false;
         showAuthForm("login");
         if (logoutButton) logoutButton.hidden = true;
+        if (currentUserEmailEl) { currentUserEmailEl.hidden = true; currentUserEmailEl.textContent = ""; }
         setConnection(false, "Sign in required");
         syncControlAvailability();
         refreshOperatorUI();
@@ -356,6 +358,9 @@ function initializeFirebase() {
       }
       if (loginScreen) loginScreen.hidden = true;
       if (logoutButton) logoutButton.hidden = false;
+      // Lets whoever is at this screen confirm which account is actually signed in -- e.g. on a
+      // shared terminal, or after a Kick silently swapped the session back to the login screen.
+      if (currentUserEmailEl) { currentUserEmailEl.textContent = user.email || ""; currentUserEmailEl.hidden = !user.email; }
       attachDatabaseListeners();
       attachUserStatusListener(user.uid);
       refreshOperatorUI();

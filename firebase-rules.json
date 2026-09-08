@@ -47,7 +47,7 @@
         },
         "tempAccessUntil": {
           ".write": "auth != null && (((auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && $uid !== 'KaiqrwlOHeVdebbokPxZfcFLZiu2' && $uid !== 'C8V39t4EDgUgjOt9GA6OeMukMsw2') || (auth.uid === $uid && !newData.exists()))",
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > now && newData.val() <= now + 3600000)"
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > now - 60000 && newData.val() <= now + 3900000)"
         }
       }
     }
