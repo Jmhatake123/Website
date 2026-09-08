@@ -86,6 +86,11 @@ let commandsRef = null;
 let zonesRef = null;
 let lastCommandAt = 0;
 const COMMAND_COOLDOWN_MS = 10000;
+// Grant duration for the operator's "temporary Manual/Test + System access" action (see
+// isOperator()/canAccessPrivilegedTabs() below) -- must match the upper bound enforced server-side
+// in firebase-rules.json's tempAccessUntil validator, or a grant this page requests could be
+// rejected as exceeding the rules' own cap.
+const TEMP_ACCESS_DURATION_MS = 60 * 60 * 1000;
 
 // Mirrors of the firmware's own bounds (FORCE_MAX_LITERS / FORCE_MAX_DOSE_ML). Kept here so an
 // out-of-range request is refused before it is written, rather than round-tripping to the rig
@@ -172,6 +177,22 @@ function isOperator() {
 }
 function isApprovedUser() {
   return isOperator() || myAccountStatus === "approved";
+}
+
+// A normal approved operator can be granted TEMPORARY access to Manual/Test + System by an operator
+// (User Management > "Grant 1h Manual/Test + System", see renderUserManagement()) -- a time-bounded
+// elevation stored as /users/{uid}/tempAccessUntil (a millisecond timestamp), enforced server-side
+// in firebase-rules.json's commands/$commandId write rule, not just here. isOperator() itself is
+// deliberately UNTOUCHED and still means only the two fixed accounts everywhere else (User
+// Management visibility, granting/revoking this very grant, and the rules' own operator-only
+// branches) -- canAccessPrivilegedTabs() is the one broadened check, used only for Manual/Test +
+// System tab visibility and the commands they send.
+let myTempAccessUntil = 0;
+function hasTempAccess() {
+  return Date.now() < myTempAccessUntil;
+}
+function canAccessPrivilegedTabs() {
+  return isOperator() || hasTempAccess();
 }
 
 // Access-control revision (2026-09-09): renderZonesUI()'s editable-vs-read-only variant depends on
@@ -314,6 +335,7 @@ function initializeFirebase() {
         releaseManualHold();
         exTouched = false;             // let the exercise panel re-sync from ESP1 fresh on next sign-in
         lastZoneEditCapability = undefined;   // force a fresh evaluation on the next sign-in, not a stale match
+        myTempAccessUntil = 0;         // a temp-access grant must never survive into a later sign-in
         // liveData is about to be wiped below -- reset this FIRST so the updateDashboard() call just
         // after doesn't see (wasFaultActive=true, empty liveData) and announce a fabricated "The hold
         // cleared" from data loss, as if the fault/lockout had actually resolved.
@@ -441,10 +463,12 @@ function attachUserStatusListener(uid) {
     }
     const wasApproved = myAccountStatus === "approved";
     myAccountStatus = record ? record.status : null;
+    myTempAccessUntil = Number(record?.tempAccessUntil) || 0;
     renderAccountStatus(record);
     renderBlockedScreen();
     syncControlAvailability();
     syncZoneEditCapability();
+    refreshOperatorUI();   // an operator's temp-access grant/revoke must show/hide my tabs live
     // Block/Restrict must release an in-progress Manual/Test hold immediately, the same way Kick's
     // forced sign-out already does via onAuthStateChanged -- otherwise the rig stays out of
     // automatic for up to the full 60s lease after the operator believes access was cut off at once.
@@ -452,10 +476,12 @@ function attachUserStatusListener(uid) {
   }, error => {
     console.warn("Could not read account status", error);
     myAccountStatus = null;
+    myTempAccessUntil = 0;
     renderAccountStatus(null);
     renderBlockedScreen();
     syncControlAvailability();
     syncZoneEditCapability();
+    refreshOperatorUI();
   });
 }
 function detachUserStatusListener() {
@@ -536,19 +562,23 @@ function refreshOperatorUI() {
   }
   // Access-control revision (2026-09-09): System and Manual/Test are privileged-operator-only --
   // they contain Set Clock/Thresholds/Restore Defaults and Pump Exercise/Timed Pulses/Testing
-  // respectively, none of which a normal approved (non-operator) account should be able to reach.
-  // Same hide/redirect pattern as usersTab above, same two OPERATOR_UIDS, no new UID list. This is
-  // the UI-convenience half only -- queueCommand()'s operatorOnly check (added alongside this) is
-  // what actually refuses the command if someone reaches these controls anyway (devtools, a stale
-  // tab left open across a role change, etc).
+  // respectively, none of which a normal approved (non-operator) account should be able to reach
+  // UNLESS an operator has granted it temporary access (canAccessPrivilegedTabs(), added alongside
+  // this note) -- deliberately a SEPARATE check from `op` above: User Management stays real-
+  // operator-only always, since a temp-elevated account granting/revoking access (including its own)
+  // would defeat the whole point of the grant being operator-controlled. This is the UI-convenience
+  // half only -- queueCommand()'s operatorOnly check (added alongside this) is what actually refuses
+  // the command if someone reaches these controls anyway (devtools, a stale tab left open across a
+  // role change, an expired grant before the next 15s recheck, etc).
+  const privileged = canAccessPrivilegedTabs();
   const systemTab = document.getElementById("systemTab");
-  if (systemTab) systemTab.hidden = !op;
-  if (!op && document.querySelector('.tab[data-view="system"]')?.classList.contains("active")) {
+  if (systemTab) systemTab.hidden = !privileged;
+  if (!privileged && document.querySelector('.tab[data-view="system"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
   const manualTestTab = document.getElementById("manualtestTab");
-  if (manualTestTab) manualTestTab.hidden = !op;
-  if (!op && document.querySelector('.tab[data-view="manualtest"]')?.classList.contains("active")) {
+  if (manualTestTab) manualTestTab.hidden = !privileged;
+  if (!privileged && document.querySelector('.tab[data-view="manualtest"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
 }
@@ -592,16 +622,24 @@ function renderUserManagement(users) {
     // below -- with two operators, a row is not automatically "you" just because it's *an* operator.
     const isAnyOperator = OPERATOR_UIDS.includes(uid) || uid === ESP1_DEVICE_UID;
     const isViewerSelf = uid === auth.currentUser?.uid;
+    // Temporary Manual/Test + System access (see canAccessPrivilegedTabs() in the capability-check
+    // section above) -- only ever meaningful for an approved, non-operator account; an operator
+    // already has full access, and a pending/restricted/blocked account can't be elevated without
+    // first being approved.
+    const tempActive = status === "approved" && !isAnyOperator && Number(u?.tempAccessUntil) > Date.now();
     const actions = [];
     if (!isAnyOperator) {
       if (status === "pending")    actions.push(["approve", "Approve"], ["reject", "Reject"], ["restrict", "Restrict"], ["delete", "Delete"]);
-      if (status === "approved")   actions.push(["kick", "Kick"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "approved") {
+        actions.push(["kick", "Kick"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
+        actions.push(tempActive ? ["revoketemp", "Revoke temp access"] : ["granttemp", "Grant 1h Manual/Test + System"]);
+      }
       if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
       if (status === "rejected")   actions.push(["approve", "Approve"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
       if (status === "disabled")   actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
     }
     const tone = status === "approved" ? "active" : (status === "pending" || status === "restricted") ? "off" : "danger";
-    const tones = { delete: " danger", block: " warn" };
+    const tones = { delete: " danger", block: " warn", revoketemp: " warn" };
     const buttons = actions.map(([action, label]) =>
       `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
     ).join("");
@@ -610,6 +648,7 @@ function renderUserManagement(users) {
         <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
         <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
         <span class="muted">Registered: ${escapeHtml(created)}</span>
+        ${tempActive ? `<span class="muted">Temp Manual/Test + System access until ${escapeHtml(new Date(u.tempAccessUntil).toLocaleTimeString())}</span>` : ""}
       </div>
       <span class="device-status ${tone}">${escapeHtml(STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
       <div class="user-row-actions">${buttons}</div>
@@ -663,6 +702,19 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
     return;
   }
+  if (action === "granttemp") {
+    // Time-bounded elevation, not a role change -- status stays "approved" throughout. Enforced
+    // server-side too: firebase-rules.json's tempAccessUntil validator caps this at the same
+    // TEMP_ACCESS_DURATION_MS from the moment the write actually lands, so a slow request can't
+    // grant longer than intended.
+    if (!confirm(`Grant ${name} temporary access to Manual/Test and System for 1 hour?`)) return;
+    run(() => db.ref(`users/${uid}`).update({ tempAccessUntil: Date.now() + TEMP_ACCESS_DURATION_MS }));
+    return;
+  }
+  if (action === "revoketemp") {
+    run(() => db.ref(`users/${uid}`).update({ tempAccessUntil: null }));
+    return;
+  }
   const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved", restrict: "restricted", unrestrict: "approved" };
   const newStatus = statusMap[action];
   if (!newStatus) return;
@@ -706,13 +758,13 @@ function queueCommand(type, payload = {}, options = {}) {
   }
   // Access-control revision (2026-09-09): a handful of command types (Manual/Test's pump exercise/
   // timed pulse/flow sweep, System's Set Clock/Thresholds/Restore Defaults) are meant for the two
-  // privileged operator accounts only -- a normal approved (non-operator) account passes
-  // isApprovedUser() above but must still be refused here. Centralized in this one choke point
-  // rather than duplicated per call site, matching every other gate in this function. NOTE: this
-  // client-side check is currently the only place that distinguishes operator from normal-approved
-  // for these specific command types -- the Firebase rules authorize them for any approved account,
-  // same as every other command. See the final report's Firebase-rules caveat.
-  if (options.operatorOnly && !isOperator()) {
+  // privileged operator accounts -- or a normal approved account an operator has temporarily
+  // elevated (canAccessPrivilegedTabs() = isOperator() || hasTempAccess()) -- never a plain approved
+  // account on its own. Centralized in this one choke point rather than duplicated per call site,
+  // matching every other gate in this function. As of the 2026-09-09 rules tightening, this is no
+  // longer just a client-side convenience: firebase-rules.json's commands/$commandId write rule
+  // independently enforces the identical operator-or-temp-access check for these six command types.
+  if (options.operatorOnly && !canAccessPrivilegedTabs()) {
     setCommandStatus("This control is limited to the main/creator operator account.", "error");
     return Promise.resolve(false);
   }
@@ -1913,13 +1965,14 @@ function writeManualHold(want) {
   // The one other write path toward hardware outside queueCommand() -- same approval gate, both
   // client-side (here) and server-side (the rules on /irrigation/manual).
   if (!currentUserIsSignedIn() || !isApprovedUser()) return Promise.resolve(false);
-  // Access-control revision (2026-09-09): Manual/Test is privileged-operator-only, so only an
-  // operator may ACQUIRE the hold (want=true) -- the manualtest tab that normally triggers this is
-  // already hidden from non-operators, this is the function-level backstop per the access-control
-  // spec's "a JS function invoked manually must still be rejected" requirement. Releasing (want=
-  // false) deliberately stays available regardless of role: it only ever hands control back to
-  // automation, which must never be blocked by a permission check.
-  if (want && !isOperator()) return Promise.resolve(false);
+  // Access-control revision (2026-09-09): Manual/Test is privileged-operator-only (or temporarily
+  // granted, see canAccessPrivilegedTabs()), so only that tier may ACQUIRE the hold (want=true) --
+  // the manualtest tab that normally triggers this is already hidden otherwise, this is the
+  // function-level backstop per the access-control spec's "a JS function invoked manually must
+  // still be rejected" requirement. Releasing (want=false) deliberately stays available regardless
+  // of role: it only ever hands control back to automation, which must never be blocked by a
+  // permission check.
+  if (want && !canAccessPrivilegedTabs()) return Promise.resolve(false);
   // C-H4/R workaround (audit): the CURRENTLY-FLASHED ESP1 firmware parses this into a 32-bit `long`
   // (`long seq = doc["seq"] | -1`). A raw Date.now() (~1.7e12) doesn't fit a 32-bit long, so
   // ArduinoJson's `|` silently falls back to -1 on EVERY poll -- seq != webManualSeq then never
@@ -2163,6 +2216,10 @@ contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () 
 setInterval(() => {
   setText("liveAge", snapshotAgeText());
   syncControlAvailability();
+  // A temporary Manual/Test + System grant (see canAccessPrivilegedTabs()) expires by clock alone --
+  // no Firebase write happens at the exact expiry moment, so nothing else would re-check this. 15 s
+  // granularity matches the existing staleness-recheck cadence this tick already runs.
+  refreshOperatorUI();
 }, 15000);
 
 // 1 s tick: the armed-run countdown has to move between snapshots (ESP1 publishes every 20-60 s),
