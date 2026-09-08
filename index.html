@@ -76,9 +76,14 @@
       <button type="button" class="tab active" data-view="dashboard">Live dashboard</button>
       <button type="button" class="tab" data-view="zones">Zone profiles</button>
       <button type="button" class="tab" data-view="manual">Controls</button>
-      <button type="button" class="tab" data-view="manualtest">Manual/Test</button>
+      <!-- Manual/Test and System are privileged-operator-only (see refreshOperatorUI() in
+           script.js) -- both hidden by default here, same pattern as usersTab below, so there is no
+           flash-of-visible-tab before JS runs. This tab being hidden is a UI convenience; the real
+           enforcement is queueCommand()'s operatorOnly check on every command these views can send
+           (see the dashboard-contract note at the top of script.js for which commands that covers). -->
+      <button type="button" class="tab" data-view="manualtest" id="manualtestTab" hidden>Manual/Test</button>
       <button type="button" class="tab" data-view="diagnostics">Diagnostics</button>
-      <button type="button" class="tab" data-view="system">System</button>
+      <button type="button" class="tab" data-view="system" id="systemTab" hidden>System</button>
       <!-- Shown only to the operator UID (see refreshOperatorUI() in script.js) -- hiding this tab
            from everyone else is a convenience, not the security boundary; the real enforcement is
            the operator-only write rule on /users/{uid} in firebase-rules.json. -->

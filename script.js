@@ -174,6 +174,21 @@ function isApprovedUser() {
   return isOperator() || myAccountStatus === "approved";
 }
 
+// Access-control revision (2026-09-09): renderZonesUI()'s editable-vs-read-only variant depends on
+// isApprovedUser(), which can change mid-session (operator approves/restricts/blocks an account
+// while its tab stays open -- see Part 6 of the access-control spec). Re-rendering on every single
+// syncControlAvailability() tick (called every 15s and on every live-data push) would be wasteful
+// and would fight the capture/restore form-state machinery for no reason, so this only re-renders
+// on an actual flip, tracked here. Called from attachUserStatusListener()'s status callback (the
+// only thing that can change isApprovedUser() while isOperator() stays fixed for the session).
+let lastZoneEditCapability = undefined;
+function syncZoneEditCapability() {
+  const canEdit = isApprovedUser();
+  if (canEdit === lastZoneEditCapability) return;
+  lastZoneEditCapability = canEdit;
+  renderZonesUI();
+}
+
 function setDeviceStatus(id, text, tone = "off") {
   const element = document.getElementById(id);
   if (!element) return;
@@ -298,6 +313,7 @@ function initializeFirebase() {
         // signed out, which is fine -- ESP1's own 60s lease expires the hold on its own regardless.
         releaseManualHold();
         exTouched = false;             // let the exercise panel re-sync from ESP1 fresh on next sign-in
+        lastZoneEditCapability = undefined;   // force a fresh evaluation on the next sign-in, not a stale match
         // liveData is about to be wiped below -- reset this FIRST so the updateDashboard() call just
         // after doesn't see (wasFaultActive=true, empty liveData) and announce a fabricated "The hold
         // cleared" from data loss, as if the fault/lockout had actually resolved.
@@ -428,6 +444,7 @@ function attachUserStatusListener(uid) {
     renderAccountStatus(record);
     renderBlockedScreen();
     syncControlAvailability();
+    syncZoneEditCapability();
     // Block/Restrict must release an in-progress Manual/Test hold immediately, the same way Kick's
     // forced sign-out already does via onAuthStateChanged -- otherwise the rig stays out of
     // automatic for up to the full 60s lease after the operator believes access was cut off at once.
@@ -438,6 +455,7 @@ function attachUserStatusListener(uid) {
     renderAccountStatus(null);
     renderBlockedScreen();
     syncControlAvailability();
+    syncZoneEditCapability();
   });
 }
 function detachUserStatusListener() {
@@ -514,6 +532,23 @@ function refreshOperatorUI() {
   if (tab) tab.hidden = !op;
   if (op) attachUserManagementListener(); else detachUserManagementListener();
   if (!op && document.querySelector('.tab[data-view="users"]')?.classList.contains("active")) {
+    document.querySelector('.tab[data-view="dashboard"]')?.click();
+  }
+  // Access-control revision (2026-09-09): System and Manual/Test are privileged-operator-only --
+  // they contain Set Clock/Thresholds/Restore Defaults and Pump Exercise/Timed Pulses/Testing
+  // respectively, none of which a normal approved (non-operator) account should be able to reach.
+  // Same hide/redirect pattern as usersTab above, same two OPERATOR_UIDS, no new UID list. This is
+  // the UI-convenience half only -- queueCommand()'s operatorOnly check (added alongside this) is
+  // what actually refuses the command if someone reaches these controls anyway (devtools, a stale
+  // tab left open across a role change, etc).
+  const systemTab = document.getElementById("systemTab");
+  if (systemTab) systemTab.hidden = !op;
+  if (!op && document.querySelector('.tab[data-view="system"]')?.classList.contains("active")) {
+    document.querySelector('.tab[data-view="dashboard"]')?.click();
+  }
+  const manualTestTab = document.getElementById("manualtestTab");
+  if (manualTestTab) manualTestTab.hidden = !op;
+  if (!op && document.querySelector('.tab[data-view="manualtest"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
 }
@@ -669,6 +704,18 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus("Your account is awaiting operator approval before it can send commands to the rig.", "error");
     return Promise.resolve(false);
   }
+  // Access-control revision (2026-09-09): a handful of command types (Manual/Test's pump exercise/
+  // timed pulse/flow sweep, System's Set Clock/Thresholds/Restore Defaults) are meant for the two
+  // privileged operator accounts only -- a normal approved (non-operator) account passes
+  // isApprovedUser() above but must still be refused here. Centralized in this one choke point
+  // rather than duplicated per call site, matching every other gate in this function. NOTE: this
+  // client-side check is currently the only place that distinguishes operator from normal-approved
+  // for these specific command types -- the Firebase rules authorize them for any approved account,
+  // same as every other command. See the final report's Firebase-rules caveat.
+  if (options.operatorOnly && !isOperator()) {
+    setCommandStatus("This control is limited to the main/creator operator account.", "error");
+    return Promise.resolve(false);
+  }
   if (!emergency && !deviceIsFresh()) {
     setCommandStatus("Normal command not sent: ESP1 live status is stale or offline.", "error");
     return Promise.resolve(false);
@@ -749,29 +796,33 @@ function renderZonesUI() {
   if (!container) return;
   const savedFormState = captureZoneFormState();
   container.innerHTML = "";
+  // Access-control revision (2026-09-09): a pending/restricted account (isApprovedUser() false)
+  // previously got the exact same "Firmware settings" block as an approved one -- quick-action
+  // buttons, dropdowns, N/P/K/pH inputs, preset selector, Send to ESP1, all fully rendered and
+  // clickable -- relying entirely on queueCommand()'s isApprovedUser() check (and the Firebase
+  // rules behind it) to reject the write after the fact. That is still the REAL security boundary
+  // and is unchanged below; this only stops the UI from offering a control that is "simply expected
+  // to fail" (per the access-control spec). The sensor-reading matrix-grid and the live "Current
+  // configuration" summary are identical either way -- only the editing surface (crop/stage
+  // selects, and the whole zone-config block) is swapped for plain read-only text.
+  const canEdit = isApprovedUser();
   activeZones.forEach(zone => {
     const block = document.createElement("article");
     block.className = "zone-block";
     const info = (title, text) => `<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${title}" data-info-title="${title}" data-info-text="${text}">i</button>`;
-    block.innerHTML = `
-      <div class="zone-header">
-        <div><p class="eyebrow">Physical zone ${zone.id}</p><h3>${escapeHtml(zone.name)}</h3></div>
-        <div class="zone-selectors">
+
+    const cropStageHtml = canEdit
+      ? `<div class="zone-selectors">
           <label><span class="label-row">Crop${info("Crop selection", "Pick the crop growing in this physical zone. This is a planning note for the dashboard only -- the current firmware does not read it automatically. To actually change how the rig runs, fill the targets below from this crop and press Send to ESP1.")}</span><select id="cropSelect${zone.id}"></select></label>
           <label><span class="label-row">Growth stage${info("Growth stage", "Pick the crop's current growth stage. Like the crop choice, this only updates the reference numbers shown on this page -- it does not by itself change anything on the rig.")}</span><select id="growthStage${zone.id}"></select></label>
-        </div>
-      </div>
-      <div class="card-grid matrix-grid">
-        <article class="card matrix-card"><h3>Nitrogen${info("Nitrogen", "The nitrogen level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target. Red text means the reading is below that target.")}</h3><p id="nitrogen${zone.id}">Unavailable</p><small id="targetN${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Phosphorus${info("Phosphorus", "The phosphorus level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="phosphorus${zone.id}">Unavailable</p><small id="targetP${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Potassium${info("Potassium", "The potassium level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="potassium${zone.id}">Unavailable</p><small id="targetK${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil pH${info("Soil pH", "How acidic or alkaline the soil is in this zone, measured by the 7-in-1 probe.")}</h3><p id="soilPH${zone.id}">Unavailable</p><small id="targetPH${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil EC${info("Soil EC", "How concentrated the nutrients are in this zone's soil, measured by the probe.")}</h3><p id="soilEC${zone.id}">Unavailable</p><small id="targetEC${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil moisture${info("Soil moisture", "How damp the soil is in this zone. The schedule compares this against a threshold to decide when a run should start.")}</h3><p id="soil${zone.id}">Unavailable</p><small id="targetMoisture${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>NPK probe moisture${info("NPK probe moisture", "A second, independent moisture reading from the NPK probe itself, blended into the main soil moisture figure when the two readings agree.")}</h3><p id="npkMoist${zone.id}">Unavailable</p><small>Blended into the figure at left when it agrees</small></article>
-        <article class="card matrix-card"><h3>Soil temperature${info("Soil temperature", "The soil temperature at the root zone, from the 7-in-1 probe.")}</h3><p id="soilTemp${zone.id}">Unavailable</p><small>Root zone, from the 7-in-1 probe</small></article>
-      </div>
-      <div class="zone-config">
+        </div>`
+      : `<div class="zone-selectors">
+          <label><span class="label-row">Crop</span><strong>${escapeHtml(readableCropNames[zone.defaultCrop] || zone.defaultCrop || "--")}</strong></label>
+          <label><span class="label-row">Growth stage</span><strong>${escapeHtml(zone.defaultStage ? zone.defaultStage[0].toUpperCase() + zone.defaultStage.slice(1) : "--")}</strong></label>
+        </div>`;
+
+    const firmwareConfigHtml = canEdit
+      ? `<div class="zone-config">
         <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "These are the real settings ESP1 uses to run this column -- separate from the crop profile above, which is only a planning note. Any field left blank here is not changed; only fields you fill in are updated.")}</h4>
         <p class="field-note">Unlike the crop profile above, these are sent to ESP1 and change how it runs. Blank fields are left unchanged. Use "Fill targets from crop profile" to copy the selected crop and stage into the N/P/K/pH boxes, then review and send.</p>
         <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
@@ -815,46 +866,71 @@ function renderZonesUI() {
           <span class="btn-with-info"><button type="button" id="cfgSave${zone.id}">Send to ESP1</button>${info("Send to ESP1", "Sends the settings above to ESP1 as a real command. ESP1 checks each value is within a safe range before accepting it; anything left blank is unchanged.")}</span>
         </div>
         <p id="cfgResult${zone.id}" class="control-result" aria-live="polite"></p>
+      </div>`
+      : `<div class="zone-config">
+        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "These are the real settings ESP1 uses to run this column. Editing requires an approved operator account.")}</h4>
+        <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
+        <p class="field-note">Read-only access — editing firmware settings requires operator approval.</p>
+      </div>`;
+
+    block.innerHTML = `
+      <div class="zone-header">
+        <div><p class="eyebrow">Physical zone ${zone.id}</p><h3>${escapeHtml(zone.name)}</h3></div>
+        ${cropStageHtml}
       </div>
+      <div class="card-grid matrix-grid">
+        <article class="card matrix-card"><h3>Nitrogen${info("Nitrogen", "The nitrogen level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target. Red text means the reading is below that target.")}</h3><p id="nitrogen${zone.id}">Unavailable</p><small id="targetN${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Phosphorus${info("Phosphorus", "The phosphorus level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="phosphorus${zone.id}">Unavailable</p><small id="targetP${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Potassium${info("Potassium", "The potassium level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="potassium${zone.id}">Unavailable</p><small id="targetK${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil pH${info("Soil pH", "How acidic or alkaline the soil is in this zone, measured by the 7-in-1 probe.")}</h3><p id="soilPH${zone.id}">Unavailable</p><small id="targetPH${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil EC${info("Soil EC", "How concentrated the nutrients are in this zone's soil, measured by the probe.")}</h3><p id="soilEC${zone.id}">Unavailable</p><small id="targetEC${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil moisture${info("Soil moisture", "How damp the soil is in this zone. The schedule compares this against a threshold to decide when a run should start.")}</h3><p id="soil${zone.id}">Unavailable</p><small id="targetMoisture${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>NPK probe moisture${info("NPK probe moisture", "A second, independent moisture reading from the NPK probe itself, blended into the main soil moisture figure when the two readings agree.")}</h3><p id="npkMoist${zone.id}">Unavailable</p><small>Blended into the figure at left when it agrees</small></article>
+        <article class="card matrix-card"><h3>Soil temperature${info("Soil temperature", "The soil temperature at the root zone, from the 7-in-1 probe.")}</h3><p id="soilTemp${zone.id}">Unavailable</p><small>Root zone, from the 7-in-1 probe</small></article>
+      </div>
+      ${firmwareConfigHtml}
       <p class="zone-note">Actuator/solenoid feedback: not reported by the current ESP1 Firebase snapshot.</p>`;
     container.appendChild(block);
-    block.querySelector(`#cfgSave${zone.id}`)?.addEventListener("click", () => submitColumnConfig(zone.id));
-    block.querySelector(`#cfgFromCrop${zone.id}`)?.addEventListener("click", () => fillTargetsFromCrop(zone));
-    block.querySelector(`#zoneAuto${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "AUTO"));
-    block.querySelector(`#zoneIrrOnly${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "IRRIGATION_ONLY"));
-    block.querySelector(`#zoneOff${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, null));
 
-    const presetSelect = block.querySelector(`#cfgPreset${zone.id}`);
-    FIRMWARE_PRESETS.forEach(name => presetSelect?.add(new Option(name, name)));
+    if (canEdit) {
+      block.querySelector(`#cfgSave${zone.id}`)?.addEventListener("click", () => submitColumnConfig(zone.id));
+      block.querySelector(`#cfgFromCrop${zone.id}`)?.addEventListener("click", () => fillTargetsFromCrop(zone));
+      block.querySelector(`#zoneAuto${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "AUTO"));
+      block.querySelector(`#zoneIrrOnly${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "IRRIGATION_ONLY"));
+      block.querySelector(`#zoneOff${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, null));
 
-    const cropSelect = block.querySelector(`#cropSelect${zone.id}`);
-    const stageSelect = block.querySelector(`#growthStage${zone.id}`);
-    Object.keys(cropDatabase).forEach(crop => {
-      const option = new Option(readableCropNames[crop], crop, false, crop === zone.defaultCrop);
-      cropSelect.add(option);
-    });
-    populateStageOptions(zone, stageSelect);
-    cropSelect.addEventListener("change", () => {
-      zone.defaultCrop = cropSelect.value;
-      zone.defaultStage = Object.keys(cropDatabase[zone.defaultCrop])[0];
+      const presetSelect = block.querySelector(`#cfgPreset${zone.id}`);
+      FIRMWARE_PRESETS.forEach(name => presetSelect?.add(new Option(name, name)));
+
+      const cropSelect = block.querySelector(`#cropSelect${zone.id}`);
+      const stageSelect = block.querySelector(`#growthStage${zone.id}`);
+      Object.keys(cropDatabase).forEach(crop => {
+        const option = new Option(readableCropNames[crop], crop, false, crop === zone.defaultCrop);
+        cropSelect.add(option);
+      });
       populateStageOptions(zone, stageSelect);
-      updateZoneTargets(zone);
-      writeZoneProfile(zone);
-    });
-    stageSelect.addEventListener("change", () => {
-      zone.defaultStage = stageSelect.value;
-      updateZoneTargets(zone);
-      writeZoneProfile(zone);
-    });
-    updateZoneTargets(zone);
-    restoreZoneFormState(zone.id, savedFormState[zone.id]);
+      cropSelect.addEventListener("change", () => {
+        zone.defaultCrop = cropSelect.value;
+        zone.defaultStage = Object.keys(cropDatabase[zone.defaultCrop])[0];
+        populateStageOptions(zone, stageSelect);
+        updateZoneTargets(zone);
+        writeZoneProfile(zone);
+      });
+      stageSelect.addEventListener("change", () => {
+        zone.defaultStage = stageSelect.value;
+        updateZoneTargets(zone);
+        writeZoneProfile(zone);
+      });
+      restoreZoneFormState(zone.id, savedFormState[zone.id]);
 
-    // Window start/end only mean anything under Manual window -- hide them otherwise rather than
-    // deleting whatever value they hold, and re-check on every change so switching back to Manual
-    // later shows the value again instead of forcing it to be retyped.
-    const schedSelect = block.querySelector(`#cfgSched${zone.id}`);
-    schedSelect?.addEventListener("change", () => updateWindowVisibility(zone.id));
-    updateWindowVisibility(zone.id);
+      // Window start/end only mean anything under Manual window -- hide them otherwise rather than
+      // deleting whatever value they hold, and re-check on every change so switching back to Manual
+      // later shows the value again instead of forcing it to be retyped.
+      const schedSelect = block.querySelector(`#cfgSched${zone.id}`);
+      schedSelect?.addEventListener("change", () => updateWindowVisibility(zone.id));
+      updateWindowVisibility(zone.id);
+    }
+    updateZoneTargets(zone);
   });
 }
 
@@ -1727,9 +1803,9 @@ document.addEventListener("visibilitychange", () => {
     mtHideTimer = null;
   }
 });
-document.getElementById("transferPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "transfer" }));
-document.getElementById("boosterPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "booster" }));
-document.getElementById("mixerBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "mixer" }));
+document.getElementById("transferPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "transfer" }, { operatorOnly: true }));
+document.getElementById("boosterPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "booster" }, { operatorOnly: true }));
+document.getElementById("mixerBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "mixer" }, { operatorOnly: true }));
 document.getElementById("emergencyStop")?.addEventListener("click", () => queueCommand("EMERGENCY_STOP", {}, { emergency: true }));
 document.getElementById("forceRunForm")?.addEventListener("submit", submitForceRun);
 
@@ -1780,7 +1856,7 @@ document.getElementById("sysClockSendBtn")?.addEventListener("click", () => {
   if (![y, mo, d, h, mi].every(Number.isFinite)) { show("Date/time could not be read. Nothing was sent."); return; }
   if (!confirm(`Set ESP1's clock to ${dateVal} ${timeVal}? This affects every column's irrigation schedule.`)) return;
   show("Sending to ESP1…", false);
-  queueCommand("SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi });
+  queueCommand("SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi }, { operatorOnly: true });
 });
 
 document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
@@ -1793,7 +1869,7 @@ document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
   if (start < 0 || start > 100 || stop < 0 || stop > 100) { show("Start/stop must be 0-100. Nothing was sent."); return; }
   if (gap < 0 || gap > 500) { show("Gap must be 0-500. Nothing was sent."); return; }
   show("Sending to ESP1…", false);
-  queueCommand("SET_THRESH", { thStart: start, thStop: stop, thGap: gap });
+  queueCommand("SET_THRESH", { thStart: start, thStop: stop, thGap: gap }, { operatorOnly: true });
 });
 
 document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () => {
@@ -1803,7 +1879,7 @@ document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () =
                "plus the global thresholds, to factory values. This CANNOT be undone. Calibration, " +
                "column-enabled wiring, and WiFi/ThingSpeak setup are kept.")) return;
   show("Sending to ESP1…", false);
-  queueCommand("RESTORE_DEFAULTS", {});
+  queueCommand("RESTORE_DEFAULTS", {}, { operatorOnly: true });
 });
 
 // Read-only: current device time/RTC health (for Set Clock) and LCD Lock status. No write path is
@@ -1837,6 +1913,13 @@ function writeManualHold(want) {
   // The one other write path toward hardware outside queueCommand() -- same approval gate, both
   // client-side (here) and server-side (the rules on /irrigation/manual).
   if (!currentUserIsSignedIn() || !isApprovedUser()) return Promise.resolve(false);
+  // Access-control revision (2026-09-09): Manual/Test is privileged-operator-only, so only an
+  // operator may ACQUIRE the hold (want=true) -- the manualtest tab that normally triggers this is
+  // already hidden from non-operators, this is the function-level backstop per the access-control
+  // spec's "a JS function invoked manually must still be rejected" requirement. Releasing (want=
+  // false) deliberately stays available regardless of role: it only ever hands control back to
+  // automation, which must never be blocked by a permission check.
+  if (want && !isOperator()) return Promise.resolve(false);
   // C-H4/R workaround (audit): the CURRENTLY-FLASHED ESP1 firmware parses this into a 32-bit `long`
   // (`long seq = doc["seq"] | -1`). A raw Date.now() (~1.7e12) doesn't fit a 32-bit long, so
   // ArduinoJson's `|` silently falls back to -1 on EVERY poll -- seq != webManualSeq then never
@@ -2010,7 +2093,7 @@ document.getElementById("exSaveBtn")?.addEventListener("click", () => {
   if (!Number.isFinite(seconds) || seconds < 1 || seconds > 10) { show("Duration must be 1-10 seconds. Nothing was sent."); return; }
   show(on ? `Enabling the exercise at ${seconds}s per pump...` : "Turning the preventive exercise off...", false);
   exTouched = false;                       // let the next snapshot confirm what ESP1 actually stored
-  queueCommand("SET_EXERCISE", { exerciseEnabled: on, exerciseSeconds: seconds });
+  queueCommand("SET_EXERCISE", { exerciseEnabled: on, exerciseSeconds: seconds }, { operatorOnly: true });
 });
 
 document.getElementById("mtProceed")?.addEventListener("click", () => setManualTestArmed(true));
@@ -2028,7 +2111,7 @@ document.getElementById("pulseBtn")?.addEventListener("click", () => {
   }
   if ((target === "phUp" || target === "phDn") &&
       !confirm(`Dispense pH adjuster for ${seconds} s? This is corrosive and goes into the mixing tank.`)) return;
-  queueCommand("TEST_PULSE", { target, seconds });
+  queueCommand("TEST_PULSE", { target, seconds }, { operatorOnly: true });
 });
 // The Diagnostics tab has its own sweep button; both queue the same DIAG_SWEEP and fill both tables.
 // Both are plain buttons (not form submits), so the HTML min/max on the paired input never fires --
@@ -2047,7 +2130,7 @@ document.getElementById("sweepBtn")?.addEventListener("click", () => {
 });
 document.getElementById("mtSweepBtn")?.addEventListener("click", () => {
   const seconds = sweepSecondsOrReject("mtSweepSeconds");
-  if (seconds !== null) queueCommand("DIAG_SWEEP", { seconds });
+  if (seconds !== null) queueCommand("DIAG_SWEEP", { seconds }, { operatorOnly: true });
 });
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
   // Leaving Manual/Test re-arms its gate, so you can never land back on live hardware controls
