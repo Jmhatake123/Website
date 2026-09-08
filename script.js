@@ -2,9 +2,11 @@
  * Dashboard contract
  * ------------------
  * irrigation/live     ESP1 -> dashboard (latest verified snapshot)
- * irrigation/config   which crop/stage each zone grows. ESP1 does not read this node -- the crop's
- *                     N/P/K/pH reach the rig only when the operator fills them into the column
- *                     settings ("Fill targets from crop profile") and sends them via SET_COLUMN.
+ * irrigation/config   which crop/stage each zone grows, plus each column's own "Firmware save
+ *                     settings" library (savedSettings/*). ESP1 does not read this node at all --
+ *                     values reach the rig only when the operator fills them into the column
+ *                     settings (via a saved setting, "Fill targets from crop profile", or by hand)
+ *                     and sends them via SET_COLUMN.
  * irrigation/manual   dashboard -> ESP1 { seq, want }: the Manual/Test hold. ESP1 answers in
  *                     irrigation/live under diagnostics.webManual. Needs its own RTDB rule --
  *                     see Website/firebase-rules.json.
@@ -26,9 +28,11 @@
  *   SET_COLUMN         { col: "A"|"B"|"C", mode?, enabled?, schedMode?, winStart?, winEnd?,
  *                        targetN?, targetP?, targetK?, targetPH?, preset? }   every field but col
  *                        is optional; an absent field is left unchanged, never treated as zero.
- *                        preset (added for website LCD-parity) is one of FIRMWARE_PRESETS' names
- *                        below, resolved server-side against ESP1's own preset table -- NOT the
- *                        same thing as this file's cropDatabase.
+ *                        ESP1 still accepts preset (one of its own CROP_PRESETS names, resolved
+ *                        server-side) via the LCD/SMS, but this page no longer offers it -- see
+ *                        "Firmware save settings" below, which replaced it with the operator's own
+ *                        saved N/P/K/pH+mode+schedule combinations instead of ESP1's fixed 4-name
+ *                        table.
  *   SET_EXERCISE       { exerciseEnabled?, exerciseSeconds? }
  *   REBOOT             { target: "nano"|"esp2"|"esp1" }
  *   TEST_PULSE         { target, seconds: 1-15 }   Manual/Test only, dead-man timed on ESP2
@@ -51,14 +55,6 @@ const cropDatabase = {
   kamatis: { seedling: { n: 120, p: 50, k: 100, ph: 5.8, ec: 1.2, moisture: 65 }, vegetative: { n: 220, p: 60, k: 180, ph: 6.0, ec: 2.0, moisture: 70 }, flowering: { n: 180, p: 70, k: 250, ph: 6.2, ec: 2.5, moisture: 75 }, fruiting: { n: 160, p: 70, k: 300, ph: 6.5, ec: 2.5, moisture: 80 } },
   basil: { seedling: { n: 60, p: 30, k: 90, ph: 5.5, ec: 0.8, moisture: 60 }, vegetative: { n: 140, p: 45, k: 210, ph: 6.0, ec: 1.4, moisture: 70 } }
 };
-
-// ESP1's OWN built-in crop presets (CROP_PRESETS[], ESP1/src/main.cpp) -- a completely separate,
-// smaller, firmware-resolved list from cropDatabase above. cropDatabase is this website's own
-// planning convenience and never leaves the browser on its own; these 4 names are sent verbatim as
-// SET_COLUMN's "preset" field and looked up on ESP1 against its real table. Mirrors the firmware
-// constant the same way FORCE_MAX_LITERS/FORCE_MAX_DOSE_ML already do below -- keep in sync if the
-// firmware table ever changes.
-const FIRMWARE_PRESETS = ["PECHAY", "TOMATO_S1", "TOMATO_S2", "TOMATO_S3"];
 
 const readableCropNames = {
   pechay: "Pechay", kangkong: "Kangkong", sitaw: "Sitaw", talong: "Talong",
@@ -406,10 +402,14 @@ function attachDatabaseListeners() {
       // A zone absent from this snapshot (never saved, or only OTHER zones were ever saved) keeps
       // ITS OWN original default -- previously every unsaved zone fell back to one hardcoded
       // crop/name the moment any single zone was ever saved, silently mangling the other two.
-      if (!zone) return { ...def };
+      if (!zone) return { ...def, savedSettings: {} };
       const crop = cropDatabase[zone.crop] ? zone.crop : def.defaultCrop;
       const stage = cropDatabase[crop][zone.stage] ? zone.stage : def.defaultStage;
-      return { id: def.id, name: zone.name || def.name, defaultCrop: crop, defaultStage: stage };
+      // savedSettings: this column's own "Firmware save settings" library (see
+      // saveColumnSettings()/renderZonesUI()) -- lives under the same dashboard-only config/zones
+      // node as crop/stage, so no new Firebase rule or listener was needed; this one already
+      // watches the whole subtree.
+      return { id: def.id, name: zone.name || def.name, defaultCrop: crop, defaultStage: stage, savedSettings: zone.savedSettings || {} };
     });
     renderZonesUI();
     updateDashboard();
@@ -833,7 +833,7 @@ function captureZoneFormState() {
       cfgMode: val(`cfgMode${id}`), cfgEnabled: val(`cfgEnabled${id}`), cfgSched: val(`cfgSched${id}`),
       cfgWinStart: val(`cfgWinStart${id}`), cfgWinEnd: val(`cfgWinEnd${id}`),
       cfgN: val(`cfgN${id}`), cfgP: val(`cfgP${id}`), cfgK: val(`cfgK${id}`), cfgPH: val(`cfgPH${id}`),
-      cfgPreset: val(`cfgPreset${id}`)
+      cfgSaveName: val(`cfgSaveName${id}`)
     };
   });
   return state;
@@ -845,7 +845,7 @@ function restoreZoneFormState(zoneId, saved) {
   set(`cfgMode${zoneId}`, saved.cfgMode); set(`cfgEnabled${zoneId}`, saved.cfgEnabled); set(`cfgSched${zoneId}`, saved.cfgSched);
   set(`cfgWinStart${zoneId}`, saved.cfgWinStart); set(`cfgWinEnd${zoneId}`, saved.cfgWinEnd);
   set(`cfgN${zoneId}`, saved.cfgN); set(`cfgP${zoneId}`, saved.cfgP); set(`cfgK${zoneId}`, saved.cfgK); set(`cfgPH${zoneId}`, saved.cfgPH);
-  set(`cfgPreset${zoneId}`, saved.cfgPreset);
+  set(`cfgSaveName${zoneId}`, saved.cfgSaveName);
 }
 
 function renderZonesUI() {
@@ -914,9 +914,13 @@ function renderZonesUI() {
           <label>Target pH<input id="cfgPH${zone.id}" type="number" min="3" max="9" step="0.1"></label>
         </div>
         <div class="force-row">
-          <label><span class="label-row">Firmware preset${info("Firmware preset", "ESP1's own built-in crop presets (separate from the crop profile/database above) -- picking one and sending applies its N, P, K, and pH targets directly on ESP1, the same as the LCD's Settings > Preset screen or a SET,COL_x,PRESET,<name> text command. Leave at (none) to use the boxes above instead.")}</span><select id="cfgPreset${zone.id}">
-            <option value="">(none -- use boxes above)</option>
+          <label><span class="label-row">Firmware save settings${info("Firmware save settings", "Your own saved combinations of mode/enabled/schedule/window/targets for THIS column, most recent first. Selecting one fills every box above from that save -- it does not send anything by itself, review then press Send to ESP1.")}</span><select id="cfgSavedList${zone.id}">
+            <option value="">(none -- select a recent save)</option>
           </select></label>
+        </div>
+        <div class="force-row">
+          <label>Save name (optional)<input id="cfgSaveName${zone.id}" type="text" maxlength="40" placeholder="e.g. Vegetative high-N"></label>
+          <span class="btn-with-info"><button type="button" id="cfgSaveSettingsBtn${zone.id}" class="secondary">Save current settings</button>${info("Save current settings", "Stores whatever is currently filled in above -- mode, enabled, schedule, window, targets -- as a named save for this column only, so you can load it again later from the list above. Does not send anything to ESP1 by itself; unnamed saves get a timestamp instead.")}</span>
         </div>
         <div class="config-actions">
           <span class="btn-with-info"><button type="button" id="cfgFromCrop${zone.id}" class="secondary">Fill targets from crop profile</button>${info("Fill targets from crop profile", "Copies the selected crop and stage's reference N, P, K, and pH numbers into the boxes above so you can review them before sending. This button alone does not change anything on the rig.")}</span>
@@ -956,8 +960,34 @@ function renderZonesUI() {
       block.querySelector(`#zoneIrrOnly${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "IRRIGATION_ONLY"));
       block.querySelector(`#zoneOff${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, null));
 
-      const presetSelect = block.querySelector(`#cfgPreset${zone.id}`);
-      FIRMWARE_PRESETS.forEach(name => presetSelect?.add(new Option(name, name)));
+      block.querySelector(`#cfgSaveSettingsBtn${zone.id}`)?.addEventListener("click", () => saveColumnSettings(zone.id));
+
+      // Newest first, capped at 10 -- a convenience list, not a full archive; every entry ever
+      // saved stays in Firebase regardless, this just doesn't grow the dropdown unbounded.
+      const savedSelect = block.querySelector(`#cfgSavedList${zone.id}`);
+      const savedEntries = Object.entries(zone.savedSettings || {})
+        .sort((a, b) => (b[1]?.savedAt || 0) - (a[1]?.savedAt || 0))
+        .slice(0, 10);
+      savedEntries.forEach(([key, s]) => {
+        const label = `${s?.name || "Untitled"} (N${rawText(s?.targetN, "-")}/P${rawText(s?.targetP, "-")}/K${rawText(s?.targetK, "-")}/pH${rawText(s?.targetPH, "-")})`;
+        savedSelect?.add(new Option(label, key));
+      });
+      savedSelect?.addEventListener("change", () => {
+        const chosen = zone.savedSettings?.[savedSelect.value];
+        savedSelect.value = "";   // revert to the placeholder -- re-picking the same entry must still fire "change"
+        if (!chosen) return;
+        const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ""; };
+        setVal(`cfgMode${zone.id}`, chosen.mode);
+        setVal(`cfgEnabled${zone.id}`, chosen.enabled);
+        setVal(`cfgSched${zone.id}`, chosen.schedMode);
+        setVal(`cfgWinStart${zone.id}`, chosen.winStart);
+        setVal(`cfgWinEnd${zone.id}`, chosen.winEnd);
+        setVal(`cfgN${zone.id}`, chosen.targetN);
+        setVal(`cfgP${zone.id}`, chosen.targetP);
+        setVal(`cfgK${zone.id}`, chosen.targetK);
+        setVal(`cfgPH${zone.id}`, chosen.targetPH);
+        updateWindowVisibility(zone.id);
+      });
 
       const cropSelect = block.querySelector(`#cropSelect${zone.id}`);
       const stageSelect = block.querySelector(`#growthStage${zone.id}`);
@@ -1041,6 +1071,38 @@ function fillTargetsFromCrop(zone) {
   const crop = readableCropNames[zone.defaultCrop] || zone.defaultCrop;
   show(`Filled from ${crop} / ${zone.defaultStage}: N ${target.n}, P ${target.p}, K ${target.k} ppm, pH ${target.ph}. ` +
        `Press "Send to ESP1" to apply them to column ${id}.`, false);
+}
+
+// "Firmware save settings" (replaces the old ESP1-preset-table dropdown): stores whatever is
+// currently filled into this column's form -- mode/enabled/schedule/window/targets -- as a named
+// snapshot under irrigation/config/zones/{id}/savedSettings, purely dashboard-side bookkeeping like
+// the crop/stage profile above it (ESP1 never reads this node). Does NOT send anything to ESP1 by
+// itself -- selecting a saved entry back in renderZonesUI() just refills the same boxes this reads
+// from, and the existing "Send to ESP1" button is what actually applies them.
+function saveColumnSettings(id) {
+  const result = document.getElementById(`cfgResult${id}`);
+  const show = (text, error = false) => {
+    if (!result) return;
+    result.textContent = text;
+    result.className = `control-result${error ? " error" : ""}`;
+  };
+  if (!isApprovedUser()) {
+    show("Your account is awaiting operator approval before it can send commands to the rig.", true);
+    return;
+  }
+  const nameInput = document.getElementById(`cfgSaveName${id}`);
+  const typedName = (nameInput?.value || "").trim();
+  const val = elId => document.getElementById(elId)?.value ?? "";
+  const snapshot = {
+    name: typedName || `Saved ${new Date().toLocaleString()}`,
+    savedAt: firebase.database.ServerValue.TIMESTAMP,
+    mode: val(`cfgMode${id}`), enabled: val(`cfgEnabled${id}`), schedMode: val(`cfgSched${id}`),
+    winStart: val(`cfgWinStart${id}`), winEnd: val(`cfgWinEnd${id}`),
+    targetN: val(`cfgN${id}`), targetP: val(`cfgP${id}`), targetK: val(`cfgK${id}`), targetPH: val(`cfgPH${id}`)
+  };
+  db.ref(`irrigation/config/zones/${id}/savedSettings`).push(snapshot)
+    .then(() => { show(`Saved as "${snapshot.name}".`); if (nameInput) nameInput.value = ""; })
+    .catch(error => show(`Could not save settings: ${error.message}`, true));
 }
 
 function zoneMetric(zone, metric, id, digits, unit, targetKey) {
@@ -1632,11 +1694,6 @@ function submitColumnConfig(id) {
   if (en !== "") payload.enabled = en === "1";
   const sm = document.getElementById(`cfgSched${id}`)?.value;
   if (sm !== "") payload.schedMode = Number(sm);
-  // Firmware preset (separate from the crop-profile "Fill targets" convenience below): resolved by
-  // ESP1 against its own CROP_PRESETS table. An explicit N/P/K/pH box below still overrides its own
-  // field even when a preset is also selected -- same precedence ESP1 applies server-side.
-  const preset = document.getElementById(`cfgPreset${id}`)?.value;
-  if (preset) payload.preset = preset;
   // Window fields only apply -- and are only sent -- while Manual window is the value about to be
   // submitted; a leftover value from an earlier edit must not sneak in once switched back to
   // Automatic (or left at "(unchanged)"), matching updateWindowVisibility()'s identical "1" check.
