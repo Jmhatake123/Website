@@ -764,6 +764,25 @@ async function deleteUserAccount(uid) {
   if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
   return result;
 }
+/* Bug report (2026-09-10): granting temp access failed with PERMISSION_DENIED for BOTH operator
+ * accounts. Traced to this machine's system clock running ~18.5 hours behind real time (confirmed
+ * against an external HTTPS Date header) -- Date.now() + TEMP_ACCESS_DURATION_MS landed the computed
+ * tempAccessUntil roughly 17.5 hours in the PAST relative to Firebase's real server clock, which the
+ * rules' own server-relative validate window (firebase-rules.json's tempAccessUntil ".validate")
+ * correctly rejected. Fixing the PC's clock fixes this, but relying on every operator's machine
+ * having an accurate clock is fragile for something a security rule specifically checks -- so this
+ * bootstraps off Firebase's OWN clock instead of ever trusting the browser's: the first write
+ * resolves to the server's real "now" (trivially inside the validate window, since the rule's own
+ * `now` and the resolved value are the same instant), then the second write is server-now-at-readback
+ * plus the duration -- neither write ever depends on this browser's Date.now(). */
+async function grantTempAccess(uid) {
+  const ref = db.ref(`users/${uid}/tempAccessUntil`);
+  await ref.set(firebase.database.ServerValue.TIMESTAMP);
+  const snap = await ref.once("value");
+  const serverNow = Number(snap.val());
+  if (!Number.isFinite(serverNow)) throw new Error("Could not read back the server's clock.");
+  await ref.set(serverNow + TEMP_ACCESS_DURATION_MS);
+}
 document.getElementById("usersContainer")?.addEventListener("click", event => {
   const button = event.target.closest("[data-user-action]");
   if (!button) return;
@@ -799,9 +818,10 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // Time-bounded elevation, not a role change -- status stays "approved" throughout. Enforced
     // server-side too: firebase-rules.json's tempAccessUntil validator caps this at the same
     // TEMP_ACCESS_DURATION_MS from the moment the write actually lands, so a slow request can't
-    // grant longer than intended.
+    // grant longer than intended. grantTempAccess() anchors to Firebase's own server clock rather
+    // than this browser's Date.now() -- see its own comment (bug report, 2026-09-10) for why.
     if (!confirm(`Grant ${name} temporary access to Manual/Test and System for 1 hour?`)) return;
-    run(() => db.ref(`users/${uid}`).update({ tempAccessUntil: Date.now() + TEMP_ACCESS_DURATION_MS }));
+    run(() => grantTempAccess(uid));
     return;
   }
   if (action === "revoketemp") {
