@@ -314,6 +314,7 @@
 
       <div id="mtControls" hidden>
         <h2>Manual actuator tests</h2>
+        <p id="mtControlsNote" class="control-result" aria-live="polite"></p>
         <p class="hint">Each test runs for a set number of seconds and stops on its own. Where the output has a flow meter, the result reports how many pulses it saw — that is how you tell a working pump from a dead pump, a blocked line or a dead sensor, without walking to the rig.</p>
 
         <article class="panel">
@@ -359,6 +360,22 @@
         </div>
         <p id="pulseVolumeNote" class="field-note"></p>
         <p id="pulseResult" class="control-result" aria-live="polite">No pulse has been run in this session.</p>
+
+        <h3>Hold-to-run<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Hold-to-run" data-info-title="Hold-to-run" data-info-text="Runs the same relay combination as the LCD Testing screen's own dead-man button: energises it only while you hold this button down (mouse or touch), and stops the instant you release it, lose the connection, or leave the tab. Uses the same targets as Timed pulses above.">i</button></h3>
+        <p class="hint">Press and hold a button to energise that output; release to stop it, same as the physical dead-man button on the rig's own Testing screen. Losing the connection stops it automatically — ESP2's own hardware dead-man drops the relay within a fraction of a second even if ESP1 itself goes silent.</p>
+        <div class="control-grid" id="mtHoldGrid">
+          <button type="button" class="hold-btn" data-hold-target="transfer">Hold: Transfer pump (fill)</button>
+          <button type="button" class="hold-btn" data-hold-target="colA">Hold: Booster → Column A</button>
+          <button type="button" class="hold-btn" data-hold-target="colB">Hold: Booster → Column B</button>
+          <button type="button" class="hold-btn" data-hold-target="colC">Hold: Booster → Column C</button>
+          <button type="button" class="hold-btn" data-hold-target="mixer">Hold: Tank mixer</button>
+          <button type="button" class="hold-btn" data-hold-target="nutA">Hold: Nutrient A pump</button>
+          <button type="button" class="hold-btn" data-hold-target="nutB">Hold: Nutrient B pump</button>
+          <button type="button" class="hold-btn" data-hold-target="nutC">Hold: Nutrient C pump</button>
+          <button type="button" class="hold-btn danger" data-hold-target="phUp">Hold: pH UP pump (corrosive)</button>
+          <button type="button" class="hold-btn danger" data-hold-target="phDn">Hold: pH DOWN pump (corrosive)</button>
+        </div>
+        <p id="mtHoldResult" class="control-result" aria-live="polite">No hold-to-run test has been used in this session.</p>
 
         <article class="panel">
           <div class="panel-heading">

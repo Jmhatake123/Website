@@ -129,6 +129,12 @@ small, .muted, .hint, .field-note { color: var(--muted); }
 .emergency-panel { display: flex; align-items: center; justify-content: space-between; gap: 22px; margin-top: 22px; padding: 20px; border: 1px solid rgb(239 98 98 / .6); border-radius: 13px; background: rgb(239 98 98 / .07); }
 .emergency-panel > div { max-width: 760px; }
 button.danger { min-width: 200px; border-color: var(--danger); background: var(--danger); color: white; }
+/* Hold-to-run buttons (Manual/Test): a visible "energised" state while pressed/held, mirroring the
+   LCD Testing screen's own button. touch-action:none stops the browser turning a held touch into a
+   scroll/zoom gesture partway through, which would otherwise fire pointerup and drop the relay. */
+.hold-btn { touch-action: none; user-select: none; }
+.hold-btn.holding { border-color: var(--success); background: var(--success); color: #05231a; font-weight: 800; }
+.hold-btn.danger.holding { border-color: var(--danger); background: var(--danger); color: white; }
 .forced-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-card { display: grid; align-content: start; gap: 12px; padding: 20px; }
 .form-card h4 { font-size: 1.08rem; }

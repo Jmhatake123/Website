@@ -188,7 +188,12 @@ function hasTempAccess() {
   return Date.now() < myTempAccessUntil;
 }
 function canAccessPrivilegedTabs() {
-  return isOperator() || hasTempAccess();
+  // Deep-scan finding (2026-09-10): hasTempAccess() only checks the timestamp, not current standing --
+  // an operator restricting/blocking this account mid-grant left it privileged until the grant's own
+  // clock ran out (up to an hour), even though revoking approval is clearly meant to take that away
+  // immediately. isApprovedUser() re-check closes that; isOperator() itself needs no such re-check,
+  // since operator status is fixed for the session, never revoked mid-session.
+  return isOperator() || (hasTempAccess() && isApprovedUser());
 }
 
 // Access-control revision (2026-09-09): renderZonesUI()'s editable-vs-read-only variant depends on
@@ -245,6 +250,15 @@ function syncControlAvailability() {
     button.disabled = !normalAllowed;
     button.title = normalAllowed ? "" : (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before starting a normal test.";
   });
+  // Hold-to-run buttons: same normalAllowed gate as every other actuating Manual/Test control above.
+  // If the rig drops out of "fresh" or the account loses approval WHILE a button is physically held,
+  // the press must not keep silently running -- mtHoldStop() releases it immediately, same as losing
+  // the Manual/Test hold itself does in renderManualHold().
+  document.querySelectorAll(".hold-btn").forEach(button => {
+    button.disabled = !normalAllowed;
+    button.title = normalAllowed ? "" : (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before using a hold-to-run test.";
+  });
+  if (!normalAllowed) mtHoldStop(true);
 
   const forceButton = document.querySelector("#forceRunForm button[type=submit]");
   if (forceButton) {
@@ -330,9 +344,11 @@ function initializeFirebase() {
         // here runs unconditionally; the Firebase-side release write itself is a no-op once already
         // signed out, which is fine -- ESP1's own 60s lease expires the hold on its own regardless.
         releaseManualHold();
+        mtHoldStop(true);
         exTouched = false;             // let the exercise panel re-sync from ESP1 fresh on next sign-in
         lastZoneEditCapability = undefined;   // force a fresh evaluation on the next sign-in, not a stale match
         myTempAccessUntil = 0;         // a temp-access grant must never survive into a later sign-in
+        detachPresence();              // mark this session offline immediately -- don't wait for onDisconnect
         // liveData is about to be wiped below -- reset this FIRST so the updateDashboard() call just
         // after doesn't see (wasFaultActive=true, empty liveData) and announce a fabricated "The hold
         // cleared" from data loss, as if the fault/lockout had actually resolved.
@@ -359,6 +375,7 @@ function initializeFirebase() {
       if (currentUserEmailEl) { currentUserEmailEl.textContent = user.email || ""; currentUserEmailEl.hidden = !user.email; }
       attachDatabaseListeners();
       attachUserStatusListener(user.uid);
+      attachPresence(user.uid);
       refreshOperatorUI();
       syncControlAvailability();
     });
@@ -587,19 +604,77 @@ function refreshOperatorUI() {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
 }
+let lastKnownUsers = {};
 function attachUserManagementListener() {
   if (usersRef) return;
   usersRef = db.ref("users");
   usersRef.on("value", snapshot => {
-    renderUserManagement(snapshot.val() || {});
+    lastKnownUsers = snapshot.val() || {};
+    renderUserManagement();
   }, error => {
     const container = document.getElementById("usersContainer");
     if (container) container.innerHTML = `<p class="muted">Could not load accounts: ${escapeHtml(error.message)}</p>`;
   });
+  attachPresenceWatch();
 }
 function detachUserManagementListener() {
   if (usersRef) usersRef.off();
   usersRef = null;
+  detachPresenceWatch();
+}
+
+/* Online/offline presence (User Management only reads this; every signed-in session writes its
+ * OWN, see attachPresence()/detachPresence() below). Standard Firebase pattern: `.info/connected`
+ * is a special always-available path that flips true once this client's websocket is actually up;
+ * onDisconnect() registers a write the SERVER performs the instant it detects this connection is
+ * gone (tab closed, network dropped, crash) -- not just a graceful sign-out, which is the whole
+ * point over e.g. a plain "last active" timestamp written on a timer.
+ * Known limitation: this is the single-connection version of the pattern (Firebase's own docs show
+ * a per-connection-id counter for a account open in several tabs/devices at once); with two
+ * operators and a handful of field users this was judged not worth the extra complexity -- closing
+ * one of two open tabs for the same account will show it as offline even though the other tab is
+ * still live. Upgrade to the counter form if that ever actually causes confusion. */
+let presenceRef = null;
+let presenceData = {};
+function attachPresenceWatch() {
+  if (presenceRef) return;
+  presenceRef = db.ref("presence");
+  presenceRef.on("value", snapshot => {
+    presenceData = snapshot.val() || {};
+    renderUserManagement();
+  }, error => console.warn("Could not read presence", error));
+}
+function detachPresenceWatch() {
+  if (presenceRef) presenceRef.off();
+  presenceRef = null;
+  presenceData = {};
+}
+
+let myPresenceRef = null;
+let myConnectedRef = null;
+function attachPresence(uid) {
+  if (!db) return;
+  detachPresence();
+  myPresenceRef = db.ref(`presence/${uid}`);
+  myConnectedRef = db.ref(".info/connected");
+  myConnectedRef.on("value", snap => {
+    if (snap.val() !== true) return;
+    // Register the disconnect write FIRST -- if the connection drops between here and the .set()
+    // just below landing, the server-side onDisconnect still leaves an accurate offline+timestamp
+    // record instead of a stuck "online" one.
+    myPresenceRef.onDisconnect().set({ online: false, lastChanged: firebase.database.ServerValue.TIMESTAMP })
+      .then(() => myPresenceRef.set({ online: true, lastChanged: firebase.database.ServerValue.TIMESTAMP }))
+      .catch(error => console.warn("Could not set presence", error));
+  });
+}
+function detachPresence() {
+  if (myConnectedRef) myConnectedRef.off();
+  if (myPresenceRef) {
+    myPresenceRef.onDisconnect().cancel();
+    myPresenceRef.set({ online: false, lastChanged: firebase.database.ServerValue.TIMESTAMP }).catch(() => {});
+  }
+  myConnectedRef = null;
+  myPresenceRef = null;
 }
 
 const USER_STATUS_ORDER = { pending: 0, approved: 1, restricted: 2, disabled: 3, rejected: 4 };
@@ -607,9 +682,10 @@ const USER_STATUS_ORDER = { pending: 0, approved: 1, restricted: 2, disabled: 3,
 // just controls what word appears on screen, per the explicit ask not to show "disabled" to a
 // normal user when "Blocked" (or "Restricted") is what's actually meant.
 const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED", restricted: "RESTRICTED" };
-function renderUserManagement(users) {
+function renderUserManagement() {
   const container = document.getElementById("usersContainer");
   if (!container) return;
+  const users = lastKnownUsers;
   // The backup/creator operator is deliberately invisible here -- filtered out of the list itself,
   // not merely stripped of actions like the primary operator's own row is (see isAnyOperator
   // below). Nothing in this app ever needs to manage the backup account as if it were a normal user.
@@ -632,14 +708,21 @@ function renderUserManagement(users) {
     // already has full access, and a pending/restricted/blocked account can't be elevated without
     // first being approved.
     const tempActive = status === "approved" && !isAnyOperator && Number(u?.tempAccessUntil) > Date.now();
+    // Online/offline (see attachPresence()/attachPresenceWatch() above) -- also decides whether
+    // Kick is even offered: kicking an already-offline account just wrote a fresh kickToken that
+    // would immediately re-fire the moment they reconnect, which is exactly the "kicked N times"
+    // symptom that clicking Kick repeatedly on an offline user produced before this gate existed.
+    const pres = presenceData[uid];
+    const isOnline = Boolean(pres?.online);
+    const presenceLabel = isOnline ? "Online" : pres?.lastChanged ? `Offline (${formatAge(Date.now() - pres.lastChanged)} ago)` : "Offline (never seen)";
     const actions = [];
     if (!isAnyOperator) {
       if (status === "pending")    actions.push(["approve", "Approve"], ["reject", "Reject"], ["restrict", "Restrict"], ["delete", "Delete"]);
       if (status === "approved") {
-        actions.push(["kick", "Kick"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
+        actions.push(...(isOnline ? [["kick", "Kick"]] : []), ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
         actions.push(tempActive ? ["revoketemp", "Revoke temp access"] : ["granttemp", "Grant 1h Manual/Test + System"]);
       }
-      if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ["kick", "Kick"], ["block", "Block"], ["delete", "Delete"]);
+      if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ...(isOnline ? [["kick", "Kick"]] : []), ["block", "Block"], ["delete", "Delete"]);
       if (status === "rejected")   actions.push(["approve", "Approve"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
       if (status === "disabled")   actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
     }
@@ -653,6 +736,7 @@ function renderUserManagement(users) {
         <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
         <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
         <span class="muted">Registered: ${escapeHtml(created)}</span>
+        <span class="muted">${escapeHtml(presenceLabel)}</span>
         ${tempActive ? `<span class="muted">Temp Manual/Test + System access until ${escapeHtml(new Date(u.tempAccessUntil).toLocaleTimeString())}</span>` : ""}
       </div>
       <span class="device-status ${tone}">${escapeHtml(STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
@@ -703,6 +787,10 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     return;
   }
   if (action === "kick") {
+    // Defense-in-depth re-check: renderUserManagement() already omits this button once offline,
+    // but re-verify against the live presence data at click time too, in case this row was mid-
+    // re-render (a stale "Kick" button briefly clickable is otherwise possible in that gap).
+    if (!presenceData[uid]?.online) { alert(`${name} is not currently online -- nothing to kick.`); return; }
     if (!confirm(`Force ${name} to sign in again?`)) return;
     run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
     return;
@@ -725,7 +813,13 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   if (!newStatus) return;
   if (action === "block" && !confirm(`Block ${name}? They will immediately lose access.`)) return;
   if (action === "restrict" && !confirm(`Remove ${name}'s hardware-control access while keeping dashboard access?`)) return;
-  run(() => db.ref(`users/${uid}`).update({ status: newStatus }));
+  // Deep-scan finding (2026-09-10): reject/block/restrict previously left any outstanding
+  // tempAccessUntil grant untouched -- re-approving the account before that grant's own clock ran
+  // out (up to an hour later) would silently hand privileged access straight back with no fresh
+  // grant from an operator. Clear it alongside any status change that revokes approval.
+  const updates = { status: newStatus };
+  if (newStatus !== "approved") updates.tempAccessUntil = null;
+  run(() => db.ref(`users/${uid}`).update(updates));
 });
 
 function writeZoneProfile(zone) {
@@ -1900,18 +1994,24 @@ signupForm?.addEventListener("submit", async event => {
 
 document.getElementById("logoutBtn")?.addEventListener("click", () => {
   releaseManualHold();
+  mtHoldStop(true);
   auth?.signOut().catch(error => setCommandStatus(`Sign out failed: ${error.message}`, "error"));
 });
 // A closed tab (pagehide -- actually going away: close/navigate/BFCache) hands the rig back at once.
 // A merely BACKGROUNDED tab (visibilitychange) gets a short grace period instead of an instant release
 // -- confirmed live that switching to check something for a few seconds and coming straight back was
 // dropping an active hold every time, forcing a fresh request-and-wait cycle for no operational reason.
-window.addEventListener("pagehide", () => releaseManualHold());
+window.addEventListener("pagehide", () => { releaseManualHold(); mtHoldStop(true); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     if (mtHoldTimer && !mtHideTimer) {
       mtHideTimer = setTimeout(() => { mtHideTimer = null; if (document.hidden) releaseManualHold(); }, MT_HIDE_GRACE_MS);
     }
+    // Unlike the 60 s manual-hold lease above (which tolerates a brief background), an ACTIVE
+    // hold-to-run press has no "grace period" equivalent -- a hidden tab means whatever pointer/touch
+    // was driving it is no longer reaching this page (e.g. switching browser tabs mid-press delivers
+    // no mouseup here at all), so stop it the instant the tab goes out of view, not on a timer.
+    mtHoldStop(true);
   } else if (mtHideTimer) {
     clearTimeout(mtHideTimer);
     mtHideTimer = null;
@@ -2026,7 +2126,12 @@ const MT_HIDE_GRACE_MS = 15000; // < the 20 s keep-alive, so a genuinely abandon
 function writeManualHold(want) {
   // The one other write path toward hardware outside queueCommand() -- same approval gate, both
   // client-side (here) and server-side (the rules on /irrigation/manual).
-  if (!currentUserIsSignedIn() || !isApprovedUser()) return Promise.resolve(false);
+  // Deep-scan finding (2026-09-10, HIGH): this used to gate on isApprovedUser() UNCONDITIONALLY,
+  // directly contradicting the very comment below it -- an operator restricting/blocking this account
+  // while it held Manual/Test silently dropped its OWN release (want=false) write too, leaving the
+  // relay held until ESP1's own 60s lease timed it out instead of handing control back immediately.
+  // Only signed-in is required to release; approval is checked below, only for want=true.
+  if (!currentUserIsSignedIn()) return Promise.resolve(false);
   // Access-control revision (2026-09-09): Manual/Test is privileged-operator-only (or temporarily
   // granted, see canAccessPrivilegedTabs()), so only that tier may ACQUIRE the hold (want=true) --
   // the manualtest tab that normally triggers this is already hidden otherwise, this is the
@@ -2034,7 +2139,7 @@ function writeManualHold(want) {
   // still be rejected" requirement. Releasing (want=false) deliberately stays available regardless
   // of role: it only ever hands control back to automation, which must never be blocked by a
   // permission check.
-  if (want && !canAccessPrivilegedTabs()) return Promise.resolve(false);
+  if (want && (!isApprovedUser() || !canAccessPrivilegedTabs())) return Promise.resolve(false);
   // C-H4/R workaround (audit): the CURRENTLY-FLASHED ESP1 firmware parses this into a 32-bit `long`
   // (`long seq = doc["seq"] | -1`). A raw Date.now() (~1.7e12) doesn't fit a 32-bit long, so
   // ArduinoJson's `|` silently falls back to -1 on EVERY poll -- seq != webManualSeq then never
@@ -2046,6 +2151,104 @@ function writeManualHold(want) {
   const seq = Math.floor(Date.now() / 1000);
   return db.ref("irrigation/manual").set({ seq, want })
     .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
+}
+
+/* Hold-to-run (2026-09-10): mirrors writeManualHold()'s own gate/seq pattern, but writes
+ * irrigation/testHold = {seq, bit, want} -- ESP1's firebasePollTestHold() arms/holds/releases the
+ * SAME ESP2 TEST,HOLD/TEST,RELEASE dead-man protocol the LCD Testing screen and the Timed-pulses
+ * feature above already use, just driven by a held button instead of a physical one or a timer. */
+function writeTestHold(want, bit) {
+  if (!currentUserIsSignedIn() || !isApprovedUser()) return Promise.resolve(false);
+  // Same acquire-only gate as writeManualHold(): only privileged-tier accounts may START a hold;
+  // releasing always goes through regardless of tier, so a lost grant (e.g. an expiring temp-access
+  // window) can never leave a relay stuck energised because the release write itself got refused.
+  if (want && !canAccessPrivilegedTabs()) return Promise.resolve(false);
+  const seq = Date.now();
+  return db.ref("irrigation/testHold").set({ seq, bit, want })
+    .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
+}
+
+let mtHoldActiveBtn = null;   // the button currently mid-hold, or null
+let mtHoldKeepAliveTimer = null;
+let mtHoldArmedTarget = null; // a corrosive (pH) target the operator just confirmed, awaiting the hold press
+let mtHoldArmedTimer = null;
+
+function mtHoldStop(clearedByRelease) {
+  const btn = mtHoldActiveBtn;
+  mtHoldActiveBtn = null;
+  if (mtHoldKeepAliveTimer) { clearInterval(mtHoldKeepAliveTimer); mtHoldKeepAliveTimer = null; }
+  if (!btn) return;
+  btn.classList.remove("holding");
+  const target = btn.dataset.holdTarget;
+  if (clearedByRelease) writeTestHold(false, target);
+  const startedMs = Number(btn.dataset.holdStartMs || 0);
+  if (startedMs) reportHoldResult(target, Date.now() - startedMs);
+  delete btn.dataset.holdStartMs;
+}
+
+function mtHoldStart(btn) {
+  const target = btn.dataset.holdTarget;
+  writeTestHold(true, target);
+  mtHoldActiveBtn = btn;
+  btn.classList.add("holding");
+  btn.dataset.holdStartMs = String(Date.now());
+  // A confirmed pH arm is consumed by the press it was meant for -- releasing and pressing again
+  // needs a fresh confirm(), same one-shot spirit as the Timed-pulses confirm above.
+  if (mtHoldArmedTarget === target) {
+    mtHoldArmedTarget = null;
+    if (mtHoldArmedTimer) { clearTimeout(mtHoldArmedTimer); mtHoldArmedTimer = null; }
+    btn.textContent = btn.dataset.holdLabel || btn.textContent;
+  }
+  // Refresh well inside ESP1's own TEST_HOLD_BROWSER_TIMEOUT_MS (8 s) -- comfortably clears its
+  // 3 s command-poll cadence even if one poll or one write round-trip is slow.
+  mtHoldKeepAliveTimer = setInterval(() => writeTestHold(true, target), 1200);
+}
+
+document.querySelectorAll(".hold-btn").forEach(btn => {
+  const isCorrosive = btn.classList.contains("danger");
+  const start = ev => {
+    ev.preventDefault();
+    if (btn.disabled || mtHoldActiveBtn) return;
+    const target = btn.dataset.holdTarget;
+    if (isCorrosive && mtHoldArmedTarget !== target) return;   // needs the confirm click first, below
+    mtHoldStart(btn);
+  };
+  const stop = () => { if (mtHoldActiveBtn === btn) mtHoldStop(true); };
+  btn.addEventListener("mousedown", start);
+  btn.addEventListener("touchstart", start, { passive: false });
+  btn.addEventListener("mouseup", stop);
+  btn.addEventListener("mouseleave", stop);   // dragging off the button must stop it, not leave it stuck
+  btn.addEventListener("touchend", stop);
+  btn.addEventListener("touchcancel", stop);
+  window.addEventListener("blur", stop);      // alt-tabbing away with the mouse still down must stop it
+  // Corrosive targets need an explicit confirm before a hold does anything -- a native confirm()
+  // blocks JS, which is incompatible with mousedown/mouseup timing (the physical press would be long
+  // over by the time the dialog closes), so confirming ARMS the button for a few seconds instead of
+  // immediately starting the pump. A plain click (press+release without ever arming) does nothing.
+  if (isCorrosive) {
+    btn.addEventListener("click", () => {
+      if (btn.disabled || mtHoldActiveBtn) return;
+      const target = btn.dataset.holdTarget;
+      if (mtHoldArmedTarget === target) return;   // already armed from a previous click
+      if (!confirm(`Hold this button to dispense pH adjuster (${target === "phUp" ? "UP" : "DOWN"})? This is corrosive and goes into the mixing tank. It stops the instant you release it.`)) return;
+      mtHoldArmedTarget = target;
+      btn.textContent = `${btn.dataset.holdLabel || btn.textContent} — press & hold now`;
+      if (mtHoldArmedTimer) clearTimeout(mtHoldArmedTimer);
+      mtHoldArmedTimer = setTimeout(() => { mtHoldArmedTarget = null; btn.textContent = btn.dataset.holdLabel || btn.textContent; }, 8000);
+    });
+    btn.dataset.holdLabel = btn.textContent;
+  }
+});
+
+// The pulse verdict comes back as the command's own status detail (see renderPulseResult() above);
+// hold-to-run has no command entry to read back (testHold isn't a queued command, just a live node),
+// so this just confirms locally that a hold ran and for roughly how long -- ESP2's own TEST,FLOW
+// reply already surfaces through the LCD/logs for anyone who needs the metered volume.
+function reportHoldResult(target, ms) {
+  const el = document.getElementById("mtHoldResult");
+  if (!el) return;
+  el.textContent = `Ran "${target}" for ~${(ms / 1000).toFixed(1)}s.`;
+  el.className = "control-result";
 }
 
 function requestManualHold() {
@@ -2087,13 +2290,22 @@ function renderManualHold() {
     else note.textContent = "Requesting manual control from the rig…";
     note.className = (state === "held") ? "field-note" : "control-result error";
   }
-  // Proceed only becomes usable once the rig has granted the hold.
+  // Proceed reveals the screen regardless of hold state (2026-09-10 revision) -- previously this
+  // stayed disabled until ESP1 actually granted the hold, which meant a stale/offline snapshot
+  // (state stuck at "idle" since ESP1 never gets the chance to grant anything) left the operator
+  // permanently unable to even LOOK at the tab. Individual test buttons are the real gate now, via
+  // syncControlAvailability()'s normalAllowed/deviceIsFresh() check -- they alone stay disabled
+  // until the rig is genuinely connected and has granted the hold.
   if (proceed) {
-    proceed.disabled = (state !== "held");
-    proceed.title = (state === "held") ? "" : !isApprovedUser() ? "Your account is awaiting operator approval before it can use this control." : "The rig has not granted manual mode yet.";
+    proceed.disabled = !isApprovedUser();
+    proceed.title = isApprovedUser() ? "" : "Your account is awaiting operator approval before it can use this control.";
   }
-  // Revoked or refused while already inside: drop the controls and stop re-requesting.
-  if (onTab && mtArmed && state !== "held") {
+  // Revoked or refused while already inside: drop the controls and stop re-requesting. Deliberately
+  // NOT "state !== held" any more (2026-09-10) -- Proceed can now reveal #mtControls with state still
+  // "idle"/"requesting" (stale snapshot, or ESP1 mid-reconnect), and that must NOT immediately bounce
+  // the operator back out; only an actual revoke/refuse -- a hold that WAS granted and then taken
+  // back -- should do that.
+  if (onTab && mtArmed && (state === "revoked" || state === "refused")) {
     setManualTestArmed(false);
     if (state === "revoked") {
       setCommandStatus("Manual mode was revoked at the rig — the operator there took control.", "error");
@@ -2106,6 +2318,28 @@ function renderManualHold() {
     }
   }
   if (gate) gate.hidden = mtArmed;
+
+  // Stale/disconnected/lost-hold banner + reminder, INSIDE #mtControls (only visible once armed --
+  // the gate above carries its own version of this messaging for before Proceed is pressed). Buttons
+  // themselves are separately gated by syncControlAvailability()'s normalAllowed/deviceIsFresh() check
+  // -- this note only explains WHY they're disabled, or reminds the operator what this tab does once
+  // they're re-enabled after a reconnect.
+  const controlsNote = document.getElementById("mtControlsNote");
+  if (controlsNote && mtArmed) {
+    if (!deviceIsFresh()) {
+      controlsNote.textContent = `ESP1 appears offline — ${snapshotAgeText()}. Requests are queued but nothing runs until it reconnects.`;
+      controlsNote.className = "control-result error";
+    } else if (state === "held") {
+      controlsNote.textContent = "Direct hardware control — this tab drives the hardware directly.";
+      controlsNote.className = "control-result";
+    } else {
+      // A genuinely transient state (idle/requesting): device is fresh but ESP1 hasn't granted the
+      // hold yet. Revoked/refused are handled above (they flip mtArmed off before this note runs), so
+      // this branch cannot see them -- nothing here needs to stop an in-progress hold-to-run press.
+      controlsNote.textContent = `Waiting for the rig to grant manual mode (currently: ${state})…`;
+      controlsNote.className = "control-result error";
+    }
+  }
 }
 
 function setManualTestArmed(on) {
@@ -2114,6 +2348,7 @@ function setManualTestArmed(on) {
   const body = document.getElementById("mtControls");
   if (gate) gate.hidden = on;
   if (body) body.hidden = !on;
+  if (!on) mtHoldStop(true);
 }
 
 // Dosing pumps run at roughly PUMP_FLOWRATE_MLPM (50 mL/min) in the firmware, so a pulse dispenses a
@@ -2253,7 +2488,7 @@ document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", (
   // Entering Manual/Test asks the rig for the hold; leaving gives it straight back rather than
   // waiting out the 60 s lease.
   if (tab.dataset.view === "manualtest") requestManualHold();
-  else { setManualTestArmed(false); releaseManualHold(); }
+  else { setManualTestArmed(false); releaseManualHold(); mtHoldStop(true); }
   document.querySelectorAll(".tab").forEach(item => item.classList.toggle("active", item === tab));
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === tab.dataset.view));
 }));

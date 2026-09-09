@@ -12,6 +12,7 @@ commands the firmware validates before acting on.
 | `irrigation/commands/$id` | page (queued) → ESP1 (status) | One-shot commands; ESP1 validates every payload |
 | `irrigation/config/zones` | page only | Which crop and stage each zone is growing. Dashboard-side notes — the numeric targets reach the rig through `SET_COLUMN`, not from here |
 | `irrigation/manual` | page only | `{seq, want}` — the Manual/Test mutual-exclusion hold. ESP1 reads it and answers in `live` under `diagnostics.webManual` |
+| `irrigation/testHold` | page only | `{seq, bit, want}` — Manual/Test's press-and-hold buttons. ESP1's `firebasePollTestHold()` reads it and drives ESP2's existing `TEST,HOLD`/`TEST,RELEASE` dead-man; `bit` is restricted (by the rule) to the same 9-target whitelist as `TEST_PULSE`'s `target` field |
 
 ## Security rules
 
