@@ -627,11 +627,13 @@ function attachUserManagementListener() {
     if (container) container.innerHTML = `<p class="muted">Could not load accounts: ${escapeHtml(error.message)}</p>`;
   });
   attachPresenceWatch();
+  attachActivityWatch();
 }
 function detachUserManagementListener() {
   if (usersRef) usersRef.off();
   usersRef = null;
   detachPresenceWatch();
+  detachActivityWatch();
 }
 
 /* Online/offline presence (User Management only reads this; every signed-in session writes its
@@ -659,6 +661,32 @@ function detachPresenceWatch() {
   if (presenceRef) presenceRef.off();
   presenceRef = null;
   presenceData = {};
+}
+
+/* Per-account recent activity (2026-09-10) -- operator-viewing-only (see firebase-rules.json's
+ * activity/.read: only the two operator UIDs can read ANY of it, not even a user their own trail).
+ * Same whole-tree-listener shape as attachPresenceWatch() above; fine at this project's scale (a
+ * handful of accounts) -- see that function's own note on why a per-row listener wasn't used either. */
+let activityRef = null;
+let activityData = {};
+function attachActivityWatch() {
+  if (activityRef) return;
+  activityRef = db.ref("activity");
+  activityRef.on("value", snapshot => {
+    activityData = snapshot.val() || {};
+    renderUserManagement();
+  }, error => console.warn("Could not read activity", error));
+}
+function detachActivityWatch() {
+  if (activityRef) activityRef.off();
+  activityRef = null;
+  activityData = {};
+}
+// Newest-first, capped at 5 -- a glance, not a full audit trail (irrigation/commands + ESP1's own SD
+// log already are the real record of everything that happened).
+function recentActivityFor(uid) {
+  const entries = Object.values(activityData[uid] || {});
+  return entries.sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0)).slice(0, 5);
 }
 
 let myPresenceRef = null;
@@ -731,6 +759,10 @@ function renderUserManagement() {
     const pres = presenceData[uid];
     const isOnline = Boolean(pres?.online);
     const presenceLabel = isOnline ? "Online" : pres?.lastChanged ? `Offline (${formatAge(Date.now() - pres.lastChanged)} ago)` : "Offline (never seen)";
+    // Recent activity (2026-09-10): last 5 commands this account actually queued (see
+    // activitySummary()/queueCommand() above), newest first. Operator-viewing-only, same as presence
+    // -- enforced server-side by activity/.read, not just by this tab being hidden from everyone else.
+    const recent = recentActivityFor(uid);
     const actions = [];
     if (!isAnyOperator) {
       if (status === "pending")    actions.push(["approve", "Approve"], ["reject", "Reject"], ["restrict", "Restrict"], ["delete", "Delete"]);
@@ -756,6 +788,14 @@ function renderUserManagement() {
         <span class="muted">${escapeHtml(presenceLabel)}</span>
         ${tempActive ? `<span class="muted">Temp Manual/Test + System access until ${escapeHtml(new Date(u.tempAccessUntil).toLocaleTimeString())}</span>` : ""}
         ${subOpActive ? `<span class="muted">Sub-operator — Manual/Test + System access until withheld</span>` : ""}
+        <div class="user-activity">
+          <span class="muted">Recent activity:</span>
+          ${recent.length
+            ? `<ul class="user-activity-list">${recent.map(a =>
+                `<li>${escapeHtml(rawText(a?.what, "?"))} — ${escapeHtml(formatAge(Date.now() - Number(a?.at || 0)))} ago</li>`
+              ).join("")}</ul>`
+            : `<span class="muted"> none yet</span>`}
+        </div>
       </div>
       <span class="device-status ${tone}">${escapeHtml(STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
       <div class="user-row-actions">${buttons}</div>
@@ -942,6 +982,13 @@ function queueCommand(type, payload = {}, options = {}) {
   return db.ref("irrigation/commands").push(command)
     .then(reference => {
       if (!emergency) lastCommandAt = Date.now();
+      // Per-account activity trail (2026-09-10), operator-viewing-only -- see renderUserManagement().
+      // Best-effort: a failure here must never affect the real command above, which already
+      // succeeded by this point, so this is deliberately fire-and-forget with its own silent catch.
+      db.ref(`activity/${auth.currentUser.uid}`).push({
+        what: activitySummary(type, payload),
+        at: firebase.database.ServerValue.TIMESTAMP
+      }).catch(error => console.warn("Could not log activity", error));
       return reference.key;
     })
     .catch(error => {
@@ -949,6 +996,24 @@ function queueCommand(type, payload = {}, options = {}) {
       setCommandStatus(`Could not queue command: ${error.message}`, "error");
       return false;
     });
+}
+
+// Short, human-readable "what did they do" label for the activity trail above -- deliberately NOT
+// the full command detail (that lives in irrigation/commands itself, and needs ESP1's own reply to
+// mean anything); just enough context to recognise the action at a glance in User Management.
+function activitySummary(type, payload) {
+  const p = payload || {};
+  switch (type) {
+    case "FORCE_RUN":     return `FORCE_RUN (${rawText(p.columns, "?")}, ${numberText(p.liters, 1, "L")})`;
+    case "SET_COLUMN":    return `SET_COLUMN (col ${rawText(p.col, "?")})`;
+    case "TEST_PULSE":    return `TEST_PULSE (${rawText(p.target, "?")}, ${rawText(p.seconds, "?")}s)`;
+    case "RUN_PUMP_TEST": return `RUN_PUMP_TEST (${rawText(p.pump, "?")})`;
+    case "RECOVER":       return `RECOVER (${rawText(p.action, "?")})`;
+    case "REBOOT":        return `REBOOT (${rawText(p.target, "?")})`;
+    case "SET_EXERCISE":  return `SET_EXERCISE (${p.exerciseEnabled ? "on" : "off"})`;
+    case "DIAG_SWEEP":    return "DIAG_SWEEP";
+    default:              return type;
+  }
 }
 
 // The status line shown the instant a command is queued -- before ESP1 has even seen it, let alone

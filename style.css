@@ -320,3 +320,7 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
 /* button.danger/button.warn are styled for standalone full-size buttons (200px min-width, 100% width
    on mobile) -- neither makes sense for a small action button sitting in a row of siblings. */
 .user-action.danger, .user-action.warn { min-width: 0; width: auto; }
+/* Recent activity (operator-only, see renderUserManagement()/activity/.read in firebase-rules.json). */
+.user-activity { margin-top: 4px; }
+.user-activity-list { display: grid; gap: 2px; margin: 2px 0 0; padding: 0; list-style: none; }
+.user-activity-list li { color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }

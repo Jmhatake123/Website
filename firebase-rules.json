@@ -48,6 +48,15 @@
         ".validate": "newData.hasChildren(['online', 'lastChanged']) && newData.child('online').isBoolean() && newData.child('lastChanged').isNumber()"
       }
     },
+    "activity": {
+      ".read": "auth != null && (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')",
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+        "$activityId": {
+          ".validate": "newData.hasChildren(['what', 'at']) && newData.child('what').isString() && newData.child('what').val().length > 0 && newData.child('what').val().length <= 80 && newData.child('at').isNumber()"
+        }
+      }
+    },
     "users": {
       ".read": "auth != null && (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')",
       "$uid": {
