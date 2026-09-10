@@ -838,8 +838,16 @@ function renderUserManagement() {
       if (status === "pending")    actions.push(["approve", "Approve"], ["reject", "Reject"], ["restrict", "Restrict"], ["delete", "Delete"]);
       if (status === "approved") {
         actions.push(...(isOnline ? [["kick", "Kick"]] : []), ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
-        actions.push(tempActive ? ["revoketemp", "Revoke temp access"] : ["granttemp", "Grant 1h Manual/Test + System"]);
-        actions.push(subOpActive ? ["withholdsubop", "Withhold Sub-operator"] : ["grantsubop", "Grant Sub-operator"]);
+        // Suggestion (2026-09-11): these two grants look interchangeable at a glance (both say
+        // "Manual/Test + System") -- unlike every other control on this page, neither had an info
+        // icon explaining how they actually differ (one expires on its own, one doesn't). Added here,
+        // not on the plainer actions (Kick/Restrict/Block/Delete), which don't have that ambiguity.
+        actions.push(tempActive
+          ? ["revoketemp", "Revoke temp access", "Temp access (1h)", "Ends this account's temporary Manual/Test + System access right now, instead of waiting out its own 1-hour clock."]
+          : ["granttemp", "Grant 1h Manual/Test + System", "Temp access (1h)", "Gives this account full Manual/Test + System access for exactly 1 hour, then it expires on its own -- nothing to remember to take away later. Use this for a one-off task."]);
+        actions.push(subOpActive
+          ? ["withholdsubop", "Withhold Sub-operator", "Sub-operator", "Ends this account's Sub-operator access right now. Unlike the 1h grant above, Sub-operator has no expiry of its own -- withholding it here is the only way it ever ends."]
+          : ["grantsubop", "Grant Sub-operator", "Sub-operator", "Gives this account the SAME full Manual/Test + System access as the 1h grant above, but with no expiry -- it stays in effect until an operator withholds it again. Use this for someone who needs ongoing access, not just a one-off task."]);
       }
       if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ...(isOnline ? [["kick", "Kick"]] : []), ["block", "Block"], ["delete", "Delete"]);
       if (status === "rejected")   actions.push(["approve", "Approve"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
@@ -847,9 +855,16 @@ function renderUserManagement() {
     }
     const tone = status === "approved" ? "active" : (status === "pending" || status === "restricted") ? "off" : "danger";
     const tones = { delete: " danger", block: " warn", revoketemp: " warn", withholdsubop: " warn" };
-    const buttons = actions.map(([action, label]) =>
-      `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
-    ).join("");
+    const buttons = actions.map(([action, label, infoTitle, infoText]) => {
+      const btn = `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`;
+      // Same "icon as a sibling, never nested inside the actuating button" pattern used everywhere
+      // else on this page (see renderZonesUI()'s own local info() helper) -- kept together via
+      // .btn-with-info rather than sharing one info() closure across two separately-scoped render
+      // functions.
+      return infoTitle
+        ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${infoTitle}" data-info-title="${infoTitle}" data-info-text="${infoText}">i</button></span>`
+        : btn;
+    }).join("");
     return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
       <div class="user-row-info">
         <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
@@ -1168,8 +1183,8 @@ function renderZonesUI() {
 
     const cropStageHtml = canEdit
       ? `<div class="zone-selectors">
-          <label><span class="label-row">Crop${info("Crop selection", "Pick the crop growing in this physical zone. This is a planning note for the dashboard only -- the current firmware does not read it automatically. To actually change how the rig runs, fill the targets below from this crop and press Send to ESP1.")}</span><select id="cropSelect${zone.id}"></select></label>
-          <label><span class="label-row">Growth stage${info("Growth stage", "Pick the crop's current growth stage. Like the crop choice, this only updates the reference numbers shown on this page -- it does not by itself change anything on the rig.")}</span><select id="growthStage${zone.id}"></select></label>
+          <label><span class="label-row">Crop${info("Crop selection", "The crop growing here — a planning note only. To change how the rig runs, fill targets from it below and press Send to ESP1.")}</span><select id="cropSelect${zone.id}"></select></label>
+          <label><span class="label-row">Growth stage${info("Growth stage", "The crop's current stage. Like Crop, this only updates reference numbers here — it doesn't change the rig by itself.")}</span><select id="growthStage${zone.id}"></select></label>
         </div>`
       : `<div class="zone-selectors">
           <label><span class="label-row">Crop</span><strong>${escapeHtml(readableCropNames[zone.defaultCrop] || zone.defaultCrop || "--")}</strong></label>
@@ -1178,17 +1193,17 @@ function renderZonesUI() {
 
     const firmwareConfigHtml = canEdit
       ? `<div class="zone-config">
-        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "These are the real settings ESP1 uses to run this column -- separate from the crop profile above, which is only a planning note. Any field left blank here is not changed; only fields you fill in are updated.")}</h4>
-        <p class="field-note">Unlike the crop profile above, these are sent to ESP1 and change how it runs. Blank fields are left unchanged. Use "Fill targets from crop profile" to copy the selected crop and stage into the N/P/K/pH boxes, then review and send.</p>
+        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "The real settings ESP1 uses for this column. Blank fields are left unchanged — only what you fill in is updated.")}</h4>
+        <p class="field-note">Unlike the crop profile above, these are sent to ESP1 and change how it runs. Use "Fill targets from crop profile" to copy values in, then review and send.</p>
         <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
         <div class="force-row zone-quick-actions">
-          <span class="btn-with-info"><button type="button" id="zoneAuto${zone.id}" class="secondary">Auto</button>${info("Auto", "Immediately sets this column to Auto (enabled, irrigation + fertigation) -- the same one-step choice as the LCD's Settings > Column Mode screen. Sent right away, same as any other command on this page; requires operator approval.")}</span>
-          <span class="btn-with-info"><button type="button" id="zoneIrrOnly${zone.id}" class="secondary">Irrigation only</button>${info("Irrigation only", "Immediately sets this column to Irrigation only (enabled, water only, no dosing) -- the same one-step choice as the LCD's Settings > Column Mode screen. Sent right away.")}</span>
-          <span class="btn-with-info"><button type="button" id="zoneOff${zone.id}" class="secondary">Off</button>${info("Off", "Immediately disables this column -- the same OFF choice as the LCD's Settings > Column Mode screen. Leaves its stored mode untouched (matching the LCD), so switching back to Auto or Irrigation only later needs its own click.")}</span>
+          <span class="btn-with-info"><button type="button" id="zoneAuto${zone.id}" class="secondary">Auto</button>${info("Auto", "Sets this column to Auto (irrigation + fertigation) immediately — same as the LCD's Column Mode screen.")}</span>
+          <span class="btn-with-info"><button type="button" id="zoneIrrOnly${zone.id}" class="secondary">Irrigation only</button>${info("Irrigation only", "Sets this column to Irrigation only (water, no dosing) immediately — same as the LCD's Column Mode screen.")}</span>
+          <span class="btn-with-info"><button type="button" id="zoneOff${zone.id}" class="secondary">Off</button>${info("Off", "Disables this column immediately — same as the LCD's Column Mode screen. Its stored mode is kept, so switching back later needs its own click.")}</span>
         </div>
-        <p class="field-note">The three buttons above act immediately, mirroring the LCD's Column Mode control. Everything below is the detailed form (schedule, window, targets, preset) -- still requires "Send to ESP1".</p>
+        <p class="field-note">The three buttons above act immediately. Everything below is the detailed form — still needs "Send to ESP1".</p>
         <div class="force-row">
-          <label><span class="label-row">Operation${info("Operation", "Auto lets the schedule run both irrigation and nutrient dosing for this column, whenever its own timing and soil threshold say to. Irrigation only keeps the same schedule but skips dosing entirely, delivering plain water.")}</span><select id="cfgMode${zone.id}">
+          <label><span class="label-row">Operation${info("Operation", "Auto runs irrigation and dosing on schedule. Irrigation only keeps the schedule but skips dosing — plain water.")}</span><select id="cfgMode${zone.id}">
             <option value="">(unchanged)</option>
             <option value="AUTO">Auto — irrigation + fertigation</option>
             <option value="IRRIGATION_ONLY">Irrigation only</option>
@@ -1196,7 +1211,7 @@ function renderZonesUI() {
           <label>Column enabled<select id="cfgEnabled${zone.id}">
             <option value="">(unchanged)</option><option value="1">Enabled</option><option value="0">Disabled</option>
           </select></label>
-          <label><span class="label-row">Schedule${info("Schedule", "Automatic window lets the rig decide timing on its own. Manual window makes it run only within the start/end time you set below.")}</span><select id="cfgSched${zone.id}">
+          <label><span class="label-row">Schedule${info("Schedule", "Automatic lets the rig decide timing. Manual runs only within the start/end time you set below.")}</span><select id="cfgSched${zone.id}">
             <option value="">(unchanged)</option><option value="0">Automatic window</option><option value="1">Manual window</option>
           </select></label>
         </div>
@@ -1204,7 +1219,7 @@ function renderZonesUI() {
           <label>Window start<input id="cfgWinStart${zone.id}" type="time"></label>
           <label>Window end<input id="cfgWinEnd${zone.id}" type="time"></label>
         </div>
-        <p id="cfgWinNote${zone.id}" class="field-note" hidden>Window start/end only apply when Schedule is set to Manual window, and are only sent while that's selected.</p>
+        <p id="cfgWinNote${zone.id}" class="field-note" hidden>Window start/end only apply — and are only sent — when Schedule is set to Manual window.</p>
         <div class="force-row">
           <label>Target N (ppm)<input id="cfgN${zone.id}" type="number" min="0" max="2000" step="1"></label>
           <label>Target P (ppm)<input id="cfgP${zone.id}" type="number" min="0" max="2000" step="1"></label>
@@ -1212,22 +1227,22 @@ function renderZonesUI() {
           <label>Target pH<input id="cfgPH${zone.id}" type="number" min="3" max="9" step="0.1"></label>
         </div>
         <div class="force-row">
-          <label><span class="label-row">Firmware save settings${info("Firmware save settings", "Your own saved combinations of mode/enabled/schedule/window/targets for THIS column, most recent first. Selecting one fills every box above from that save -- it does not send anything by itself, review then press Send to ESP1.")}</span><select id="cfgSavedList${zone.id}">
+          <label><span class="label-row">Firmware save settings${info("Firmware save settings", "Your saved settings for this column, most recent first. Selecting one fills the boxes above — review, then press Send to ESP1.")}</span><select id="cfgSavedList${zone.id}">
             <option value="">(none -- select a recent save)</option>
           </select></label>
         </div>
         <div class="force-row">
           <label>Save name (optional)<input id="cfgSaveName${zone.id}" type="text" maxlength="40" placeholder="e.g. Vegetative high-N"></label>
-          <span class="btn-with-info"><button type="button" id="cfgSaveSettingsBtn${zone.id}" class="secondary">Save current settings</button>${info("Save current settings", "Stores whatever is currently filled in above -- mode, enabled, schedule, window, targets -- as a named save for this column only, so you can load it again later from the list above. Does not send anything to ESP1 by itself; unnamed saves get a timestamp instead.")}</span>
+          <span class="btn-with-info"><button type="button" id="cfgSaveSettingsBtn${zone.id}" class="secondary">Save current settings</button>${info("Save current settings", "Saves what's filled in above as a named preset for this column, for the list above. Doesn't send to ESP1. Unnamed saves get a timestamp.")}</span>
         </div>
         <div class="config-actions">
-          <span class="btn-with-info"><button type="button" id="cfgFromCrop${zone.id}" class="secondary">Fill targets from crop profile</button>${info("Fill targets from crop profile", "Copies the selected crop and stage's reference N, P, K, and pH numbers into the boxes above so you can review them before sending. This button alone does not change anything on the rig.")}</span>
-          <span class="btn-with-info"><button type="button" id="cfgSave${zone.id}">Send to ESP1</button>${info("Send to ESP1", "Sends the settings above to ESP1 as a real command. ESP1 checks each value is within a safe range before accepting it; anything left blank is unchanged.")}</span>
+          <span class="btn-with-info"><button type="button" id="cfgFromCrop${zone.id}" class="secondary">Fill targets from crop profile</button>${info("Fill targets from crop profile", "Copies the selected crop and stage's reference N/P/K/pH into the boxes above to review before sending. Doesn't change the rig by itself.")}</span>
+          <span class="btn-with-info"><button type="button" id="cfgSave${zone.id}">Send to ESP1</button>${info("Send to ESP1", "Sends the settings above to ESP1. Each value is range-checked before it's accepted; blank fields are left unchanged.")}</span>
         </div>
         <p id="cfgResult${zone.id}" class="control-result" aria-live="polite"></p>
       </div>`
       : `<div class="zone-config">
-        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "These are the real settings ESP1 uses to run this column. Editing requires an approved operator account.")}</h4>
+        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "The real settings ESP1 uses for this column. Editing requires an approved account.")}</h4>
         <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
         <p class="field-note">Read-only access — editing firmware settings requires operator approval.</p>
       </div>`;
@@ -1238,14 +1253,14 @@ function renderZonesUI() {
         ${cropStageHtml}
       </div>
       <div class="card-grid matrix-grid">
-        <article class="card matrix-card"><h3>Nitrogen${info("Nitrogen", "The nitrogen level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target. Red text means the reading is below that target.")}</h3><p id="nitrogen${zone.id}">Unavailable</p><small id="targetN${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Phosphorus${info("Phosphorus", "The phosphorus level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="phosphorus${zone.id}">Unavailable</p><small id="targetP${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Potassium${info("Potassium", "The potassium level measured in this zone's soil by the NPK probe, compared against the selected crop's reference target.")}</h3><p id="potassium${zone.id}">Unavailable</p><small id="targetK${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil pH${info("Soil pH", "How acidic or alkaline the soil is in this zone, measured by the 7-in-1 probe.")}</h3><p id="soilPH${zone.id}">Unavailable</p><small id="targetPH${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil EC${info("Soil EC", "How concentrated the nutrients are in this zone's soil, measured by the probe.")}</h3><p id="soilEC${zone.id}">Unavailable</p><small id="targetEC${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil moisture${info("Soil moisture", "How damp the soil is in this zone. The schedule compares this against a threshold to decide when a run should start.")}</h3><p id="soil${zone.id}">Unavailable</p><small id="targetMoisture${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>NPK probe moisture${info("NPK probe moisture", "A second, independent moisture reading from the NPK probe itself, blended into the main soil moisture figure when the two readings agree.")}</h3><p id="npkMoist${zone.id}">Unavailable</p><small>Blended into the figure at left when it agrees</small></article>
-        <article class="card matrix-card"><h3>Soil temperature${info("Soil temperature", "The soil temperature at the root zone, from the 7-in-1 probe.")}</h3><p id="soilTemp${zone.id}">Unavailable</p><small>Root zone, from the 7-in-1 probe</small></article>
+        <article class="card matrix-card"><h3>Nitrogen${info("Nitrogen", "Nitrogen measured in this zone's soil, compared to the selected crop's target. Red means below target.")}</h3><p id="nitrogen${zone.id}">Unavailable</p><small id="targetN${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Phosphorus${info("Phosphorus", "Phosphorus measured in this zone's soil, compared to the selected crop's target.")}</h3><p id="phosphorus${zone.id}">Unavailable</p><small id="targetP${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Potassium${info("Potassium", "Potassium measured in this zone's soil, compared to the selected crop's target.")}</h3><p id="potassium${zone.id}">Unavailable</p><small id="targetK${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil pH${info("Soil pH", "How acidic or alkaline this zone's soil is, from the 7-in-1 probe.")}</h3><p id="soilPH${zone.id}">Unavailable</p><small id="targetPH${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil EC${info("Soil EC", "How concentrated this zone's soil nutrients are, from the probe.")}</h3><p id="soilEC${zone.id}">Unavailable</p><small id="targetEC${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>Soil moisture${info("Soil moisture", "How damp this zone's soil is. The schedule compares it to a threshold to decide when to run.")}</h3><p id="soil${zone.id}">Unavailable</p><small id="targetMoisture${zone.id}">Target: --</small></article>
+        <article class="card matrix-card"><h3>NPK probe moisture${info("NPK probe moisture", "A second moisture reading from the NPK probe, blended into the main figure when the two agree.")}</h3><p id="npkMoist${zone.id}">Unavailable</p><small>Blended into the figure at left when it agrees</small></article>
+        <article class="card matrix-card"><h3>Soil temperature${info("Soil temperature", "Root-zone soil temperature, from the 7-in-1 probe.")}</h3><p id="soilTemp${zone.id}">Unavailable</p><small>Root zone, from the 7-in-1 probe</small></article>
       </div>
       ${firmwareConfigHtml}
       <p class="zone-note">Actuator/solenoid feedback: not reported by the current ESP1 Firebase snapshot.</p>`;
