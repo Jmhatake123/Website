@@ -233,11 +233,74 @@ function setConnection(connected, label) {
   setDeviceStatus("sideConnection", connected ? "LIVE SNAPSHOT" : "NOT LIVE", connected ? "active" : "off");
 }
 
+/* Toast notifications (2026-09-10) -- a popup layer on top of (not instead of) setCommandStatus()'s
+ * own persistent inline text: that stays the readable, still-there-later record; this is the "did you
+ * see that" moment. Bottom-right on desktop, top on mobile (see .toast-stack in style.css).
+ * Stacking rule: one toast gets the full TOAST_BASE_MS. Every additional toast CURRENTLY on screen
+ * shortens EVERY toast's remaining time (recomputed on every add/remove), down to a TOAST_MIN_MS
+ * floor, so a burst of notifications drains the stack rather than each sitting for a full 10s. */
+const TOAST_BASE_MS = 10000;
+const TOAST_MIN_MS = 2500;
+let toastSeq = 0;
+const activeToasts = new Map();   // id -> { el, timer }
+
+function toastDurationForCount(count) {
+  return Math.max(TOAST_MIN_MS, Math.round(TOAST_BASE_MS / Math.max(1, count)));
+}
+
+function rescheduleToasts() {
+  const duration = toastDurationForCount(activeToasts.size);
+  activeToasts.forEach((entry, id) => {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => dismissToast(id), duration);
+  });
+}
+
+function dismissToast(id) {
+  const entry = activeToasts.get(id);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  activeToasts.delete(id);
+  entry.el.classList.remove("toast-in");
+  entry.el.classList.add("toast-leaving");
+  // Deep-scan finding (2026-09-10, low): transitionend never fires for an effectively-zero-duration
+  // transition (e.g. a viewer with reduced-motion/animations forced off at the OS or browser level),
+  // which would otherwise leave this element in the DOM forever -- activeToasts itself is already
+  // cleaned up above, so this was a silent DOM leak, not a functional one. A fallback removal timer
+  // races it; whichever fires first wins, the other is a harmless no-op on an already-detached node.
+  const remove = () => entry.el.remove();
+  entry.el.addEventListener("transitionend", remove, { once: true });
+  setTimeout(remove, 300);
+  rescheduleToasts();   // fewer toasts left now -- the remaining ones can afford to slow back down
+}
+
+function showToast(message, tone = "") {
+  const text = String(message || "").trim();
+  if (!text) return;
+  const stack = document.getElementById("toastStack");
+  if (!stack) return;
+  const id = ++toastSeq;
+  const el = document.createElement("div");
+  el.className = `toast${tone ? ` toast-${tone}` : ""}`;
+  el.textContent = text;
+  el.title = "Click to dismiss";
+  el.addEventListener("click", () => dismissToast(id));
+  stack.appendChild(el);
+  activeToasts.set(id, { el, timer: null });
+  // Force layout before adding the "in" class, or the transition never plays -- the browser would
+  // otherwise coalesce "append with opacity:0" and "immediately set opacity:1" into one paint with no
+  // visible transition at all.
+  requestAnimationFrame(() => el.classList.add("toast-in"));
+  rescheduleToasts();
+}
+
 function setCommandStatus(text, tone = "") {
   const element = document.getElementById("commandStatus");
-  if (!element) return;
-  element.textContent = text;
-  element.className = `command-status ${tone}`.trim();
+  if (element) {
+    element.textContent = text;
+    element.className = `command-status ${tone}`.trim();
+  }
+  showToast(text, tone);
 }
 
 function syncControlAvailability() {
@@ -682,12 +745,19 @@ function detachActivityWatch() {
   activityRef = null;
   activityData = {};
 }
-// Newest-first, capped at 5 -- a glance, not a full audit trail (irrigation/commands + ESP1's own SD
-// log already are the real record of everything that happened).
+// Newest-first, capped at 15 -- a recent-history glance, not a full audit trail (irrigation/commands
+// + ESP1's own SD log already are the real record of everything that happened).
 function recentActivityFor(uid) {
   const entries = Object.values(activityData[uid] || {});
-  return entries.sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0)).slice(0, 5);
+  return entries.sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0)).slice(0, 15);
 }
+// Which accounts' activity list is currently expanded (2026-09-10) -- renderUserManagement() rebuilds
+// the ENTIRE #usersContainer innerHTML on every presence/activity/users update, so an open/closed
+// <details> element's own state would otherwise be destroyed and reset on the very next render (e.g.
+// a heartbeat presence update landing while an operator has one expanded). Tracked here, outside the
+// render, and reapplied via the `open` attribute each time; kept in sync by the delegated toggle
+// listener below.
+let expandedActivityUids = new Set();
 
 let myPresenceRef = null;
 let myConnectedRef = null;
@@ -788,14 +858,14 @@ function renderUserManagement() {
         <span class="muted">${escapeHtml(presenceLabel)}</span>
         ${tempActive ? `<span class="muted">Temp Manual/Test + System access until ${escapeHtml(new Date(u.tempAccessUntil).toLocaleTimeString())}</span>` : ""}
         ${subOpActive ? `<span class="muted">Sub-operator — Manual/Test + System access until withheld</span>` : ""}
-        <div class="user-activity">
-          <span class="muted">Recent activity:</span>
-          ${recent.length
-            ? `<ul class="user-activity-list">${recent.map(a =>
+        ${recent.length
+          ? `<details class="user-activity" data-uid="${escapeHtml(uid)}"${expandedActivityUids.has(uid) ? " open" : ""}>
+              <summary>Recent: ${escapeHtml(rawText(recent[0]?.what, "?"))} — ${escapeHtml(formatAge(Date.now() - Number(recent[0]?.at || 0)))} ago${recent.length > 1 ? ` (${recent.length} shown)` : ""}</summary>
+              <ul class="user-activity-list">${recent.map(a =>
                 `<li>${escapeHtml(rawText(a?.what, "?"))} — ${escapeHtml(formatAge(Date.now() - Number(a?.at || 0)))} ago</li>`
-              ).join("")}</ul>`
-            : `<span class="muted"> none yet</span>`}
-        </div>
+              ).join("")}</ul>
+            </details>`
+          : `<span class="muted">No recent activity.</span>`}
       </div>
       <span class="device-status ${tone}">${escapeHtml(STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
       <div class="user-row-actions">${buttons}</div>
@@ -841,6 +911,15 @@ async function grantTempAccess(uid) {
   if (!Number.isFinite(serverNow)) throw new Error("Could not read back the server's clock.");
   await ref.set(serverNow + TEMP_ACCESS_DURATION_MS);
 }
+// Keeps expandedActivityUids (above) in sync with the actual <details> elements the operator opens/
+// closes -- registered with capture:true because the native `toggle` event does not bubble, so a
+// plain (bubbling-phase) listener on this ancestor would never see it; capture delivery happens on
+// the way DOWN to the target and fires regardless of whether the event bubbles back up afterward.
+document.getElementById("usersContainer")?.addEventListener("toggle", event => {
+  const uid = event.target?.dataset?.uid;
+  if (!uid) return;
+  if (event.target.open) expandedActivityUids.add(uid); else expandedActivityUids.delete(uid);
+}, true);
 document.getElementById("usersContainer")?.addEventListener("click", event => {
   const button = event.target.closest("[data-user-action]");
   if (!button) return;
@@ -850,7 +929,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   const row = button.closest(".user-row");
   const name = row?.querySelector(".user-row-info strong")?.textContent || "this account";
   const email = row?.dataset.email || "";
-  const run = write => { button.disabled = true; write().catch(error => alert(`Could not update this account: ${error.message}`)).finally(() => { button.disabled = false; }); };
+  const run = write => { button.disabled = true; write().catch(error => showToast(`Could not update this account: ${error.message}`, "error")).finally(() => { button.disabled = false; }); };
 
   if (action === "delete") {
     // Deliberately the strongest confirmation of the three (a plain confirm() for the others) --
@@ -867,7 +946,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // Defense-in-depth re-check: renderUserManagement() already omits this button once offline,
     // but re-verify against the live presence data at click time too, in case this row was mid-
     // re-render (a stale "Kick" button briefly clickable is otherwise possible in that gap).
-    if (!presenceData[uid]?.online) { alert(`${name} is not currently online -- nothing to kick.`); return; }
+    if (!presenceData[uid]?.online) { showToast(`${name} is not currently online -- nothing to kick.`, "error"); return; }
     if (!confirm(`Force ${name} to sign in again?`)) return;
     run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
     return;
@@ -985,10 +1064,18 @@ function queueCommand(type, payload = {}, options = {}) {
       // Per-account activity trail (2026-09-10), operator-viewing-only -- see renderUserManagement().
       // Best-effort: a failure here must never affect the real command above, which already
       // succeeded by this point, so this is deliberately fire-and-forget with its own silent catch.
-      db.ref(`activity/${auth.currentUser.uid}`).push({
-        what: activitySummary(type, payload),
-        at: firebase.database.ServerValue.TIMESTAMP
-      }).catch(error => console.warn("Could not log activity", error));
+      // Deep-scan finding (2026-09-10): auth.currentUser can legitimately be null here if the user
+      // signed out in the brief window between the push above starting and this callback running --
+      // an unguarded .uid access would throw SYNCHRONOUSLY inside this .then(), which the .catch()
+      // below would then report as "Could not queue command", falsely, for a command that had
+      // already succeeded. Skip the log entirely rather than risk that.
+      const myUid = auth.currentUser?.uid;
+      if (myUid) {
+        db.ref(`activity/${myUid}`).push({
+          what: activitySummary(type, payload),
+          at: firebase.database.ServerValue.TIMESTAMP
+        }).catch(error => console.warn("Could not log activity", error));
+      }
       return reference.key;
     })
     .catch(error => {
@@ -2473,6 +2560,14 @@ function renderManualHold() {
 }
 
 function setManualTestArmed(on) {
+  // Deep-scan finding (2026-09-10, low): this function itself had no privilege check of its own --
+  // every OTHER guard on this reveal (the tab-click handler, mtProceed's own disabled state) could be
+  // bypassed by calling this directly from a console (script.js's top-level functions are all
+  // implicitly on window). Impact was cosmetic only (every real write underneath -- queueCommand()'s
+  // operatorOnly, writeTestHold()'s own check -- independently re-verifies privilege client- AND
+  // server-side regardless), but closing it here matches the same "a function invoked manually must
+  // still be rejected" standard already applied to Proceed and the tab-click handler.
+  if (on && !canAccessPrivilegedTabs()) return;
   mtArmed = on;
   const gate = document.getElementById("mtGate");
   const body = document.getElementById("mtControls");

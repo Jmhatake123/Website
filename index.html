@@ -488,6 +488,11 @@
     <p class="info-popover-text"></p>
   </div>
 
+  <!-- Toast notifications (see showToast() in script.js). Bottom-right on desktop, top on mobile
+       (breakpoint matches the rest of this page's own 600px mobile switch) -- populated entirely at
+       runtime, starts empty. aria-live so screen readers announce each one without interrupting. -->
+  <div id="toastStack" class="toast-stack" aria-live="polite" role="status"></div>
+
   <script src="firebase-config.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-auth-compat.js"></script>

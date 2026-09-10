@@ -320,7 +320,44 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
 /* button.danger/button.warn are styled for standalone full-size buttons (200px min-width, 100% width
    on mobile) -- neither makes sense for a small action button sitting in a row of siblings. */
 .user-action.danger, .user-action.warn { min-width: 0; width: auto; }
-/* Recent activity (operator-only, see renderUserManagement()/activity/.read in firebase-rules.json). */
-.user-activity { margin-top: 4px; }
-.user-activity-list { display: grid; gap: 2px; margin: 2px 0 0; padding: 0; list-style: none; }
+/* Recent activity (operator-only, see renderUserManagement()/activity/.read in firebase-rules.json).
+   <details>/<summary> so the up-to-15 list is collapsed to one line by default -- open/closed state
+   is tracked in expandedActivityUids (script.js) and reapplied via the `open` attribute, since this
+   whole row's HTML is rebuilt on every presence/activity update and would otherwise forget it. */
+.user-activity { margin-top: 4px; font-size: .84rem; color: var(--muted); }
+.user-activity summary { cursor: pointer; overflow-wrap: anywhere; }
+.user-activity summary:hover { color: var(--text); }
+.user-activity-list { display: grid; gap: 2px; margin: 4px 0 0; padding: 0; list-style: none; }
 .user-activity-list li { color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+
+/* Toast notifications (2026-09-10, see showToast() in script.js) -- fed by setCommandStatus() and the
+   User Management action handler, so this covers essentially every one-off result across the site
+   without hunting down each call site individually.
+   --toast-enter is the offset a toast animates FROM on the way in and TO on the way out (a mirror-
+   image appear/disappear) -- positive (from below) for the bottom-anchored desktop stack, negative
+   (from above) once the mobile breakpoint flips the stack to the top of the screen. */
+:root { --toast-enter: 18px; }
+.toast-stack {
+  position: fixed; z-index: 40; right: 20px; bottom: 20px;
+  display: flex; flex-direction: column; gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;   /* clicks pass through the gaps between toasts; each toast re-enables itself */
+}
+.toast {
+  pointer-events: auto; cursor: pointer;
+  padding: 13px 16px; border: 1px solid var(--border); border-left: 4px solid var(--muted);
+  border-radius: 10px; background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+  font-size: .88rem; line-height: 1.45; overflow-wrap: anywhere;
+  opacity: 0; transform: translateY(var(--toast-enter));
+  transition: opacity .25s ease, transform .25s ease;
+}
+.toast.toast-in { opacity: 1; transform: translateY(0); }
+.toast.toast-leaving { opacity: 0; transform: translateY(var(--toast-enter)); }
+.toast-error { border-left-color: var(--danger); }
+.toast-pending { border-left-color: var(--warning); }
+.toast-completed { border-left-color: var(--success); }
+
+@media (max-width: 600px) {
+  :root { --toast-enter: -18px; }
+  .toast-stack { top: 14px; right: 14px; bottom: auto; left: 14px; width: auto; flex-direction: column-reverse; }
+}
