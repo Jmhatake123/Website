@@ -187,13 +187,21 @@ let myTempAccessUntil = 0;
 function hasTempAccess() {
   return Date.now() < myTempAccessUntil;
 }
+// Sub-operator (2026-09-10): a SECOND, separate elevation from the 1h temp grant above -- persistent
+// (no expiry clock) until an operator explicitly withholds it again, same on/off spirit as e.g. the
+// preventive-exercise toggle. Stored as /users/{uid}/subOperator (boolean), settable only by either
+// operator UID (see firebase-rules.json) -- both Main and Creator/backup accounts can grant/withhold
+// it, identically to how both can already grant/revoke temp access.
+let mySubOperator = false;
 function canAccessPrivilegedTabs() {
   // Deep-scan finding (2026-09-10): hasTempAccess() only checks the timestamp, not current standing --
   // an operator restricting/blocking this account mid-grant left it privileged until the grant's own
   // clock ran out (up to an hour), even though revoking approval is clearly meant to take that away
   // immediately. isApprovedUser() re-check closes that; isOperator() itself needs no such re-check,
-  // since operator status is fixed for the session, never revoked mid-session.
-  return isOperator() || (hasTempAccess() && isApprovedUser());
+  // since operator status is fixed for the session, never revoked mid-session. mySubOperator shares
+  // the identical re-check for the identical reason -- a persistent grant must be just as immediately
+  // voidable as a temporary one the moment approval is lost.
+  return isOperator() || ((hasTempAccess() || mySubOperator) && isApprovedUser());
 }
 
 // Access-control revision (2026-09-09): renderZonesUI()'s editable-vs-read-only variant depends on
@@ -348,6 +356,7 @@ function initializeFirebase() {
         exTouched = false;             // let the exercise panel re-sync from ESP1 fresh on next sign-in
         lastZoneEditCapability = undefined;   // force a fresh evaluation on the next sign-in, not a stale match
         myTempAccessUntil = 0;         // a temp-access grant must never survive into a later sign-in
+        mySubOperator = false;         // ditto for a persistent sub-operator grant
         detachPresence();              // mark this session offline immediately -- don't wait for onDisconnect
         // liveData is about to be wiped below -- reset this FIRST so the updateDashboard() call just
         // after doesn't see (wasFaultActive=true, empty liveData) and announce a fabricated "The hold
@@ -486,11 +495,12 @@ function attachUserStatusListener(uid) {
     const wasApproved = myAccountStatus === "approved";
     myAccountStatus = record ? record.status : null;
     myTempAccessUntil = Number(record?.tempAccessUntil) || 0;
+    mySubOperator = Boolean(record?.subOperator);
     renderAccountStatus(record);
     renderBlockedScreen();
     syncControlAvailability();
     syncZoneEditCapability();
-    refreshOperatorUI();   // an operator's temp-access grant/revoke must show/hide my tabs live
+    refreshOperatorUI();   // an operator's temp-access/sub-operator grant/revoke must show/hide my tabs live
     // Block/Restrict must release an in-progress Manual/Test hold immediately, the same way Kick's
     // forced sign-out already does via onAuthStateChanged -- otherwise the rig stays out of
     // automatic for up to the full 60s lease after the operator believes access was cut off at once.
@@ -499,6 +509,7 @@ function attachUserStatusListener(uid) {
     console.warn("Could not read account status", error);
     myAccountStatus = null;
     myTempAccessUntil = 0;
+    mySubOperator = false;
     renderAccountStatus(null);
     renderBlockedScreen();
     syncControlAvailability();
@@ -708,6 +719,11 @@ function renderUserManagement() {
     // already has full access, and a pending/restricted/blocked account can't be elevated without
     // first being approved.
     const tempActive = status === "approved" && !isAnyOperator && Number(u?.tempAccessUntil) > Date.now();
+    // Sub-operator (2026-09-10): a SECOND, separate elevation to Manual/Test + System -- persistent
+    // (no expiry) rather than the 1h temp grant above, toggled on/off like a switch until an operator
+    // changes it again. Independent of tempActive -- an account can hold either, both, or neither;
+    // canAccessPrivilegedTabs() ORs them together client-side.
+    const subOpActive = status === "approved" && !isAnyOperator && Boolean(u?.subOperator);
     // Online/offline (see attachPresence()/attachPresenceWatch() above) -- also decides whether
     // Kick is even offered: kicking an already-offline account just wrote a fresh kickToken that
     // would immediately re-fire the moment they reconnect, which is exactly the "kicked N times"
@@ -721,13 +737,14 @@ function renderUserManagement() {
       if (status === "approved") {
         actions.push(...(isOnline ? [["kick", "Kick"]] : []), ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
         actions.push(tempActive ? ["revoketemp", "Revoke temp access"] : ["granttemp", "Grant 1h Manual/Test + System"]);
+        actions.push(subOpActive ? ["withholdsubop", "Withhold Sub-operator"] : ["grantsubop", "Grant Sub-operator"]);
       }
       if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ...(isOnline ? [["kick", "Kick"]] : []), ["block", "Block"], ["delete", "Delete"]);
       if (status === "rejected")   actions.push(["approve", "Approve"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
       if (status === "disabled")   actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
     }
     const tone = status === "approved" ? "active" : (status === "pending" || status === "restricted") ? "off" : "danger";
-    const tones = { delete: " danger", block: " warn", revoketemp: " warn" };
+    const tones = { delete: " danger", block: " warn", revoketemp: " warn", withholdsubop: " warn" };
     const buttons = actions.map(([action, label]) =>
       `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`
     ).join("");
@@ -738,6 +755,7 @@ function renderUserManagement() {
         <span class="muted">Registered: ${escapeHtml(created)}</span>
         <span class="muted">${escapeHtml(presenceLabel)}</span>
         ${tempActive ? `<span class="muted">Temp Manual/Test + System access until ${escapeHtml(new Date(u.tempAccessUntil).toLocaleTimeString())}</span>` : ""}
+        ${subOpActive ? `<span class="muted">Sub-operator — Manual/Test + System access until withheld</span>` : ""}
       </div>
       <span class="device-status ${tone}">${escapeHtml(STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
       <div class="user-row-actions">${buttons}</div>
@@ -828,6 +846,17 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     run(() => db.ref(`users/${uid}`).update({ tempAccessUntil: null }));
     return;
   }
+  if (action === "grantsubop") {
+    // Persistent elevation, not a role change -- status stays "approved" throughout, same as temp
+    // access above. No expiry: stays in effect until an operator withholds it again.
+    if (!confirm(`Grant ${name} Sub-operator access to Manual/Test and System? This stays in effect until you withhold it again.`)) return;
+    run(() => db.ref(`users/${uid}`).update({ subOperator: true }));
+    return;
+  }
+  if (action === "withholdsubop") {
+    run(() => db.ref(`users/${uid}`).update({ subOperator: null }));
+    return;
+  }
   const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved", restrict: "restricted", unrestrict: "approved" };
   const newStatus = statusMap[action];
   if (!newStatus) return;
@@ -836,9 +865,12 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   // Deep-scan finding (2026-09-10): reject/block/restrict previously left any outstanding
   // tempAccessUntil grant untouched -- re-approving the account before that grant's own clock ran
   // out (up to an hour later) would silently hand privileged access straight back with no fresh
-  // grant from an operator. Clear it alongside any status change that revokes approval.
+  // grant from an operator. Clear it alongside any status change that revokes approval. Sub-operator
+  // (2026-09-10) is persistent rather than time-limited, so this matters even more for it -- without
+  // this, re-approving a once-blocked sub-operator would silently hand the elevation straight back
+  // with no fresh grant, indefinitely, not just within some grant's remaining hour.
   const updates = { status: newStatus };
-  if (newStatus !== "approved") updates.tempAccessUntil = null;
+  if (newStatus !== "approved") { updates.tempAccessUntil = null; updates.subOperator = null; }
   run(() => db.ref(`users/${uid}`).update(updates));
 });
 
