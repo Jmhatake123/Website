@@ -2413,9 +2413,22 @@ function renderManualHold() {
   // permanently unable to even LOOK at the tab. Individual test buttons are the real gate now, via
   // syncControlAvailability()'s normalAllowed/deviceIsFresh() check -- they alone stay disabled
   // until the rig is genuinely connected and has granted the hold.
+  // Concern raised (2026-09-10): could a non-privileged approved account reach Manual/Test at all?
+  // Traced end to end -- this was the one real gap. Proceed used to disable only on !isApprovedUser(),
+  // so a plain approved (non-operator, no temp/sub-operator grant) account's Proceed button was never
+  // actually disabled, even though the nav tab itself stays correctly hidden for them. That let a
+  // console `document.getElementById('mtProceed').click()` reveal #mtControls regardless of tier --
+  // cosmetic only (every individual button/command underneath is still independently gated by
+  // canAccessPrivilegedTabs()/queueCommand()'s operatorOnly check, both client and server-side), but
+  // still a real defense-in-depth miss for the one thing Proceed itself controls: revealing the panel
+  // at all. Now requires the same privileged tier as the tab itself (Main/Creator operator, an active
+  // 1h temp grant, or a persistent Sub-operator grant).
   if (proceed) {
-    proceed.disabled = !isApprovedUser();
-    proceed.title = isApprovedUser() ? "" : "Your account is awaiting operator approval before it can use this control.";
+    const privileged = canAccessPrivilegedTabs();
+    proceed.disabled = !privileged;
+    proceed.title = privileged ? "" : !isApprovedUser()
+      ? "Your account is awaiting operator approval before it can use this control."
+      : "This control is limited to the main/creator operator account, or an account with an active temporary/Sub-operator grant.";
   }
   // Revoked or refused while already inside: drop the controls and stop re-requesting. Deliberately
   // NOT "state !== held" any more (2026-09-10) -- Proceed can now reveal #mtControls with state still
@@ -2600,14 +2613,25 @@ document.getElementById("mtSweepBtn")?.addEventListener("click", () => {
   if (seconds !== null) queueCommand("DIAG_SWEEP", { seconds }, { operatorOnly: true });
 });
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
+  // Defense-in-depth (2026-09-10, concern raised about non-privileged Manual/Test access): a tab
+  // button being [hidden] for an unprivileged/non-operator account is a UI convenience -- it does
+  // NOT stop a raw element.click() from a browser console from still firing this SAME listener and
+  // activating the view underneath, regardless of visibility. Refuse here too, at the one place all
+  // three privileged views are switched to, so "the tab looks reachable" and "the tab is actually
+  // reachable" can never diverge. (The actual hardware commands inside were always independently
+  // gated by canAccessPrivilegedTabs()/isOperator(), both client and server-side -- this closes the
+  // one remaining gap, which was only ever revealing the panel itself, never operating anything.)
+  const view = tab.dataset.view;
+  if ((view === "manualtest" || view === "system") && !canAccessPrivilegedTabs()) return;
+  if (view === "users" && !isOperator()) return;
   // Leaving Manual/Test re-arms its gate, so you can never land back on live hardware controls
   // already unlocked from a previous visit.
   // Entering Manual/Test asks the rig for the hold; leaving gives it straight back rather than
   // waiting out the 60 s lease.
-  if (tab.dataset.view === "manualtest") requestManualHold();
+  if (view === "manualtest") requestManualHold();
   else { setManualTestArmed(false); releaseManualHold(); mtHoldStop(true); }
   document.querySelectorAll(".tab").forEach(item => item.classList.toggle("active", item === tab));
-  document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === tab.dataset.view));
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === view));
 }));
 
 const themeToggle = document.getElementById("theme-toggle");
