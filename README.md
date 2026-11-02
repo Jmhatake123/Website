@@ -23,8 +23,9 @@ Firmware source: https://github.com/JKyle-N/Smart-Irrigation
 
 ## What the dashboard does
 
-- **Live Dashboard** — reservoir/mixing levels, flow rate, temperature, humidity, light, pH, EC, and
-  battery voltage/percentage/current/power, read straight from ESP1's telemetry snapshot.
+- **Live Dashboard** — reservoir/mixing levels, flow rate, temperature, humidity, light, pH, EC,
+  battery voltage/percentage/current/power, solar output and the secondary battery, read straight from
+  ESP1's telemetry snapshot.
 - **Zone Profiles** — per-column crop and growth-stage tracking, NPK/pH/EC/moisture readings against
   each crop's reference targets, and the firmware settings (mode, schedule, dosing targets) actually
   sent to ESP1.
@@ -36,7 +37,7 @@ Firmware source: https://github.com/JKyle-N/Smart-Irrigation
 - **Diagnostics** — ESP1's raw diagnostic values, pre-conversion sensor readings, an on-demand ESP2
   sensor sweep, and a recent-events feed.
 - **System** *(privileged accounts)* — remote versions of the LCD's Settings menu: clock, thresholds,
-  LCD-lock status, restore defaults.
+  LCD-lock status, battery-switch fault, restore defaults.
 - **User Management** *(operators only)* — approve, reject, restrict, or block accounts; grant
   1-hour temporary access or a persistent Sub-operator role; see each account's online/offline state
   and recent activity.
@@ -70,10 +71,10 @@ CIT-U EE Smart Irrigation / Pinamungahan Automated Farm
 | Node | Written by | Purpose |
 |---|---|---|
 | `irrigation/live` | ESP1 only | Telemetry snapshot, faults, event log, `diagnostics.webManual` |
-| `irrigation/commands/$id` | page (queued) → ESP1 (status) | One-shot commands; ESP1 validates every payload |
+| `irrigation/commands/$id` | page (queued) → ESP1 (status) | One-shot commands; ESP1 validates every payload. The page may also change a row from `queued` to `withdrawn` (not `EMERGENCY_STOP`, `DISABLE_ACTUATIONS` or `CANCEL_FORCE`), because ESP1 runs a queued row however old it is |
 | `irrigation/config/zones` | page only | Which crop and stage each zone is growing. Dashboard-side notes — the numeric targets reach the rig through `SET_COLUMN`, not from here |
 | `irrigation/manual` | page only | `{seq, want}` — the Manual/Test mutual-exclusion hold. ESP1 reads it and answers in `live` under `diagnostics.webManual`. Acquiring (`want:true`) requires the privileged tier (operator/temp-access/sub-operator, see `users/$uid` below); releasing (`want:false`) is open to anyone signed in |
-| `irrigation/testHold` | page only | `{seq, bit, want}` — Manual/Test's press-and-hold buttons. ESP1's `firebasePollTestHold()` reads it and drives ESP2's existing `TEST,HOLD`/`TEST,RELEASE` dead-man; `bit` is restricted (by the rule) to the same 10-target whitelist as `TEST_PULSE`'s `target` field (transfer/colA/colB/colC/mixer/nutA/nutB/nutC/phUp/phDn) |
+| `irrigation/testHold` | page only | `{seq, bit, want}` — Manual/Test's press-and-hold buttons. ESP1's `firebasePollTestHold()` reads it and drives ESP2's existing `TEST,HOLD`/`TEST,RELEASE` dead-man; `bit` is restricted (by the rule) to the same 10-target whitelist as `TEST_PULSE`'s `target` field (transfer/colA/colB/colC/mixer/nutA/nutB/nutC/phUp/phDn). The page registers an `onDisconnect` release while a button is held, because ESP1 acts on a leftover `want:true` when it boots |
 | `presence/$uid` | every signed-in session, its own | `{online, lastChanged}` via `.info/connected`+`onDisconnect()`. Read-restricted to the two operator UIDs (plus self) — powers User Management's online/offline display |
 | `activity/$uid` | every signed-in session, its own | `{what, at}` entries, one per command actually queued (see `activitySummary()`/`queueCommand()`). Read-restricted to **only** the two operator UIDs, not even the account's own owner — powers User Management's recent-activity list |
 | `users/$uid` | see `status`/`tempAccessUntil`/`subOperator` | `tempAccessUntil` (ms timestamp) is a 1-hour, operator-granted Manual/Test+System elevation; `subOperator` (boolean) is the same elevation but persistent until an operator withholds it again. Both settable only by the two operator UIDs, both cleared automatically the moment status leaves `'approved'` (reject/block/restrict) |
@@ -83,9 +84,10 @@ CIT-U EE Smart Irrigation / Pinamungahan Automated Farm
 `firebase-rules.json` is the authoritative copy of the database rules. Rules are enforced
 server-side, so keeping them in the repo costs nothing in security and makes changes reviewable.
 
-**After editing it, paste the whole file into Firebase Console → Realtime Database → Rules and
-publish.** The console is the live source; this file is only version control, and the two drift
-apart silently if you change one without the other.
+**After editing it, publish it**: dry-run with `firebase deploy --only database --dry-run`, then run
+`firebase deploy --only database`, or paste the whole file into Firebase Console → Realtime Database →
+Rules. The deployed copy is the live source; this file is only version control, and the two drift apart
+silently if you change one without the other.
 
 `irrigation/manual` needs its rule present or the Manual/Test tab does not work at all — RTDB denies
 by default where no rule matches, so without it both the page's write and ESP1's read are rejected

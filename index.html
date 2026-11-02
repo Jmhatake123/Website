@@ -107,6 +107,12 @@
   </aside>
 
   <main class="main-content">
+    <!-- Emergency stop, on screen on every tab and while scrolling: a stop must not depend on which
+         view is open. Same handler and same gates as the one on the Controls tab. -->
+    <div id="estopBar" class="estop-bar" hidden>
+      <button id="emergencyStopTop" class="danger estop-btn estop-top" type="button">Emergency stop</button>
+    </div>
+
     <!-- Fault / lockout banner. Sits above the tabs so it is visible whichever view is open: a held
          fault or an actuation lockout is not a "diagnostics tab" concern. Hidden until ESP1 reports
          one. -->
@@ -175,7 +181,7 @@
       </div>
       <div class="card-grid metric-grid">
         <article class="card"><h3>Reservoir level<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reservoir level" data-info-title="Reservoir level" data-info-text="Water in the main reservoir, from an ultrasonic sensor. Runs are blocked if it's too low.">i</button></h3><p id="reservoirLevel">Unavailable</p></article>
-        <article class="card"><h3>Mixing tank level<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mixing tank level" data-info-title="Mixing tank level" data-info-text="Water/nutrient mix in the tank, tracked by flow meters, not a level sensor.">i</button></h3><p id="mixingLevel">Unavailable</p></article>
+        <article class="card"><h3>Mixing tank level<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mixing tank level" data-info-title="Mixing tank level" data-info-text="From the mixing tank's ultrasonic sensor. ESP2 meters each batch separately with flow sensors, so check the raw distance under Diagnostics if this looks wrong.">i</button></h3><p id="mixingLevel">Unavailable</p></article>
         <article class="card"><h3>System flow<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About System flow" data-info-title="System flow" data-info-text="Current flow rate, in liters per minute. Zero when no pump is running.">i</button></h3><p id="flowRate">Unavailable</p></article>
         <article class="card"><h3>Air temperature<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Air temperature" data-info-title="Air temperature" data-info-text="Air temperature at the rig. Monitoring only — doesn't trigger anything automatically.">i</button></h3><p id="temperature">Unavailable</p></article>
         <article class="card"><h3>Ambient humidity<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Ambient humidity" data-info-title="Ambient humidity" data-info-text="Air humidity around the plants. Monitoring only.">i</button></h3><p id="humidity">Unavailable</p></article>
@@ -187,6 +193,21 @@
         <article class="card"><h3>Battery current<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery current" data-info-title="Battery current" data-info-text="Current flowing to or from the battery, in amps.">i</button></h3><p id="batteryCurrent">Unavailable</p></article>
         <article class="card"><h3>Battery power<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery power" data-info-title="Battery power" data-info-text="Power draw right now, in watts.">i</button></h3><p id="batteryPower">Unavailable</p></article>
         <article class="card"><h3>Power source<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Power source" data-info-title="Power source" data-info-text="Current power source, as reported by ESP1.">i</button></h3><p id="powerSource">Unavailable</p></article>
+      </div>
+
+      <h3 class="metric-heading">Solar and secondary battery<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About solar and secondary battery" data-info-title="Solar and secondary battery" data-info-text="Solar panel output, and the second battery meant to power the controllers while the inverter runs. A reading shows Unavailable while its own sensor isn't answering.">i</button></h3>
+      <p id="powerGridNote" class="field-note" hidden>Not reported by this firmware. These readings need the web v.3 firmware.</p>
+      <div id="powerGrid" class="card-grid metric-grid">
+        <article class="card"><h3>Solar voltage<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Solar voltage" data-info-title="Solar voltage" data-info-text="Solar panel voltage. 0 V at night is a real reading.">i</button></h3><p id="solarVoltage">Unavailable</p></article>
+        <article class="card"><h3>Solar current<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Solar current" data-info-title="Solar current" data-info-text="Current coming from the solar panel, in amps.">i</button></h3><p id="solarCurrent">Unavailable</p></article>
+        <article class="card"><h3>Solar power<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Solar power" data-info-title="Solar power" data-info-text="Power coming from the solar panel right now, in watts.">i</button></h3><p id="solarPower">Unavailable</p></article>
+        <article class="card"><h3>Solar energy today<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Solar energy today" data-info-title="Solar energy today" data-info-text="Energy charged from solar since the daily reset, in watt-hours.">i</button></h3><p id="solarEnergyToday">Unavailable</p></article>
+        <article class="card"><h3>Boards powered from<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Boards powered from" data-info-title="Boards powered from" data-info-text="Which battery the controllers are running on right now. They stay on the main battery while battery switching is off in the firmware.">i</button></h3><p id="boardSupply">Unavailable</p></article>
+        <article class="card"><h3>Secondary voltage<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Secondary voltage" data-info-title="Secondary voltage" data-info-text="Secondary battery voltage, from its own sensor.">i</button></h3><p id="secondaryBatteryVoltage">Unavailable</p></article>
+        <article class="card"><h3>Secondary charge<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Secondary charge" data-info-title="Secondary charge" data-info-text="Estimated secondary battery charge, from its voltage.">i</button></h3><p id="secondaryBatteryPercent">Unavailable</p></article>
+        <article class="card"><h3>Secondary current<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Secondary current" data-info-title="Secondary current" data-info-text="Current flowing to or from the secondary battery, in amps.">i</button></h3><p id="secondaryBatteryCurrent">Unavailable</p></article>
+        <article class="card"><h3>Secondary power<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Secondary power" data-info-title="Secondary power" data-info-text="Power to or from the secondary battery right now, in watts.">i</button></h3><p id="secondaryBatteryPower">Unavailable</p></article>
+        <article class="card"><h3>Secondary status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Secondary status" data-info-title="Secondary status" data-info-text="Low means it is below the firmware's limit. With battery switching on, a low secondary blocks new inverter use.">i</button></h3><p id="secondaryBatteryStatus">Unavailable</p></article>
       </div>
 
       <article class="panel run-panel">
@@ -239,8 +260,8 @@
       </div>
 
       <article class="emergency-panel">
-        <div><h3>Emergency system stop<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Emergency system stop" data-info-title="Emergency system stop" data-info-text="Stops everything immediately — never blocked by the normal cooldown. 'Queued' isn't confirmation; wait for ESP1's status, then use Return to normal to come back out.">i</button></h3><p>Queues an emergency stop immediately, even with stale telemetry. Wait for ESP1's status to confirm it, then use <strong>Return to normal</strong> above to come back out.</p></div>
-        <button id="emergencyStop" class="danger" type="button">Emergency stop now</button>
+        <div><h3>Emergency system stop<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Emergency system stop" data-info-title="Emergency system stop" data-info-text="Stops everything immediately — never blocked by the normal cooldown. 'Queued' isn't confirmation; wait for ESP1's status, then use Return to normal to come back out.">i</button></h3><p>Queues an emergency stop immediately, even with stale telemetry. Wait for ESP1's status to confirm it, then use <strong>Return to normal</strong> above to come back out.</p><p id="emergencyOfflineNote" class="control-result error" hidden>ESP1 appears offline, so this stop would only be queued and nothing would stop until it reconnects. Use the physical cutoff, MODE + BACK at the unit, or SMS STOP,ALL.</p></div>
+        <button id="emergencyStop" class="danger estop-btn" type="button">Emergency stop now</button>
       </article>
 
       <section class="forced-section">
@@ -250,10 +271,11 @@
           <div class="force-row">
             <label><span class="label-row">Destination columns<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Destination columns" data-info-title="Destination columns" data-info-text="Which zone (or A + B together) this run waters.">i</button></span>
               <select id="forceColumns" required>
-                <option value="A">Column A</option>
-                <option value="B">Column B</option>
-                <option value="C">Column C</option>
-                <option value="AB">A + B together</option>
+                <option value="" selected>Choose a column</option>
+                <option value="A" data-label="Column A">Column A</option>
+                <option value="B" data-label="Column B">Column B</option>
+                <option value="C" data-label="Column C">Column C</option>
+                <option value="AB" data-label="A + B together">A + B together</option>
               </select>
             </label>
             <label><span class="label-row">Water to mix tank (L)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Water to mix tank" data-info-title="Water to mix tank (L)" data-info-text="Liters to prepare for this run, up to 20.">i</button></span>
@@ -264,14 +286,14 @@
             </label>
           </div>
           <fieldset class="dose-fieldset">
-            <legend>Nutrients (mL) — leave at 0 for irrigation<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About nutrient doses" data-info-title="Nutrients (mL)" data-info-text="Milliliters of each nutrient, up to 500 mL. Leave at 0 for plain irrigation.">i</button></legend>
+            <legend>Nutrients (mL) — leave at 0 for irrigation<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About nutrient doses" data-info-title="Nutrients (mL)" data-info-text="Milliliters of each nutrient, up to 500 mL. Leave at 0 for plain irrigation. Any dose needs at least 6.3 L of water.">i</button></legend>
             <div class="force-row">
               <label>Nutrient A<input id="forceDoseA" type="number" min="0" max="500" step="1" value="0" required></label>
               <label>Nutrient B<input id="forceDoseB" type="number" min="0" max="500" step="1" value="0" required></label>
               <label>Nutrient C<input id="forceDoseC" type="number" min="0" max="500" step="1" value="0" required></label>
             </div>
           </fieldset>
-          <p class="field-note">Max 20 L total, 500 mL per nutrient. Mixing time isn't settable — ESP1 runs to metered volume, not a clock, and re-checks safety right as the countdown ends.</p>
+          <p class="field-note">Max 20 L total, 500 mL per nutrient. A run with nutrients needs at least 6.3 L. Mixing time is fixed by the firmware, and ESP1 re-checks safety right as the countdown ends.</p>
           <span class="btn-with-info"><button type="submit">Queue forced run</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Queue forced run" data-info-title="Queue forced run" data-info-text="Sends the request. ESP1 re-checks safety right before the countdown ends.">i</button></span>
           <p id="forceRunResult" class="control-result" aria-live="polite"></p>
         </form>
@@ -334,16 +356,16 @@
           <p id="exResult" class="control-result" aria-live="polite"></p>
         </article>
 
-        <h3>Five-second preventive exercises</h3>
-        <p class="hint">The firmware’s own maintenance run: pump only, no valve, no destination.</p>
+        <h3>Preventive exercises</h3>
+        <p class="hint">The firmware’s own maintenance run: one pump, no valve, no destination. It runs for the length set above, and ESP2 raises the inverter first.</p>
         <div class="control-grid">
-          <span class="btn-with-info"><button id="transferPumpBtn" type="button">Exercise transfer pump</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise transfer pump" data-info-title="Transfer pump" data-info-text="Runs the transfer pump alone for a few seconds — checks it works without starting a real run.">i</button></span>
-          <span class="btn-with-info"><button id="boosterPumpBtn" type="button">Exercise booster pump</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise booster pump" data-info-title="Booster pump" data-info-text="Runs the booster pump alone for a few seconds, then stops.">i</button></span>
-          <span class="btn-with-info"><button id="mixerBtn" type="button">Exercise tank mixer</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise tank mixer" data-info-title="Tank mixer" data-info-text="Runs the mixer alone for a few seconds, then stops.">i</button></span>
+          <span class="btn-with-info"><button id="transferPumpBtn" type="button">Exercise transfer pump</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise transfer pump" data-info-title="Transfer pump" data-info-text="Runs the transfer pump for the exercise length set above — checks it works without starting a real run. ESP2 raises the inverter first.">i</button></span>
+          <span class="btn-with-info"><button id="boosterPumpBtn" type="button">Exercise booster pump</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise booster pump" data-info-title="Booster pump" data-info-text="Runs the booster pump for the exercise length set above, then stops. ESP2 raises the inverter first.">i</button></span>
+          <span class="btn-with-info"><button id="mixerBtn" type="button">Exercise tank mixer</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise tank mixer" data-info-title="Tank mixer" data-info-text="Runs the mixer for the exercise length set above, then stops. ESP2 raises the inverter first, because the mixer is an AC motor.">i</button></span>
         </div>
 
         <h3>Timed pulses<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Timed pulses" data-info-title="Timed pulses" data-info-text="Runs the chosen combination for the seconds you set, then stops. pH pumps dispense corrosive adjuster — confirm first.">i</button></h3>
-        <p class="hint">Same combinations as the LCD Testing screen, on a timer instead of a held button. Transfer runs as <em>fill</em> (reservoir valve + pump), since running it against a shut valve dead-heads it.</p>
+        <p class="hint">Same combinations as the LCD Testing screen, on a timer instead of a held button. Transfer runs as <em>fill</em> (inverter + pump, drawing straight from the reservoir), and the tank mixer also raises the inverter first.</p>
         <div class="control-grid">
           <label>Target<select id="pulseTarget">
             <option value="transfer">Transfer pump (fill: reservoir → mix)</option>
@@ -365,8 +387,8 @@
         <p id="pulseVolumeNote" class="field-note"></p>
         <p id="pulseResult" class="control-result" aria-live="polite">No pulse has been run in this session.</p>
 
-        <h3>Hold-to-run<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Hold-to-run" data-info-title="Hold-to-run" data-info-text="Energises only while held — stops the instant you release, lose connection, or leave the tab. Same targets as Timed pulses above.">i</button></h3>
-        <p class="hint">Press and hold to energise; release to stop — same as the rig's physical dead-man button. A lost connection stops it automatically too.</p>
+        <h3>Hold-to-run<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Hold-to-run" data-info-title="Hold-to-run" data-info-text="Energises only while held. It stops about 1-4 seconds after you release, lose connection, or leave the tab, and after 15 seconds at most. Same targets as Timed pulses above.">i</button></h3>
+        <p class="hint">Press and hold to energise; release to stop. ESP1 checks the button about once a second over the internet, so it starts and stops a few seconds late, unlike the rig's physical dead-man button. A hold stops at 15 seconds, and a lost connection stops it too. Wait 4 seconds between presses.</p>
         <div class="control-grid" id="mtHoldGrid">
           <button type="button" class="hold-btn" data-hold-target="transfer">Hold: Transfer pump (fill)</button>
           <button type="button" class="hold-btn" data-hold-target="colA">Hold: Booster → Column A</button>
@@ -439,10 +461,10 @@
       </article>
 
       <article class="panel">
-        <div class="panel-heading"><div><h3>Thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Thresholds" data-info-title="Thresholds" data-info-text="Same soil start%/stop% and fertigation-gap as the LCD. Stop must exceed start — ESP1 enforces this regardless of what's sent.">i</button></h3></div>
+        <div class="panel-heading"><div><h3>Thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Thresholds" data-info-title="Thresholds" data-info-text="Same soil start% and fertigation gap as the LCD. ESP1 doesn't publish its current values, so fill in every field each time. Soil stop only appears for older firmware, which still needs it.">i</button></h3></div>
         <div class="control-grid">
           <label>Soil start % (irrigate below this)<input id="sysThreshStart" type="number" min="0" max="100" step="1"></label>
-          <label>Soil stop % (must exceed start)<input id="sysThreshStop" type="number" min="0" max="100" step="1"></label>
+          <label id="sysThreshStopLabel">Soil stop % (must exceed start)<input id="sysThreshStop" type="number" min="0" max="100" step="1"></label>
           <label>Fertigation gap (mg/kg)<input id="sysThreshGap" type="number" min="0" max="500" step="1"></label>
           <button id="sysThreshSendBtn" type="button">Send to ESP1</button>
         </div>
@@ -452,6 +474,15 @@
       <article class="panel">
         <div class="panel-heading"><div><h3>LCD Lock status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About LCD Lock status" data-info-title="LCD Lock status" data-info-text="Read-only. Whether the LCD's buttons are locked. No remote lock/unlock — only someone at the unit can (hold UP+DOWN).">i</button></h3></div>
         <p>LCD Lock: <strong id="sysLockStatus">Unavailable</strong></p>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h3>Battery switch<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery switch" data-info-title="Battery switch" data-info-text="Two controller resets caused by battery switches within 24 hours latch this fault and block all inverter use. Check the hold-up before clearing it. It also clears itself 24 hours after the last reset if the clock is good.">i</button></h3></div></div>
+        <p>Switching: <strong id="sysBattSwitching">Unavailable</strong></p>
+        <p>Fault: <strong id="sysBattSwitchFault">Unavailable</strong></p>
+        <p>Reset strikes: <strong id="sysBattSwitchStrikes">Unavailable</strong></p>
+        <button id="sysClearBattSwitchBtn" type="button" disabled>Clear battery-switch fault</button>
+        <p id="sysBattSwitchResult" class="control-result" aria-live="polite"></p>
       </article>
 
       <article class="panel">

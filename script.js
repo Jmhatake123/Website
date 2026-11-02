@@ -10,14 +10,26 @@
  * irrigation/manual   dashboard -> ESP1 { seq, want }: the Manual/Test hold. ESP1 answers in
  *                     irrigation/live under diagnostics.webManual. Needs its own RTDB rule --
  *                     see Website/firebase-rules.json.
- * irrigation/commands dashboard -> ESP1 (ESP1 validates every supported command)
+ * irrigation/testHold dashboard -> ESP1 { seq, bit, want }: press-and-hold tests. ESP1 polls it every
+ *                     1-3 s, drops the relay 4 s after the last refresh, and caps a hold at 15 s.
+ * irrigation/commands dashboard -> ESP1 (ESP1 validates every supported command). ESP1 replies through
+ *                     status + detail: queued -> received -> accepted/completed/failed/rejected. The
+ *                     detail field holds 47 characters, so longer replies arrive cut off (see
+ *                     explainCommandDetail()). "withdrawn" is written only by this page, and only for
+ *                     a row still "queued", because ESP1 runs a queued row however old it is.
+ *
+ * The contract below follows the master's web v.3 firmware (firebaseUploadLive, firebasePollCommands,
+ * firebaseCommandTick in ESP1/src/main.cpp). The firmware publishes no version number, so isV3Firmware()
+ * tells the generations apart for the few places they differ.
  *
  * Commands ESP1 actually implements, and the exact payload each one expects. Kept complete on
  * purpose -- this drifted out of sync with the real command set once before (only 3 of 14 were
  * listed here for a long stretch).
- *   RUN_PUMP_TEST      { pump: "transfer" | "booster" | "mixer" }   5 s preventive exercise
+ *   RUN_PUMP_TEST      { pump: "transfer" | "booster" | "mixer" }   preventive exercise, for the length
+ *                        set by SET_EXERCISE (1-10 s). ESP2 raises the inverter first.
  *   FORCE_RUN          { columns: "A"|"B"|"C"|"AB", liters: <=20, doseMl: {A,B,C} (each <=500),
- *                        delaySeconds: 0-300 }   no pH field exists -- see note below
+ *                        delaySeconds: 0-300 }   no pH field exists -- see note below. Any dose needs at
+ *                        least 6.25 L, and mixing time is fixed by the firmware.
  *   EMERGENCY_STOP     {}   no gating, no confirmation dialog, always actionable
  *   RECOVER            { action: "hold"|"release"|"irrigate"|"normal" }   only while a fault is held
  *   ESTOP_RECOVER      {}   only while stopped (EMERGENCY_STOP) and no fault is held
@@ -35,11 +47,17 @@
  *                        table.
  *   SET_EXERCISE       { exerciseEnabled?, exerciseSeconds? }
  *   REBOOT             { target: "nano"|"esp2"|"esp1" }
- *   TEST_PULSE         { target, seconds: 1-15 }   Manual/Test only, dead-man timed on ESP2
+ *   TEST_PULSE         { target, seconds: 1-15 }   Manual/Test only, dead-man timed on ESP2. Whole
+ *                        seconds only: ESP1 reads a decimal as 0, then runs its default 5 s.
  *   DIAG_SWEEP         { seconds? }
  *   SET_CLOCK          { clkY, clkMo, clkD, clkH, clkMi }   all required together; sets ESP1's RTC
- *   SET_THRESH         { thStart, thStop, thGap }   all required together; same clamps as the LCD
+ *   SET_THRESH         { thStart, thGap }   both required; same clamps as the LCD. Older firmware
+ *                        also requires thStop, and web v.3 ignores it.
  *   RESTORE_DEFAULTS   {}   idle-only; runs the same reset function the LCD's Restore Defaults does
+ *   CLEAR_BATT_SWITCH  {}   clears a latched battery-switch fault; privileged tier only. Dormant while
+ *                        the firmware builds with SECONDARY_BATT_ENABLED 0.
+ * ESP1 also accepts two legacy names this page does not send: START_PUMP and TOGGLE_MIXER, both of which
+ * just run the preventive exercise.
  * Anything else is rejected by ESP1 as "not a remotely safe control", so this page does not offer
  * it. In particular there is no standalone valve command (valves are sequenced inside a work order)
  * and no pH Up/Down dosing target anywhere -- pH is validation-only in the current design; the pH
@@ -77,6 +95,7 @@ let liveData = {};
 let commandData = [];
 let firebaseReady = false;
 let databaseListenersAttached = false;
+let serverOffsetRef = null;
 let liveRef = null;
 let commandsRef = null;
 let zonesRef = null;
@@ -93,6 +112,10 @@ const TEMP_ACCESS_DURATION_MS = 60 * 60 * 1000;
 // only to come back "rejected".
 const FORCE_MAX_LITERS = 20;
 const FORCE_MAX_DOSE_ML = 500;
+// Mirrors the firmware's forceBatchOk(): a run that doses needs its batch (the water less the 20 %
+// flush) to reach MIXING_TANK_SAFE_MIN (5 L), which is 6.25 L of water. The form steps by 0.1 L, so
+// the smallest amount it can actually send is 6.3 L.
+const FORCE_MIN_DOSING_LITERS = 6.3;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
@@ -121,6 +144,32 @@ function booleanText(value, yes = "OK", no = "Not OK") {
   return value ? yes : no;
 }
 
+// Number("") is 0, so a blank field would otherwise pass validation as a real value. These fields are
+// read by plain buttons, not form submits, so the HTML min/max/step attributes never fire on them.
+function numberFromInput(id) {
+  const raw = document.getElementById(id)?.value?.trim();
+  return raw ? Number(raw) : NaN;
+}
+
+// ESP1 publishes signed current as + = discharging. Below half a rounding step there is no direction
+// worth claiming.
+function signedCurrentText(amps, signed) {
+  const text = numberText(amps, 2, "A");
+  if (!hasValue(signed) || Math.abs(Number(signed)) < 0.005) return text;
+  return `${text} ${Number(signed) > 0 ? "discharging" : "charging"}`;
+}
+
+// web v.3 publishes all zeros when the RTC's time cannot be trusted. Older firmware could publish
+// whatever a wedged I2C bus returned, with rtcOk still true (seen live: "2165-85-165 165:165").
+function deviceTimeText(value) {
+  const text = rawText(value);
+  const parts = text.match(/^(\d+)-(\d+)-(\d+) (\d+):(\d+)/);
+  if (!parts) return text;
+  const [month, day, hour, minute] = parts.slice(2).map(Number);
+  const valid = month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59;
+  return valid ? text : `Invalid reading (${text}): the clock can't be trusted`;
+}
+
 function formatAge(milliseconds) {
   const age = Number(milliseconds);
   if (!Number.isFinite(age) || age < 0 || age === 0xFFFFFFFF) return "Unavailable";
@@ -130,17 +179,38 @@ function formatAge(milliseconds) {
   return `${Math.floor(age / 3600000)} hours`;
 }
 
+// Firebase's clock, not this PC's. meta.updatedAt and a command's updatedAt are server timestamps, so
+// on a PC whose clock runs slow a dead rig's snapshot came out with a negative age and read as fresh,
+// which left the controls enabled. A PC clock ~18 hours off has happened on this project (see
+// grantTempAccess()). The offset arrives from .info/serverTimeOffset in attachDatabaseListeners().
+let serverTimeOffsetMs = 0;
+function serverNow() {
+  return Date.now() + serverTimeOffsetMs;
+}
+
 function snapshotAgeText() {
   const stamp = Number(liveData.meta?.updatedAt || 0);
   if (!stamp) return "Waiting for first snapshot";
-  const age = Math.max(0, Date.now() - stamp);
+  const age = Math.max(0, serverNow() - stamp);
   return `Snapshot received ${formatAge(age)} ago`;
 }
 
 function deviceIsFresh() {
   const stamp = Number(liveData.meta?.updatedAt || 0);
   const refreshMs = Number(liveData.meta?.refreshMs || 60000);
-  return Boolean(stamp) && Date.now() - stamp < Math.max(refreshMs * 2 + 15000, 90000);
+  return Boolean(stamp) && serverNow() - stamp < Math.max(refreshMs * 2 + 15000, 90000);
+}
+
+// The firmware publishes no version number, so its generation is inferred from a field that only
+// web v.3 sends, and sends unconditionally (system.boardSupply in firebaseUploadLive).
+function isV3Firmware() {
+  return typeof liveData.system?.boardSupply === "string";
+}
+
+// For a value only web v.3 publishes. Older firmware cannot report it at all, which is a different
+// situation from v.3 leaving it out because that sensor isn't answering right now ("Unavailable").
+function v3Only(text) {
+  return liveData.system && !isV3Firmware() ? "Not reported by this firmware" : text;
 }
 
 function currentUserIsSignedIn() {
@@ -355,11 +425,16 @@ function syncControlAvailability() {
 
   // Emergency stop is intentionally independent of live-data freshness and the normal cooldown --
   // but NOT independent of approval, which is a distinct safety gate, not a staleness workaround.
-  const emergency = document.getElementById("emergencyStop");
-  if (emergency) {
+  // There are two copies: the Controls panel, and the bar that stays on screen on every tab.
+  document.querySelectorAll(".estop-btn").forEach(emergency => {
     emergency.disabled = !signedIn || !approved;
     emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !approved ? notApprovedTitle : "";
-  }
+  });
+  const estopBar = document.getElementById("estopBar");
+  if (estopBar) estopBar.hidden = !signedIn || !approved;
+  // A remote stop silently does nothing while ESP1 is offline, so say so before it is relied on.
+  const estopNote = document.getElementById("emergencyOfflineNote");
+  if (estopNote) estopNote.hidden = !signedIn || !approved || deviceIsFresh();
 
   // Recovery + lockout + reboot: signed-in AND approved, deliberately NOT freshness-gated. A stale
   // snapshot is often exactly why you are reaching for these.
@@ -386,6 +461,16 @@ function syncControlAvailability() {
                       : !approved ? notApprovedTitle
                       : notIdle ? "ESP1 must be idle to restore defaults, same as the LCD menu."
                       : "";
+  }
+
+  // Nothing to clear unless ESP1 reports the fault as latched.
+  const clearBattBtn = document.getElementById("sysClearBattSwitchBtn");
+  if (clearBattBtn) {
+    const latched = liveData.system?.battSwitchFault === true;
+    clearBattBtn.disabled = !normalAllowed || !latched;
+    clearBattBtn.title = !normalAllowed ? "Sign in and wait for a fresh ESP1 snapshot before using this control."
+                        : !latched ? "ESP1 reports no battery-switch fault to clear."
+                        : "";
   }
 }
 
@@ -461,6 +546,8 @@ function attachDatabaseListeners() {
   if (databaseListenersAttached || !db) return;
   databaseListenersAttached = true;
   setConnection(true, "Connecting to Firebase…");
+  serverOffsetRef = db.ref(".info/serverTimeOffset");
+  serverOffsetRef.on("value", snapshot => { serverTimeOffsetMs = Number(snapshot.val()) || 0; });
   liveRef = db.ref("irrigation/live");
   commandsRef = db.ref("irrigation/commands").limitToLast(25);
 
@@ -478,6 +565,8 @@ function attachDatabaseListeners() {
     renderCommandHistory();
     renderPulseResult();          // the pulse verdict rides on its command status detail
     renderColumnCommandResults(); // each zone's own SET_COLUMN outcome, inline under its own button
+    renderPanelCommandResults();  // the same, for the Controls, Manual/Test and System panels
+    updateForceArmed();           // a FORCE_RUN row turning "accepted" is the first sign it is armed
   }, error => setCommandStatus(`Command status unavailable: ${error.code || "unknown"}`, "error"));
 
   zonesRef = db.ref("irrigation/config/zones");
@@ -506,9 +595,11 @@ function attachDatabaseListeners() {
 }
 
 function detachDatabaseListeners() {
+  if (serverOffsetRef) serverOffsetRef.off();
   if (liveRef) liveRef.off();
   if (commandsRef) commandsRef.off();
   if (zonesRef) zonesRef.off();
+  serverOffsetRef = null;
   liveRef = null;
   commandsRef = null;
   zonesRef = null;
@@ -552,7 +643,7 @@ function attachUserStatusListener(uid) {
       lastHandledKickToken = kt;
       myAccountRef.child("kickToken").remove()
         .catch(error => console.warn("Could not clear kickToken", error))
-        .finally(() => auth.signOut());
+        .finally(() => releaseHoldsThenSignOut());
       return;
     }
     const wasApproved = myAccountStatus === "approved";
@@ -641,8 +732,19 @@ function renderBlockedScreen() {
   screen.hidden = !(currentUserIsSignedIn() && !isOperator() && myAccountStatus === "disabled");
 }
 document.getElementById("blockedSignOutBtn")?.addEventListener("click", () => {
-  auth?.signOut().catch(error => console.error(error));
+  if (auth) releaseHoldsThenSignOut().catch(error => console.error(error));
 });
+
+// Releases whatever this session holds, THEN signs out. Signing out first drops those writes, since
+// writeManualHold()/writeTestHold() need a signed-in user, and leaves want:true in the database. ESP1
+// acts on a leftover testHold want:true the next time it boots (testHoldSeq starts at -1, so any stored
+// seq counts as new), which would start a relay with nobody at the page. The cap is for an offline
+// browser, whose writes are never acknowledged but which must still be able to sign out.
+function releaseHoldsThenSignOut() {
+  const releases = Promise.allSettled([releaseManualHold(), mtHoldStop(true)]);
+  const capped = Promise.race([releases, new Promise(resolve => setTimeout(resolve, 1500))]);
+  return capped.then(() => auth.signOut());
+}
 
 /* User Management (operator-only). The tab/section being hidden from non-operators is a UI
  * convenience -- the actual boundary is /users' ".read" rule, which only the operator UID passes,
@@ -1027,6 +1129,25 @@ function writeZoneProfile(zone) {
   }).catch(error => setCommandStatus(`Could not save dashboard-only zone profile: ${error.message}`, "error"));
 }
 
+// Best-effort per-account activity trail (2026-09-10), operator-viewing-only -- see
+// renderUserManagement(). A failure here must never affect the action it records, so it has its own
+// silent catch. auth.currentUser can legitimately be null by the time this runs, if the user signed out
+// just after the action; skip the entry rather than throw inside the caller's promise chain.
+function logActivity(what) {
+  const myUid = auth.currentUser?.uid;
+  if (!myUid) return;
+  db.ref(`activity/${myUid}`).push({
+    what,
+    at: firebase.database.ServerValue.TIMESTAMP
+  }).catch(error => console.warn("Could not log activity", error));
+}
+
+// These skip the freshness gate on purpose, because a stale snapshot is often why someone reaches for
+// them. But the firmware runs any queued row whenever it next reads it, with no age limit, so sent while
+// ESP1 is offline they would fire when it reconnects, possibly days later and into a changed situation.
+// Stops are not listed: firing late is the safe direction.
+const OFFLINE_CONFIRM_TYPES = new Set(["ENABLE_ACTUATIONS", "RECOVER", "ESTOP_RECOVER", "REBOOT"]);
+
 function queueCommand(type, payload = {}, options = {}) {
   const emergency = Boolean(options.emergency);
   if (!currentUserIsSignedIn()) {
@@ -1053,6 +1174,11 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus("This control is limited to the main/creator operator account.", "error");
     return Promise.resolve(false);
   }
+  if (OFFLINE_CONFIRM_TYPES.has(type) && !deviceIsFresh() &&
+      !confirm(`ESP1 appears offline. ${type.replaceAll("_", " ")} will wait in the queue and run whenever ESP1 reconnects, even if that is days from now. Queue it anyway?`)) {
+    setCommandStatus(`${type.replaceAll("_", " ")} not sent.`);
+    return Promise.resolve(false);
+  }
   if (!emergency && !deviceIsFresh()) {
     setCommandStatus("Normal command not sent: ESP1 live status is stale or offline.", "error");
     return Promise.resolve(false);
@@ -1076,21 +1202,7 @@ function queueCommand(type, payload = {}, options = {}) {
   return db.ref("irrigation/commands").push(command)
     .then(reference => {
       if (!emergency) lastCommandAt = Date.now();
-      // Per-account activity trail (2026-09-10), operator-viewing-only -- see renderUserManagement().
-      // Best-effort: a failure here must never affect the real command above, which already
-      // succeeded by this point, so this is deliberately fire-and-forget with its own silent catch.
-      // Deep-scan finding (2026-09-10): auth.currentUser can legitimately be null here if the user
-      // signed out in the brief window between the push above starting and this callback running --
-      // an unguarded .uid access would throw SYNCHRONOUSLY inside this .then(), which the .catch()
-      // below would then report as "Could not queue command", falsely, for a command that had
-      // already succeeded. Skip the log entirely rather than risk that.
-      const myUid = auth.currentUser?.uid;
-      if (myUid) {
-        db.ref(`activity/${myUid}`).push({
-          what: activitySummary(type, payload),
-          at: firebase.database.ServerValue.TIMESTAMP
-        }).catch(error => console.warn("Could not log activity", error));
-      }
+      logActivity(activitySummary(type, payload));
       return reference.key;
     })
     .catch(error => {
@@ -1125,6 +1237,7 @@ function activitySummary(type, payload) {
 // regardless of which recovery button (Hold/Release/Only irrigate/Resume normal/Return to normal) was
 // actually pressed.
 function queuedStatusText(type, payload, emergency) {
+  if (type === "EMERGENCY_STOP" && !deviceIsFresh()) return "Emergency stop queued, but ESP1 appears offline, so nothing has stopped. Use the physical cutoff, MODE + BACK at the unit, or SMS STOP,ALL.";
   if (type === "EMERGENCY_STOP") return "Emergency stop queued. This is not physical-stop confirmation; wait for ESP1 status.";
   if (type === "RECOVER") return `Recovery (${rawText(payload.action, "?")}) queued. This is not confirmation the rig has resumed; wait for ESP1 status.`;
   if (type === "ESTOP_RECOVER") return "Return to normal queued. This is not confirmation ESP1 has recovered; wait for ESP1 status.";
@@ -1447,12 +1560,32 @@ function updateDashboard() {
   setText("waterEC", numberText(sensors.waterEC, 2, "mS/cm"));
   setText("batteryVoltage", numberText(sensors.batteryVoltage, 2, "V"));
   setText("batteryPercent", numberText(sensors.batteryPercent, 0, "%"));
-  setText("batteryCurrent", numberText(sensors.batteryCurrent, 2, "A"));
+  // batteryCurrent is a magnitude; the signed copy only exists while the main INA226 is the source.
+  setText("batteryCurrent", signedCurrentText(sensors.batteryCurrent, sensors.batteryCurrentSigned));
   // Watts comes from the diagnostics tree, not sensors -- ESP1 publishes battP there alongside the
   // low/critical flags. Also shown under Diagnostics > Power; this is the front-page copy.
   setText("batteryPower", numberText(diagnostics.power?.batteryPower, 1, "W"));
   setText("powerSource", rawText(system.powerSource));
   setText("liveAge", snapshotAgeText());
+
+  // Solar and secondary battery. One note instead of ten "Not reported" cards on older firmware. On
+  // web v.3 each reading is only left out while its own sensor isn't answering, so it reads Unavailable.
+  const oldFirmware = Boolean(liveData.system) && !isV3Firmware();
+  const powerGrid = document.getElementById("powerGrid");
+  if (powerGrid) powerGrid.hidden = oldFirmware;
+  const powerGridNote = document.getElementById("powerGridNote");
+  if (powerGridNote) powerGridNote.hidden = !oldFirmware;
+  setText("solarVoltage", numberText(sensors.solarVoltage, 2, "V"));
+  setText("solarCurrent", numberText(sensors.solarCurrent, 2, "A"));
+  setText("solarPower", numberText(sensors.solarPower, 1, "W"));
+  setText("solarEnergyToday", numberText(sensors.solarEnergyTodayWh, 0, "Wh"));
+  setText("boardSupply", boardSupplyText());
+  setText("secondaryBatteryVoltage", numberText(sensors.secondaryBatteryVoltage, 2, "V"));
+  setText("secondaryBatteryPercent", numberText(sensors.secondaryBatteryPercent, 0, "%"));
+  setText("secondaryBatteryCurrent", signedCurrentText(sensors.secondaryBatteryCurrent, sensors.secondaryBatteryCurrent));
+  setText("secondaryBatteryPower", numberText(sensors.secondaryBatteryPower, 1, "W"));
+  setText("secondaryBatteryStatus", booleanText(sensors.secondaryBatteryLow, "Low", "OK"));
+  syncForceColumnOptions();
 
   const fresh = deviceIsFresh();
   setDeviceStatus("systemState", system.state || "WAITING FOR DATA", fresh ? "active" : "off");
@@ -1492,6 +1625,32 @@ function updateDashboard() {
 
 function setPumpLamp(id, on) {
   setDeviceStatus(id, on ? "ON" : "OFF", on ? "active" : "off");
+}
+
+function boardSupplyText() {
+  const supply = liveData.system?.boardSupply;
+  return supply === "secondary" ? "Secondary battery" : supply === "main" ? "Main battery" : "Unavailable";
+}
+
+// ESP1 only waters the enabled columns in a request: "AB" with B disabled sends the full volume to A
+// without saying so. So a column ESP1 reports as disabled, and any combination that includes it, can't
+// be chosen here. Only an explicit enabled:false counts, because older snapshots can leave it out.
+function forceColumnsDisabled(columns) {
+  return [...String(columns)].some(id => liveData.sensors?.zones?.[id]?.enabled === false);
+}
+
+function syncForceColumnOptions() {
+  const select = document.getElementById("forceColumns");
+  if (!select) return;
+  [...select.options].forEach(option => {
+    if (!option.value) return;
+    const off = forceColumnsDisabled(option.value);
+    const label = `${option.dataset.label}${off ? " (disabled on ESP1)" : ""}`;
+    // Only touched on a real change, so a snapshot can't disturb a dropdown that is open.
+    if (option.disabled !== off) option.disabled = off;
+    if (option.textContent !== label) option.textContent = label;
+  });
+  if (select.selectedOptions[0]?.disabled) select.value = "";
 }
 
 function updateRunProgress(run) {
@@ -1548,7 +1707,7 @@ function renderDiagnostics() {
   const current = deviceIsFresh();
   const diagnosticsAvailable = Object.keys(d).length > 0;
   const groups = [
-    ["Live snapshot", [["Snapshot", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Payload used", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"]]],
+    ["Live snapshot", [["Snapshot", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : isV3Firmware() ? "web v.3" : "Older than web v.3"], ["Payload used", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"]]],
     ["Network", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Wi-Fi RSSI", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm` : "Unavailable"]]],
     ["Firebase", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
     ["ThingSpeak", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
@@ -1556,7 +1715,8 @@ function renderDiagnostics() {
     ["System", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Pending run", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")]]],
     ["ESP2", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last response age", formatAge(d.esp2?.lastResponseAgeMs)]]],
     ["Nano & sensors", [["Last sample age", formatAge(d.nano?.lastSampleAgeMs)], ["Environment", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
-    ["RTC / SD", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")]]],
+    ["RTC / SD / power sensors", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")], ["Main battery INA226", v3Only(booleanText(d.peripherals?.mainInaOk, "In use", "Not in use"))], ["ACS758 fallback", v3Only(booleanText(d.peripherals?.batteryAdsOk, "OK", "Not OK"))], ["Solar INA226", v3Only(booleanText(d.peripherals?.solarSensorOk, "OK", "Not answering"))], ["Secondary INA226", v3Only(booleanText(d.peripherals?.secondaryBatterySensorOk, "OK", "Not answering"))]]],
+    ["Battery switching", [["Boards powered from", v3Only(boardSupplyText())], ["Switching", v3Only(booleanText(liveData.system?.secondaryBattSwitching, "On", "Off in this firmware"))], ["Switch fault", v3Only(booleanText(liveData.system?.battSwitchFault, "Latched: inverter use blocked", "None"))], ["Reset strikes", v3Only(rawText(liveData.system?.battSwitchStrikes))], ["Backup mode", v3Only(booleanText(liveData.system?.backupEnabled, "On", "Off in this firmware"))], ["Backup state", v3Only(rawText(liveData.system?.backupState))]]],
     ["GSM", [["SIM", booleanText(d.gsm?.simReady, "Ready", "Not ready")], ["Network", booleanText(d.gsm?.networkRegistered, "Registered", "Not registered")], ["RSSI", hasValue(d.gsm?.rssi) ? String(d.gsm.rssi) : "Unavailable"], ["CREG", rawText(d.gsm?.creg)], ["Last health age", formatAge(d.gsm?.lastHealthAgeMs)]]],
     ["Power", [["Battery low", booleanText(d.power?.batteryLow, "Yes", "No")], ["Battery critical", booleanText(d.power?.batteryCritical, "Yes", "No")], ["Current", numberText(d.power?.batteryCurrent, 2, "A")], ["Power", numberText(d.power?.batteryPower, 1, "W")]]],
     ["Actuator status", [["Relay feedback", d.actuator?.relayFeedback === "notReported" ? "Not reported by ESP1" : rawText(d.actuator?.relayFeedback)], ["Work order", booleanText(d.actuator?.workOrderActive, "Active", "Inactive")], ["Pump test", booleanText(d.actuator?.pumpTestActive, "Active", "Inactive")], ["Pump under test", rawText(d.actuator?.pumpUnderTest)]]]
@@ -1631,8 +1791,74 @@ const FORCE_ABORT_REASONS = {
   BUSY:           "another run or test was in progress",
   HELD:           "a fault was held",
   RES_LOW:        "the reservoir was too low",
-  COL_DISABLED:   "the target column was disabled"
+  COL_DISABLED:   "the target column was disabled",
+  // Added by the web v.3 firmware: the rest of forceTick()'s codes, plus every other forceAbort() caller.
+  TANK_CHECK:     "the mixing tank must be checked first (SMS TANKCHECK,OK or the LCD)",
+  BATT2:          "the secondary battery blocked inverter use",
+  REFUSED:        "ESP1 refused the work order",
+  WEB:            "it was cancelled from this dashboard",
+  OPERATOR:       "the operator cancelled it at the LCD",
+  ACTUATIONS_DISABLED: "actuations were disabled",
+  ESP2_TIMEOUT:   "ESP2 stopped responding",
+  ESP2_NO_DONE:   "ESP2 never reported the run finished",
+  ESP2_NO_READY:  "ESP2 never reported ready",
+  ESP2_RESTARTED: "ESP2 restarted",
+  COL_MISMATCH:   "ESP2 has that column disabled",
+  WO_OVERSIZE:    "the work order was too long to send"
 };
+
+// ESP1's status detail is a 48-byte field, so any reply longer than 47 characters arrives cut off.
+// These are the replies long enough to be affected, matched on a prefix that always survives the cut.
+const COMMAND_DETAIL_FULL_TEXT = [
+  ["batch too small to dose safely", `batch too small to dose safely: use at least ${FORCE_MIN_DOSING_LITERS} L of water, or remove the nutrients`],
+  ["the secondary battery is not seen", "the secondary battery is not seen: check its wiring and ground"],
+  ["the secondary battery monitor", "the secondary battery monitor (INA226) is not responding"],
+  // With the colon: the success reply "battery-switch fault cleared" starts with the same words.
+  ["battery-switch fault:", "battery-switch fault: a switch reset the controllers. Clear it on the System tab to retry"],
+  ["the controllers just restarted", "the controllers just restarted: waiting for the hold-up to recharge"],
+  ["the mixing tank must be checked first", "the mixing tank must be checked first. Confirm it with SMS TANKCHECK,OK or in the LCD Settings menu; this website cannot clear it"]
+];
+
+function explainCommandDetail(detail) {
+  const text = String(detail ?? "");
+  const noFlow = text.match(/^(.*NO FLOW - 0 pulses)/);
+  if (noFlow) return `${noFlow[1]}, check pump, line or sensor`;
+  const known = COMMAND_DETAIL_FULL_TEXT.find(([start]) => text.startsWith(start));
+  return known ? known[1] : text;
+}
+
+// One place for turning ESP1's reply into words, for every panel that shows a command's outcome.
+function commandDetailText(command, fallback) {
+  let text = explainCommandDetail(rawText(command.detail, fallback));
+  // New-F1 (audit): DIAG_SWEEP shares the same generic "not safely idle" wording as FORCE_RUN used
+  // to (diagRemoteStart() has since been given specific reasons in the dev-tree firmware, but the
+  // OLD flashed firmware's DIAG_SWEEP path -- and any other command that ever reuses this literal
+  // text -- still benefits from the same best-guess decoding). explainNotSafelyIdle() doesn't
+  // reference either command by name, so it's safe to reuse for both.
+  if ((command.type === "FORCE_RUN" || command.type === "DIAG_SWEEP") && /not safely idle/i.test(text)) {
+    text += ` — likely reason: ${explainNotSafelyIdle()}`;
+  }
+  if (command.type === "FORCE_RUN") {
+    // New-F2 (audit): forceAbort() reports a short internal code verbatim (e.g. "cancelled before
+    // start: RES_LOW"). Swap in the matching phrase when recognised.
+    text = text.replace(/cancelled before start: (\S+)/,
+      (full, c) => `cancelled before start: ${FORCE_ABORT_REASONS[c] || c}`);
+  }
+  return text;
+}
+
+// The newest command of one type, for a panel that shows that command's outcome inline.
+function latestCommandOfType(type) {
+  return commandData
+    .filter(c => c.type === type)
+    .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
+}
+
+// ESP1 picks up one queued row every 3 s, so one still sitting here after this long isn't being read.
+const QUEUED_WARNING_MS = 30000;
+// Safe-direction commands stay in the queue: firing late can only stop something. The rules refuse
+// these too, so one approved user cannot quietly withdraw another's emergency stop.
+const NOT_WITHDRAWABLE = new Set(["EMERGENCY_STOP", "DISABLE_ACTUATIONS", "CANCEL_FORCE"]);
 
 function renderCommandHistory() {
   const container = document.getElementById("commandHistory");
@@ -1643,7 +1869,9 @@ function renderCommandHistory() {
     container.innerHTML = '<p class="muted">No command history received yet.</p>';
     return;
   }
-  commands.slice(0, 8).forEach(command => {
+  // ESP1's own window is the newest 10 rows, so a queued row can still run after it has scrolled past
+  // the newest 8 shown here. It stays listed for as long as it is queued.
+  commands.filter((command, index) => index < 8 || command.status === "queued").forEach(command => {
     const row = document.createElement("article");
     row.className = "command-row";
     const top = document.createElement("div");
@@ -1652,28 +1880,55 @@ function renderCommandHistory() {
     name.textContent = rawText(command.type, "Unknown command").replaceAll("_", " ");
     badge.className = `command-badge ${commandStatusTone(command.status)}`;
     badge.textContent = rawText(command.status, "unknown");
-    top.append(name, badge);
-    const detail = document.createElement("p");
-    let detailText = rawText(command.detail, "Awaiting ESP1 status");
-    // New-F1 (audit): DIAG_SWEEP shares the same generic "not safely idle" wording as FORCE_RUN used
-    // to (diagRemoteStart() has since been given specific reasons in the dev-tree firmware, but the
-    // OLD flashed firmware's DIAG_SWEEP path -- and any other command that ever reuses this literal
-    // text -- still benefits from the same best-guess decoding). explainNotSafelyIdle() doesn't
-    // reference either command by name, so it's safe to reuse for both.
-    if ((command.type === "FORCE_RUN" || command.type === "DIAG_SWEEP") && /not safely idle/i.test(detailText)) {
-      detailText += ` — likely reason: ${explainNotSafelyIdle()}`;
+    const queued = command.status === "queued";
+    const withdrawable = queued && !NOT_WITHDRAWABLE.has(command.type) && isApprovedUser();
+    const right = document.createElement("span");
+    right.className = "command-actions";
+    if (withdrawable) {
+      const withdraw = document.createElement("button");
+      withdraw.type = "button";
+      withdraw.className = "user-action";
+      withdraw.dataset.withdraw = command.id;
+      withdraw.textContent = "Withdraw";
+      right.append(withdraw);
     }
-    if (command.type === "FORCE_RUN") {
-      // New-F2 (audit): forceTick()'s fire-time abort reports one of 8 short internal codes verbatim
-      // (e.g. "cancelled before start: RES_LOW"). Swap in the matching phrase when recognised.
-      detailText = detailText.replace(/cancelled before start: (\S+)/,
-        (full, c) => `cancelled before start: ${FORCE_ABORT_REASONS[c] || c}`);
+    right.append(badge);
+    top.append(name, right);
+    const detail = document.createElement("p");
+    let detailText = commandDetailText(command, "Awaiting ESP1 status");
+    const queuedForMs = serverNow() - Number(command.requestedAt || 0);
+    if (queued && queuedForMs > QUEUED_WARNING_MS) {
+      detailText = `ESP1 hasn't picked this up for ${formatAge(queuedForMs)}. It will still run when ESP1 next reads it${withdrawable ? ", unless you withdraw it" : ""}.`;
     }
     detail.textContent = `${formatTimestamp(command.requestedAt)} — ${detailText}`;
     row.append(top, detail);
     container.appendChild(row);
   });
 }
+
+// Only for a row still "queued": once ESP1 has picked it up the rules refuse the write, and if ESP1's
+// reply lands just after this one it overwrites it. So the row itself is the only honest result.
+function withdrawCommand(id) {
+  const command = commandData.find(c => c.id === id);
+  if (!command || command.status !== "queued" || NOT_WITHDRAWABLE.has(command.type)) return;
+  if (!currentUserIsSignedIn() || !isApprovedUser()) return;
+  const label = rawText(command.type, "Command").replaceAll("_", " ");
+  db.ref(`irrigation/commands/${id}`).update({
+    status: "withdrawn",
+    detail: "withdrawn from the dashboard",
+    updatedAt: firebase.database.ServerValue.TIMESTAMP
+  }).then(() => {
+    setCommandStatus(`${label} withdrawal sent. Check the row in Command status: ESP1 may have picked it up first.`, "pending");
+    logActivity(`WITHDREW ${command.type}`);
+  }).catch(error => setCommandStatus(error.code === "PERMISSION_DENIED"
+    ? `Too late to withdraw ${label}: ESP1 has already picked it up.`
+    : `Could not withdraw ${label}: ${error.message}`, "error"));
+}
+
+document.getElementById("commandHistory")?.addEventListener("click", event => {
+  const button = event.target.closest("[data-withdraw]");
+  if (button) withdrawCommand(button.dataset.withdraw);
+});
 
 /* ---- Fault / recovery banner ------------------------------------------------------------------
  * Rendered from diagnostics.fault, so the choices offered here are exactly the ones the LCD recovery
@@ -1846,28 +2101,48 @@ function updateFaultBanner() {
 /* ---- Armed forced-run countdown ---------------------------------------------------------------
  * Driven by diagnostics.forceArmed, NOT by whether this browser sent the request -- an LCD-armed run
  * must show here too. secondsLeft is re-seeded on every snapshot and ticked locally in between, so
- * the number stays smooth at a 20-60 s publish cadence without ever drifting past the truth. */
-let armedSeed = null;                // { at: epoch ms, left: seconds } from the last snapshot
+ * the number stays smooth at a 20-60 s publish cadence without ever drifting past the truth.
+ *
+ * The snapshot alone is not enough, though. Arming does not trigger a publish, and ESP1 publishes every
+ * 60 s when idle, so with the default 30 s delay the panel, and with it the only Cancel button, could
+ * miss the whole countdown. The command row arrives within seconds of arming ("armed: starts in 30s"),
+ * so a run armed from this page shows from that row. Timed against Firebase's clock, because the row can
+ * be seen long after it was written, by a page loaded later. Runs every second, and from each snapshot
+ * and command update. */
+let armedSeed = null;                // { stamp, at: epoch ms, left: seconds } from the last armed snapshot
+
+function armedRowFromCommands() {
+  const latest = latestCommandOfType("FORCE_RUN");
+  if (!latest || latest.status !== "accepted") return null;
+  const armed = /^armed: starts in (\d+)s/.exec(String(latest.detail || ""));
+  const stamp = Number(latest.updatedAt || 0);
+  if (!armed || !stamp) return null;
+  const left = Number(armed[1]) - Math.floor((serverNow() - stamp) / 1000);
+  return left > 0 ? { left, payload: latest.payload || {} } : null;
+}
 
 function updateForceArmed() {
   const panel = document.getElementById("forceArmedPanel");
   if (!panel) return;
   const a = liveData.diagnostics?.forceArmed || {};
-  if (!a.armed || !deviceIsFresh()) { panel.hidden = true; armedSeed = null; return; }
+  const snapshotArmed = Boolean(a.armed) && deviceIsFresh();
+  const row = armedRowFromCommands();
+  if (!snapshotArmed) {
+    armedSeed = null;
+  } else if (armedSeed?.stamp !== liveData.meta?.updatedAt) {
+    armedSeed = { stamp: liveData.meta?.updatedAt, at: Date.now(), left: Number(a.secondsLeft || 0) };
+  }
+  if (!snapshotArmed && !row) { panel.hidden = true; return; }
   panel.hidden = false;
-  const doses = a.doseMl || {};
+  const run = snapshotArmed ? a : row.payload;
+  const source = snapshotArmed ? a.source : "web";
+  const doses = run.doseMl || {};
   const fert = Number(doses.A || 0) + Number(doses.B || 0) + Number(doses.C || 0) > 0;
   setText("forceArmedDetail",
-    `${fert ? "Fertigation" : "Irrigation"} · column ${rawText(a.columns, "?")} · ${numberText(a.liters, 1, "L")}`
+    `${fert ? "Fertigation" : "Irrigation"} · column ${rawText(run.columns, "?")} · ${numberText(run.liters, 1, "L")}`
     + (fert ? ` · A/B/C ${Number(doses.A || 0)}/${Number(doses.B || 0)}/${Number(doses.C || 0)} mL` : "")
-    + ` · armed from the ${a.source === "web" ? "dashboard" : "LCD"}`);
-  armedSeed = { at: Date.now(), left: Number(a.secondsLeft || 0) };
-  tickArmedCountdown();
-}
-
-function tickArmedCountdown() {
-  if (!armedSeed) return;
-  const left = Math.max(0, armedSeed.left - Math.floor((Date.now() - armedSeed.at) / 1000));
+    + ` · armed from the ${source === "web" ? "dashboard" : "LCD"}`);
+  const left = row ? row.left : Math.max(0, armedSeed.left - Math.floor((Date.now() - armedSeed.at) / 1000));
   setDeviceStatus("forceArmedCountdown", left > 0 ? `STARTS IN ${left}s` : "STARTING…", "active");
 }
 
@@ -2054,7 +2329,27 @@ function renderColumnCommandResults() {
       .filter(c => c.type === "SET_COLUMN" && c.payload && c.payload.col === zone.id)
       .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
     if (!latest) return;
-    result.textContent = `${rawText(latest.status, "pending")} — ${rawText(latest.detail, "waiting for ESP1")}`;
+    result.textContent = `${rawText(latest.status, "pending")} — ${commandDetailText(latest, "waiting for ESP1")}`;
+    result.className = `control-result${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
+  });
+}
+
+// The same for the panels that send one command type. Without this they froze at "Sending to ESP1…",
+// and the real outcome only appeared in Command status on another tab.
+const PANEL_COMMAND_RESULTS = {
+  FORCE_RUN: "forceRunResult",
+  SET_EXERCISE: "exResult",
+  SET_CLOCK: "sysClockResult",
+  SET_THRESH: "sysThreshResult",
+  RESTORE_DEFAULTS: "sysRestoreResult",
+  CLEAR_BATT_SWITCH: "sysBattSwitchResult"
+};
+function renderPanelCommandResults() {
+  Object.entries(PANEL_COMMAND_RESULTS).forEach(([type, id]) => {
+    const result = document.getElementById(id);
+    const latest = latestCommandOfType(type);
+    if (!result || !latest) return;
+    result.textContent = `${rawText(latest.status, "pending")} — ${commandDetailText(latest, "waiting for ESP1")}`;
     result.className = `control-result${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
   });
 }
@@ -2072,6 +2367,7 @@ function submitForceRun(event) {
 
   const columns = document.getElementById("forceColumns")?.value || "";
   if (!["A", "B", "C", "AB"].includes(columns)) { show("Choose a destination column. Nothing was sent."); return; }
+  if (forceColumnsDisabled(columns)) { show("ESP1 reports that destination as disabled. Nothing was sent."); return; }
 
   const liters = Number(document.getElementById("forceLiters")?.value);
   if (!Number.isFinite(liters) || liters <= 0 || liters > FORCE_MAX_LITERS) {
@@ -2091,15 +2387,27 @@ function submitForceRun(event) {
 
   const delayRaw = document.getElementById("forceDelay")?.value;
   const delaySeconds = delayRaw === "" || delayRaw === undefined ? 30 : Number(delayRaw);
-  if (!Number.isFinite(delaySeconds) || delaySeconds < 0 || delaySeconds > 300) {
-    show("Start delay must be between 0 and 300 seconds. Nothing was sent."); return;
+  if (!Number.isInteger(delaySeconds) || delaySeconds < 0 || delaySeconds > 300) {
+    show("Start delay must be a whole number from 0 to 300 seconds. Nothing was sent."); return;
   }
 
   const fertigation = doseMl.A > 0 || doseMl.B > 0 || doseMl.C > 0;
-  show(`Queued ${fertigation ? "fertigation" : "irrigation"}: ${liters} L to ${columns}`
+  if (fertigation && liters < FORCE_MIN_DOSING_LITERS) {
+    show(`A run with nutrients needs at least ${FORCE_MIN_DOSING_LITERS} L of water, or ESP1 refuses it as too small to dose safely. Nothing was sent.`);
+    return;
+  }
+  // The countdown is the only chance to catch a mistyped amount once the request has been sent.
+  if (delaySeconds === 0 && !confirm(`Start this run with no countdown? ${liters} L goes to ${columns}, and there will be no time to cancel it.`)) {
+    show("Nothing was sent.", false);
+    return;
+  }
+  show(`Sending ${fertigation ? "fertigation" : "irrigation"}: ${liters} L to ${columns}`
      + `${fertigation ? ` with A/B/C ${doseMl.A}/${doseMl.B}/${doseMl.C} mL` : ""}`
-     + `, starting in ${delaySeconds}s. Watch the armed panel below — you can still cancel.`, false);
-  queueCommand("FORCE_RUN", { columns, liters, doseMl, delaySeconds });
+     + `, starting ${delaySeconds}s after ESP1 accepts it. Cancel appears below once it does.`, false);
+  queueCommand("FORCE_RUN", { columns, liters, doseMl, delaySeconds }).then(key => {
+    // queueCommand() already says why in the command status when it refuses to send.
+    if (!key) show("Not sent. See the status message for the reason.");
+  });
 }
 
 const loginForm = document.getElementById("loginForm");
@@ -2212,9 +2520,7 @@ signupForm?.addEventListener("submit", async event => {
 });
 
 document.getElementById("logoutBtn")?.addEventListener("click", () => {
-  releaseManualHold();
-  mtHoldStop(true);
-  auth?.signOut().catch(error => setCommandStatus(`Sign out failed: ${error.message}`, "error"));
+  if (auth) releaseHoldsThenSignOut().catch(error => setCommandStatus(`Sign out failed: ${error.message}`, "error"));
 });
 // A closed tab (pagehide -- actually going away: close/navigate/BFCache) hands the rig back at once.
 // A merely BACKGROUNDED tab (visibilitychange) gets a short grace period instead of an instant release
@@ -2239,7 +2545,7 @@ document.addEventListener("visibilitychange", () => {
 document.getElementById("transferPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "transfer" }, { operatorOnly: true }));
 document.getElementById("boosterPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "booster" }, { operatorOnly: true }));
 document.getElementById("mixerBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "mixer" }, { operatorOnly: true }));
-document.getElementById("emergencyStop")?.addEventListener("click", () => queueCommand("EMERGENCY_STOP", {}, { emergency: true }));
+bindAll(["emergencyStop", "emergencyStopTop"], () => queueCommand("EMERGENCY_STOP", {}, { emergency: true }));
 document.getElementById("forceRunForm")?.addEventListener("submit", submitForceRun);
 
 // Recovery controls all pass {emergency:true}. They must work when the snapshot is stale or the
@@ -2295,14 +2601,33 @@ document.getElementById("sysClockSendBtn")?.addEventListener("click", () => {
 document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
   const result = document.getElementById("sysThreshResult");
   const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
-  const start = Number(document.getElementById("sysThreshStart")?.value);
-  const stop  = Number(document.getElementById("sysThreshStop")?.value);
-  const gap   = Number(document.getElementById("sysThreshGap")?.value);
-  if (![start, stop, gap].every(Number.isFinite)) { show("Fill in all three fields with numbers. Nothing was sent."); return; }
-  if (start < 0 || start > 100 || stop < 0 || stop > 100) { show("Start/stop must be 0-100. Nothing was sent."); return; }
+  // A blank field must never go out as 0: start 0 means no column is ever dry enough, which silently
+  // stops all scheduled watering, and gap 0 fertigates on any shortfall. ESP1 doesn't publish its
+  // current values, so these fields always start blank. thStart must be whole: ESP1 reads a decimal as
+  // absent. Only older firmware needs a stop value, and rejects the request without one.
+  const needsStop = !isV3Firmware();
+  const start = numberFromInput("sysThreshStart");
+  const stop  = needsStop ? numberFromInput("sysThreshStop") : null;
+  const gap   = numberFromInput("sysThreshGap");
+  if (![start, gap, ...(needsStop ? [stop] : [])].every(Number.isFinite)) { show("Fill in every field with a number. Nothing was sent."); return; }
+  if (!Number.isInteger(start) || start < 0 || start > 100) { show("Soil start must be a whole number from 0 to 100. Nothing was sent."); return; }
+  if (needsStop && (!Number.isInteger(stop) || stop < 0 || stop > 100)) { show("Soil stop must be a whole number from 0 to 100. Nothing was sent."); return; }
   if (gap < 0 || gap > 500) { show("Gap must be 0-500. Nothing was sent."); return; }
+  if (start === 0 && !confirm("Soil start 0% means no column will ever be dry enough, so scheduled watering stops. Send it anyway?")) { show("Nothing was sent.", false); return; }
+  const payload = { thStart: start, thGap: gap };
+  if (needsStop) payload.thStop = stop;
   show("Sending to ESP1…", false);
-  queueCommand("SET_THRESH", { thStart: start, thStop: stop, thGap: gap }, { operatorOnly: true });
+  queueCommand("SET_THRESH", payload, { operatorOnly: true });
+});
+
+// Dormant while the firmware builds with SECONDARY_BATT_ENABLED 0: the button only enables when ESP1
+// reports the fault as latched. Same effect as the LCD row and SMS BATTSW,CLEAR.
+document.getElementById("sysClearBattSwitchBtn")?.addEventListener("click", () => {
+  const result = document.getElementById("sysBattSwitchResult");
+  const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
+  if (!confirm("Clear the battery-switch fault? Check the hold-up first: this fault means a battery switch reset the controllers, and clearing it allows the next inverter use to switch again.")) return;
+  show("Sending to ESP1…", false);
+  queueCommand("CLEAR_BATT_SWITCH", {}, { operatorOnly: true });
 });
 
 document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () => {
@@ -2318,9 +2643,15 @@ document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () =
 // Read-only: current device time/RTC health (for Set Clock) and LCD Lock status. No write path is
 // offered for the lock -- see the info tooltip on that panel for why.
 function updateSystemTab() {
-  setText("sysClockCurrent", rawText(liveData.system?.deviceTime, "Unavailable"));
+  setText("sysClockCurrent", deviceTimeText(liveData.system?.deviceTime));
   setText("sysClockRtcOk", booleanText(liveData.system?.rtcOk, "OK", "Not OK"));
   setText("sysLockStatus", booleanText(liveData.diagnostics?.system?.lcdLocked, "Locked", "Unlocked"));
+  const system = liveData.system || {};
+  setText("sysBattSwitching", v3Only(booleanText(system.secondaryBattSwitching, "On", "Off in this firmware")));
+  setText("sysBattSwitchFault", v3Only(booleanText(system.battSwitchFault, "Latched: all inverter use is blocked", "None")));
+  setText("sysBattSwitchStrikes", v3Only(rawText(system.battSwitchStrikes)));
+  const stopLabel = document.getElementById("sysThreshStopLabel");
+  if (stopLabel) stopLabel.hidden = isV3Firmware();
 }
 
 /* ---- Manual/Test tab -------------------------------------------------------------------------
@@ -2377,11 +2708,13 @@ function writeManualHold(want) {
  * SAME ESP2 TEST,HOLD/TEST,RELEASE dead-man protocol the LCD Testing screen and the Timed-pulses
  * feature above already use, just driven by a held button instead of a physical one or a timer. */
 function writeTestHold(want, bit) {
-  if (!currentUserIsSignedIn() || !isApprovedUser()) return Promise.resolve(false);
+  // Only signed-in is required to release, exactly like writeManualHold() and the rule on this node:
+  // gating want:false on approval dropped the release for an account restricted mid-press.
+  if (!currentUserIsSignedIn()) return Promise.resolve(false);
   // Same acquire-only gate as writeManualHold(): only privileged-tier accounts may START a hold;
   // releasing always goes through regardless of tier, so a lost grant (e.g. an expiring temp-access
   // window) can never leave a relay stuck energised because the release write itself got refused.
-  if (want && !canAccessPrivilegedTabs()) return Promise.resolve(false);
+  if (want && (!isApprovedUser() || !canAccessPrivilegedTabs())) return Promise.resolve(false);
   const seq = Date.now();
   return db.ref("irrigation/testHold").set({ seq, bit, want })
     .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
@@ -2389,28 +2722,53 @@ function writeTestHold(want, bit) {
 
 let mtHoldActiveBtn = null;   // the button currently mid-hold, or null
 let mtHoldKeepAliveTimer = null;
+let mtHoldCapTimer = null;
+let mtHoldLastStopAt = 0;     // when this page last stopped a hold, for MT_HOLD_RESTART_GAP_MS
 let mtHoldArmedTarget = null; // a corrosive (pH) target the operator just confirmed, awaiting the hold press
 let mtHoldArmedTimer = null;
 
-function mtHoldStop(clearedByRelease) {
+// Mirrors the firmware's TEST_HOLD_MAX_MS. ESP1 stops the relay at this limit and then ignores every
+// refresh until it sees want:false, so this page must stop too or it would go on showing a hold that
+// has already ended. Counted from the press, which is earlier than ESP1 starts counting, so this one
+// always fires first and its want:false clears ESP1's latch.
+const MT_HOLD_MAX_MS = 15000;
+// ESP1 only ever sees the newest testHold write, polling every 1-3 s. Releasing and pressing another
+// button inside that gap hides the release from it: the first relay keeps running on the new press's
+// keep-alives while this page shows the new target. Comfortably clears that poll (and matches ESP1's
+// own 4 s browser timeout).
+const MT_HOLD_RESTART_GAP_MS = 4000;
+
+function mtHoldStop(clearedByRelease, stoppedAtCap = false) {
   const btn = mtHoldActiveBtn;
   mtHoldActiveBtn = null;
   if (mtHoldKeepAliveTimer) { clearInterval(mtHoldKeepAliveTimer); mtHoldKeepAliveTimer = null; }
-  if (!btn) return;
+  if (mtHoldCapTimer) { clearTimeout(mtHoldCapTimer); mtHoldCapTimer = null; }
+  if (!btn) return Promise.resolve(false);
   btn.classList.remove("holding");
+  mtHoldLastStopAt = Date.now();
+  // This stop writes its own want:false below, so the browser-died fallback from mtHoldStart() is done.
+  db?.ref("irrigation/testHold").onDisconnect().cancel()
+    .catch(error => console.warn("Could not cancel the hold's disconnect release", error));
   const target = btn.dataset.holdTarget;
-  if (clearedByRelease) writeTestHold(false, target);
+  const released = clearedByRelease ? writeTestHold(false, target) : Promise.resolve(false);
   const startedMs = Number(btn.dataset.holdStartMs || 0);
-  if (startedMs) reportHoldResult(target, Date.now() - startedMs);
+  if (startedMs) reportHoldResult(target, Date.now() - startedMs, stoppedAtCap);
   delete btn.dataset.holdStartMs;
+  return released;
 }
 
 function mtHoldStart(btn) {
   const target = btn.dataset.holdTarget;
+  // If this browser dies mid-press (crash, power, lost network), Firebase itself writes the release.
+  // Otherwise want:true stays in the database, and ESP1 would act on it the next time it boots.
+  db.ref("irrigation/testHold").onDisconnect()
+    .set({ seq: firebase.database.ServerValue.TIMESTAMP, bit: target, want: false })
+    .catch(error => console.warn("Could not register the hold's disconnect release", error));
   writeTestHold(true, target);
   mtHoldActiveBtn = btn;
   btn.classList.add("holding");
   btn.dataset.holdStartMs = String(Date.now());
+  mtHoldCapTimer = setTimeout(() => { if (mtHoldActiveBtn === btn) mtHoldStop(true, true); }, MT_HOLD_MAX_MS);
   // A confirmed pH arm is consumed by the press it was meant for -- releasing and pressing again
   // needs a fresh confirm(), same one-shot spirit as the Timed-pulses confirm above.
   if (mtHoldArmedTarget === target) {
@@ -2418,8 +2776,8 @@ function mtHoldStart(btn) {
     if (mtHoldArmedTimer) { clearTimeout(mtHoldArmedTimer); mtHoldArmedTimer = null; }
     btn.textContent = btn.dataset.holdLabel || btn.textContent;
   }
-  // Refresh well inside ESP1's own TEST_HOLD_BROWSER_TIMEOUT_MS (8 s) -- comfortably clears its
-  // 3 s command-poll cadence even if one poll or one write round-trip is slow.
+  // Refresh well inside ESP1's own TEST_HOLD_BROWSER_TIMEOUT_MS (4 s). ESP1 polls every 1 s during a
+  // hold, so this tolerates one slow poll or write round-trip.
   mtHoldKeepAliveTimer = setInterval(() => writeTestHold(true, target), 1200);
 }
 
@@ -2430,6 +2788,12 @@ document.querySelectorAll(".hold-btn").forEach(btn => {
     if (btn.disabled || mtHoldActiveBtn) return;
     const target = btn.dataset.holdTarget;
     if (isCorrosive && mtHoldArmedTarget !== target) return;   // needs the confirm click first, below
+    const wait = MT_HOLD_RESTART_GAP_MS - (Date.now() - mtHoldLastStopAt);
+    if (wait > 0) {
+      const note = document.getElementById("mtHoldResult");
+      if (note) { note.textContent = `Wait ${Math.ceil(wait / 1000)} s before the next press, so ESP1 has seen the last release.`; note.className = "control-result error"; }
+      return;
+    }
     mtHoldStart(btn);
   };
   const stop = () => { if (mtHoldActiveBtn === btn) mtHoldStop(true); };
@@ -2449,7 +2813,7 @@ document.querySelectorAll(".hold-btn").forEach(btn => {
       if (btn.disabled || mtHoldActiveBtn) return;
       const target = btn.dataset.holdTarget;
       if (mtHoldArmedTarget === target) return;   // already armed from a previous click
-      if (!confirm(`Hold this button to dispense pH adjuster (${target === "phUp" ? "UP" : "DOWN"})? This is corrosive and goes into the mixing tank. It stops the instant you release it.`)) return;
+      if (!confirm(`Hold this button to dispense pH adjuster (${target === "phUp" ? "UP" : "DOWN"})? This is corrosive and goes into the mixing tank. It stops about 1-4 seconds after you release it.`)) return;
       mtHoldArmedTarget = target;
       btn.textContent = `${btn.dataset.holdLabel || btn.textContent} — press & hold now`;
       if (mtHoldArmedTimer) clearTimeout(mtHoldArmedTimer);
@@ -2460,13 +2824,16 @@ document.querySelectorAll(".hold-btn").forEach(btn => {
 });
 
 // The pulse verdict comes back as the command's own status detail (see renderPulseResult() above);
-// hold-to-run has no command entry to read back (testHold isn't a queued command, just a live node),
-// so this just confirms locally that a hold ran and for roughly how long -- ESP2's own TEST,FLOW
-// reply already surfaces through the LCD/logs for anyone who needs the metered volume.
-function reportHoldResult(target, ms) {
+// hold-to-run has no command entry to read back (testHold isn't a queued command, just a live node).
+// So this can only report how long the button was held, not that a relay ran: ESP1 may have refused the
+// hold silently, and it needs time to power ESP2 up first. Its own TESTHOLD| log lines reach Recent ESP1
+// events, and ESP2's TEST,FLOW reply surfaces through the LCD/logs for the metered volume.
+function reportHoldResult(target, ms, stoppedAtCap) {
   const el = document.getElementById("mtHoldResult");
   if (!el) return;
-  el.textContent = `Ran "${target}" for ~${(ms / 1000).toFixed(1)}s.`;
+  el.textContent = stoppedAtCap
+    ? `Stopped "${target}" at the ${MT_HOLD_MAX_MS / 1000} s limit. Release the button and wait a few seconds before pressing again.`
+    : `Held "${target}" for about ${(ms / 1000).toFixed(1)} s. ESP1 doesn't confirm holds on this page: check Recent ESP1 events on the Diagnostics tab for TESTHOLD entries.`;
   el.className = "control-result";
 }
 
@@ -2480,7 +2847,7 @@ function requestManualHold() {
 function releaseManualHold() {
   if (mtHideTimer) { clearTimeout(mtHideTimer); mtHideTimer = null; }
   if (mtHoldTimer) { clearInterval(mtHoldTimer); mtHoldTimer = null; }
-  writeManualHold(false);
+  return writeManualHold(false);
 }
 
 // Reflect what ESP1 decided. The controls stay hidden until it actually says "held" -- the gate's
@@ -2606,7 +2973,7 @@ function updatePulseNote() {
     note.textContent = `This dispenses roughly ${ml} mL of ${corrosive ? "pH adjuster (corrosive)" : "nutrient concentrate"} into the mixing tank.`;
     note.className = corrosive ? "control-result error" : "field-note";
   } else if (t === "mixer") {
-    note.textContent = "The mixer has no flow meter, so this reports no flow reading — only that the relay ran.";
+    note.textContent = "ESP2 raises the inverter first, because the mixer is an AC motor. The mixer has no flow meter, so this reports no flow reading — only that the relay ran.";
     note.className = "field-note";
   } else {
     note.textContent = "";
@@ -2620,11 +2987,9 @@ function updatePulseNote() {
 function renderPulseResult() {
   const el = document.getElementById("pulseResult");
   if (!el) return;
-  const latest = commandData
-    .filter(c => c.type === "TEST_PULSE")
-    .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
+  const latest = latestCommandOfType("TEST_PULSE");
   if (!latest) return;
-  const detail = String(latest.detail || "");
+  const detail = commandDetailText(latest, "");
   el.textContent = `${rawText(latest.status, "pending")} — ${detail || "waiting for ESP1"}`;
   el.className = "control-result"
     + (/NO FLOW/i.test(detail) || latest.status === "failed" || latest.status === "rejected" ? " error" : "");
@@ -2677,10 +3042,11 @@ function renderExercise() {
   document.getElementById(id)?.addEventListener("input", () => { exTouched = true; }));
 document.getElementById("exSaveBtn")?.addEventListener("click", () => {
   const on = document.getElementById("exEnabled")?.value === "1";
-  const seconds = Number(document.getElementById("exSeconds")?.value || 5);
+  const seconds = numberFromInput("exSeconds");
   const out = document.getElementById("exResult");
   const show = (t, err = true) => { if (out) { out.textContent = t; out.className = `control-result${err ? " error" : ""}`; } };
-  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 10) { show("Duration must be 1-10 seconds. Nothing was sent."); return; }
+  // Whole seconds only: ESP1 reads a decimal as absent, so it would keep its old length and still report success.
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 10) { show("Duration must be a whole number from 1 to 10 seconds. Nothing was sent."); return; }
   show(on ? `Enabling the exercise at ${seconds}s per pump...` : "Turning the preventive exercise off...", false);
   exTouched = false;                       // let the next snapshot confirm what ESP1 actually stored
   queueCommand("SET_EXERCISE", { exerciseEnabled: on, exerciseSeconds: seconds }, { operatorOnly: true });
@@ -2695,9 +3061,10 @@ document.getElementById("pulseTarget")?.addEventListener("change", updatePulseNo
 document.getElementById("pulseSeconds")?.addEventListener("input", updatePulseNote);
 document.getElementById("pulseBtn")?.addEventListener("click", () => {
   const target = document.getElementById("pulseTarget")?.value || "transfer";
-  const seconds = Number(document.getElementById("pulseSeconds")?.value || 5);
-  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 15) {
-    setCommandStatus("Pulse not sent: duration must be 1-15 seconds.", "error"); return;
+  const seconds = numberFromInput("pulseSeconds");
+  // Whole seconds only: ESP1 reads a decimal as 0, then runs its default 5 s, even on a pH pump.
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 15) {
+    setCommandStatus("Pulse not sent: duration must be a whole number from 1 to 15 seconds.", "error"); return;
   }
   if ((target === "phUp" || target === "phDn") &&
       !confirm(`Dispense pH adjuster for ${seconds} s? This is corrosive and goes into the mixing tank.`)) return;
@@ -2707,9 +3074,9 @@ document.getElementById("pulseBtn")?.addEventListener("click", () => {
 // Both are plain buttons (not form submits), so the HTML min/max on the paired input never fires --
 // same reason every other actuating numeric field on this page validates in JS before sending.
 function sweepSecondsOrReject(inputId) {
-  const seconds = Number(document.getElementById(inputId)?.value);
-  if (!Number.isFinite(seconds) || seconds < 10 || seconds > 120) {
-    setCommandStatus("Sweep not sent: length must be 10-120 seconds.", "error");
+  const seconds = numberFromInput(inputId);
+  if (!Number.isInteger(seconds) || seconds < 10 || seconds > 120) {
+    setCommandStatus("Sweep not sent: length must be a whole number from 10 to 120 seconds.", "error");
     return null;
   }
   return seconds;
@@ -2768,13 +3135,15 @@ setInterval(() => {
   // no Firebase write happens at the exact expiry moment, so nothing else would re-check this. 15 s
   // granularity matches the existing staleness-recheck cadence this tick already runs.
   refreshOperatorUI();
+  // A queued row's age warning has to appear without waiting for a command update that may never come.
+  if (commandData.some(command => command.status === "queued")) renderCommandHistory();
 }, 15000);
 
 // 1 s tick: the armed-run countdown has to move between snapshots (ESP1 publishes every 20-60 s),
 // and the fault banner has to re-raise itself the moment a "do nothing" snooze expires -- that
 // re-prompt is the whole point of the option.
 setInterval(() => {
-  tickArmedCountdown();
+  updateForceArmed();
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;
   updateFaultBanner();
 }, 1000);

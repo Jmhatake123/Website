@@ -161,6 +161,19 @@ button.danger { min-width: 200px; border-color: var(--danger); background: var(-
 .field-note { margin: 0; font-size: .82rem; line-height: 1.4; }
 .limitation-panel { background: var(--surface-muted); }
 
+/* Emergency stop that stays on screen on every tab. A solid full-width band rather than a floating
+   button: content scrolls underneath it, so the stop can never sit on top of another control and take
+   a click meant for that control. */
+.estop-bar { position: sticky; z-index: 5; top: 0; display: flex; justify-content: flex-end; margin: -10px 0 14px; padding: 10px 0; background: var(--bg); }
+.estop-bar[hidden] { display: none; }
+button.estop-top { min-width: 0; width: auto; }
+
+/* Solar and secondary battery group on the dashboard. Without the [hidden] rules, display:grid here
+   and on label would win over the browser's own [hidden] -- the same gotcha as .force-row below. */
+.metric-heading { margin: 4px 0 12px; }
+.card-grid[hidden], label[hidden] { display: none; }
+.command-actions { display: inline-flex; align-items: center; gap: 8px; }
+
 /* Forced run. This is a REAL actuating command now, not the greyed-out "review" it used to be, so
    it is styled as a live control -- warning-toned, because it overrides the schedule and the soil
    threshold and starts pumps immediately. */
