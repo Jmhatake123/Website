@@ -437,6 +437,9 @@ function syncControlAvailability() {
   // A remote stop silently does nothing while ESP1 is offline, so say so before it is relied on.
   const estopNote = document.getElementById("emergencyOfflineNote");
   if (estopNote) estopNote.hidden = !signedIn || !approved || deviceIsFresh();
+  // This page can't see why ESP1 stopped reporting, but the LCD can, so say where to look.
+  const offlineHelp = document.getElementById("esp1OfflineHelp");
+  if (offlineHelp) offlineHelp.hidden = !signedIn || !approved || deviceIsFresh();
 
   // Recovery + lockout + reboot: signed-in AND approved, deliberately NOT freshness-gated. A stale
   // snapshot is often exactly why you are reaching for these.
@@ -642,6 +645,31 @@ function showAuthForm(which) {
 /* Own-account approval status. Independent of attachDatabaseListeners() above -- this reads
  * /users/{myUid}, not ESP1's telemetry, and drives the account-status banner plus
  * isApprovedUser()'s gating everywhere else on the page. */
+// Readings are for approved accounts and operators only: pending, restricted, rejected and blocked
+// accounts must not see them. The rules enforce that when a listener starts, but a listener that is
+// already running isn't reliably cut off when an operator restricts the account later, and what the
+// page already received would stay on screen. So losing approval drops the listeners and wipes the
+// data here too. Regaining it attaches them again, without needing a reload.
+function syncLiveDataAccess() {
+  if (isApprovedUser()) {
+    if (databaseAccessDenied) {
+      detachDatabaseListeners();
+      attachDatabaseListeners();
+    }
+    return;
+  }
+  detachDatabaseListeners();
+  databaseAccessDenied = true;
+  wasHeldOrStopped = false;      // the data is going away, the fault isn't: don't announce it as cleared
+  liveData = {};
+  commandData = [];
+  activeZones = DEFAULT_ZONES.map(zone => ({ ...zone }));
+  renderZonesUI();
+  updateDashboard();
+  renderCommandHistory();
+  setConnection(false, "Live data needs an approved account");
+}
+
 function attachUserStatusListener(uid) {
   detachUserStatusListener();
   myAccountStatus = undefined;
@@ -674,12 +702,7 @@ function attachUserStatusListener(uid) {
     myAccountStatus = record ? record.status : null;
     myTempAccessUntil = Number(record?.tempAccessUntil) || 0;
     mySubOperator = Boolean(record?.subOperator);
-    // Approved while this tab is open: the rules ended the listeners earlier, so without this the page
-    // stays empty, with every control disabled as "stale", until someone thinks to reload it.
-    if (myAccountStatus === "approved" && databaseAccessDenied) {
-      detachDatabaseListeners();
-      attachDatabaseListeners();
-    }
+    syncLiveDataAccess();
     renderAccountStatus(record);
     renderBlockedScreen();
     syncControlAvailability();
@@ -694,6 +717,7 @@ function attachUserStatusListener(uid) {
     myAccountStatus = null;
     myTempAccessUntil = 0;
     mySubOperator = false;
+    syncLiveDataAccess();
     renderAccountStatus(null);
     renderBlockedScreen();
     syncControlAvailability();

@@ -44,7 +44,9 @@ Firmware source: https://github.com/JKyle-N/Smart-Irrigation
 
 Access is tiered — pending / approved / restricted / rejected / blocked, plus two fixed operator
 accounts and an optional temporary or Sub-operator elevation on top of "approved" — and enforced
-server-side by `firebase-rules.json`, not just by what the page shows or hides.
+server-side by `firebase-rules.json`, not just by what the page shows or hides. Only approved accounts
+and operators can see readings: pending, restricted, rejected and blocked accounts can't, and an
+account restricted while its page is open loses them immediately.
 
 ## Tech stack
 

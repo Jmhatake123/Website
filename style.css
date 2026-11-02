@@ -170,6 +170,10 @@ button.estop-top { min-width: 0; width: auto; }
 
 /* Solar and secondary battery group on the dashboard. Without the [hidden] rules, display:grid here
    and on label would win over the browser's own [hidden] -- the same gotcha as .force-row below. */
+.offline-help { margin: 0 0 22px; border-left: 5px solid var(--warning); }
+.offline-help p, .offline-help ul { color: var(--muted); line-height: 1.5; }
+.offline-help p:last-child { margin-bottom: 0; }
+.offline-help li { margin-bottom: 4px; }
 .metric-heading { margin: 4px 0 12px; }
 .card-grid[hidden], label[hidden] { display: none; }
 .command-actions { display: inline-flex; align-items: center; gap: 8px; }
