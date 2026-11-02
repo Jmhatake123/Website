@@ -34,7 +34,7 @@
     <form id="signupForm" class="login-card" hidden>
       <p class="eyebrow">CIT-U Electrical Engineering</p>
       <h1>Create account</h1>
-      <p>New accounts start as <strong>pending</strong><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About pending approval" data-info-title="Pending approval" data-info-text="An operator must approve your account before you can use any control. You can view the dashboard while you wait.">i</button> until an operator approves them. You can view the dashboard while you wait.</p>
+      <p>New accounts start as <strong>pending</strong><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About pending approval" data-info-title="Pending approval" data-info-text="An operator must approve your account before you can see live readings or use any control.">i</button> until an operator approves them. Live readings and controls stay unavailable until then.</p>
       <label>Name<input id="signupName" type="text" autocomplete="name" required></label>
       <label>Email<input id="signupEmail" type="email" autocomplete="email" required></label>
       <label>Password<input id="signupPassword" type="password" autocomplete="new-password" minlength="6" required></label>
@@ -143,7 +143,7 @@
           <span class="btn-with-info"><button type="button" id="rebootEsp2Btn">Reboot ESP2</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot ESP2" data-info-title="Reboot ESP2" data-info-text="Restarts the pump/valve controller. Avoid during an active run — it interrupts whatever ESP2 is doing.">i</button></span>
           <span class="btn-with-info"><button type="button" id="rebootEsp1Btn">Reboot ESP1</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Reboot ESP1" data-info-title="Reboot ESP1" data-info-text="Restarts the main controller. The dashboard loses contact for about 15 seconds.">i</button></span>
         </div>
-        <span class="btn-with-info"><button type="button" id="ackFaultBtn">Do nothing (ask again in 2 min)</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Do nothing" data-info-title="Do nothing (ask again in 2 min)" data-info-text="Hides this banner for 2 minutes on your screen only. The fault itself is unaffected.">i</button></span>
+        <span class="btn-with-info"><button type="button" id="ackFaultBtn">Do nothing (ask again in 2 min)</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Do nothing" data-info-title="Do nothing (ask again in 2 min)" data-info-text="Dims this banner for 2 minutes, then asks again. The fault itself is unaffected.">i</button></span>
       </div>
       <p id="faultAck" class="field-note" hidden></p>
     </section>
@@ -450,7 +450,7 @@
       <div class="section-heading"><div><h2>System<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About System" data-info-title="System" data-info-text="Remote versions of LCD Settings-menu items not already covered elsewhere on this site.">i</button></h2><p class="hint">Sends the same commands as the LCD Settings menu, validated the same way. "Current" values are live from ESP1.</p></div></div>
 
       <article class="panel">
-        <div class="panel-heading"><div><h3>Set Clock<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Set Clock" data-info-title="Set Clock" data-info-text="Sets ESP1's real-time clock — drives every column's schedule. A wrong or dead clock can silently stop irrigation. No seconds/timezone field, matching the LCD.">i</button></h3></div>
+        <div class="panel-heading"><div><h3>Set Clock<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Set Clock" data-info-title="Set Clock" data-info-text="Sets ESP1's real-time clock — drives every column's schedule. A wrong or dead clock can silently stop irrigation. No seconds/timezone field, matching the LCD.">i</button></h3></div></div>
         <p class="hint">ESP1 currently reads: <strong id="sysClockCurrent">Unavailable</strong> (RTC: <span id="sysClockRtcOk">Unavailable</span>)</p>
         <div class="control-grid">
           <label>Date<input id="sysClockDate" type="date"></label>
@@ -461,7 +461,7 @@
       </article>
 
       <article class="panel">
-        <div class="panel-heading"><div><h3>Thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Thresholds" data-info-title="Thresholds" data-info-text="Same soil start% and fertigation gap as the LCD. ESP1 doesn't publish its current values, so fill in every field each time. Soil stop only appears for older firmware, which still needs it.">i</button></h3></div>
+        <div class="panel-heading"><div><h3>Thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Thresholds" data-info-title="Thresholds" data-info-text="Same soil start% and fertigation gap as the LCD. ESP1 doesn't publish its current values, so fill in every field each time. Soil stop only appears for older firmware, which still needs it.">i</button></h3></div></div>
         <div class="control-grid">
           <label>Soil start % (irrigate below this)<input id="sysThreshStart" type="number" min="0" max="100" step="1"></label>
           <label id="sysThreshStopLabel">Soil stop % (must exceed start)<input id="sysThreshStop" type="number" min="0" max="100" step="1"></label>
@@ -472,7 +472,7 @@
       </article>
 
       <article class="panel">
-        <div class="panel-heading"><div><h3>LCD Lock status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About LCD Lock status" data-info-title="LCD Lock status" data-info-text="Read-only. Whether the LCD's buttons are locked. No remote lock/unlock — only someone at the unit can (hold UP+DOWN).">i</button></h3></div>
+        <div class="panel-heading"><div><h3>LCD Lock status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About LCD Lock status" data-info-title="LCD Lock status" data-info-text="Read-only. Whether the LCD's buttons are locked. No remote lock/unlock — only someone at the unit can (hold UP+DOWN).">i</button></h3></div></div>
         <p>LCD Lock: <strong id="sysLockStatus">Unavailable</strong></p>
       </article>
 
@@ -486,7 +486,7 @@
       </article>
 
       <article class="panel">
-        <div class="panel-heading"><div><h3>Restore Defaults<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Restore Defaults" data-info-title="Restore Defaults" data-info-text="Resets every column's mode/targets/name/schedule and the global thresholds to factory values. Keeps calibration, wiring, and WiFi/ThingSpeak setup. Cannot be undone. Idle-only.">i</button></h3></div>
+        <div class="panel-heading"><div><h3>Restore Defaults<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Restore Defaults" data-info-title="Restore Defaults" data-info-text="Resets every column's mode/targets/name/schedule and the global thresholds to factory values. Keeps calibration, wiring, and WiFi/ThingSpeak setup. Cannot be undone. Idle-only.">i</button></h3></div></div>
         <p class="hint">Resets per-column settings and thresholds to factory defaults. Calibration and WiFi setup are kept. <strong>This cannot be undone.</strong></p>
         <button id="sysRestoreDefaultsBtn" class="danger" type="button">Restore Defaults…</button>
         <p id="sysRestoreResult" class="control-result" aria-live="polite"></p>

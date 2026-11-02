@@ -95,6 +95,7 @@ let liveData = {};
 let commandData = [];
 let firebaseReady = false;
 let databaseListenersAttached = false;
+let databaseAccessDenied = false;   // the rules refused a listener, which also ended it
 let serverOffsetRef = null;
 let liveRef = null;
 let commandsRef = null;
@@ -174,9 +175,10 @@ function formatAge(milliseconds) {
   const age = Number(milliseconds);
   if (!Number.isFinite(age) || age < 0 || age === 0xFFFFFFFF) return "Unavailable";
   if (age < 1000) return "under 1 second";
-  if (age < 60000) return `${Math.floor(age / 1000)} seconds`;
-  if (age < 3600000) return `${Math.floor(age / 60000)} minutes`;
-  return `${Math.floor(age / 3600000)} hours`;
+  const count = (amount, unit) => `${amount} ${unit}${amount === 1 ? "" : "s"}`;
+  if (age < 60000) return count(Math.floor(age / 1000), "second");
+  if (age < 3600000) return count(Math.floor(age / 60000), "minute");
+  return count(Math.floor(age / 3600000), "hour");
 }
 
 // Firebase's clock, not this PC's. meta.updatedAt and a command's updatedAt are server timestamps, so
@@ -507,9 +509,9 @@ function initializeFirebase() {
         mySubOperator = false;         // ditto for a persistent sub-operator grant
         detachPresence();              // mark this session offline immediately -- don't wait for onDisconnect
         // liveData is about to be wiped below -- reset this FIRST so the updateDashboard() call just
-        // after doesn't see (wasFaultActive=true, empty liveData) and announce a fabricated "The hold
+        // after doesn't see (wasHeldOrStopped=true, empty liveData) and announce a fabricated "The hold
         // cleared" from data loss, as if the fault/lockout had actually resolved.
-        wasFaultActive = false;
+        wasHeldOrStopped = false;
         liveData = {};
         commandData = [];
         updateDashboard();
@@ -523,6 +525,14 @@ function initializeFirebase() {
         setConnection(false, "Sign in required");
         syncControlAvailability();
         refreshOperatorUI();
+        return;
+      }
+      // ESP1's own login is not a person's account. The rules let it write any command row and its own
+      // telemetry, so it must never run this page: it would also leave a stray /users and /presence record.
+      if (user.uid === ESP1_DEVICE_UID) {
+        const errorBox = document.getElementById("loginError");
+        if (errorBox) errorBox.textContent = "That is ESP1's device account, which can't be used on this website. Sign in with your own account.";
+        auth.signOut().catch(error => console.error(error));
         return;
       }
       if (loginScreen) loginScreen.hidden = true;
@@ -545,6 +555,7 @@ function initializeFirebase() {
 function attachDatabaseListeners() {
   if (databaseListenersAttached || !db) return;
   databaseListenersAttached = true;
+  databaseAccessDenied = false;
   setConnection(true, "Connecting to Firebase…");
   serverOffsetRef = db.ref(".info/serverTimeOffset");
   serverOffsetRef.on("value", snapshot => { serverTimeOffsetMs = Number(snapshot.val()) || 0; });
@@ -557,7 +568,16 @@ function attachDatabaseListeners() {
     const fresh = deviceIsFresh();
     setConnection(fresh, fresh ? "Live system connected" : "Waiting for a current ESP1 snapshot");
     syncControlAvailability();
-  }, error => setConnection(false, `Live-data error: ${error.code || "unknown"}`));
+  }, error => {
+    if (error.code === "PERMISSION_DENIED") {
+      // Live data needs an approved account. The denial also ends this listener, so
+      // attachUserStatusListener() has to attach it again if the account gets approved in this session.
+      databaseAccessDenied = true;
+      setConnection(false, "Live data needs an approved account");
+    } else {
+      setConnection(false, `Live-data error: ${error.code || "unknown"}`);
+    }
+  });
 
   commandsRef.on("value", snapshot => {
     const raw = snapshot.val() || {};
@@ -567,7 +587,11 @@ function attachDatabaseListeners() {
     renderColumnCommandResults(); // each zone's own SET_COLUMN outcome, inline under its own button
     renderPanelCommandResults();  // the same, for the Controls, Manual/Test and System panels
     updateForceArmed();           // a FORCE_RUN row turning "accepted" is the first sign it is armed
-  }, error => setCommandStatus(`Command status unavailable: ${error.code || "unknown"}`, "error"));
+  }, error => {
+    // The account banner already explains a denial: no need for an error toast on every sign-in as well.
+    if (error.code === "PERMISSION_DENIED") { databaseAccessDenied = true; return; }
+    setCommandStatus(`Command status unavailable: ${error.code || "unknown"}`, "error");
+  });
 
   zonesRef = db.ref("irrigation/config/zones");
   // Live, not once(): a second tab/device editing a zone profile must not leave this one showing a
@@ -650,6 +674,12 @@ function attachUserStatusListener(uid) {
     myAccountStatus = record ? record.status : null;
     myTempAccessUntil = Number(record?.tempAccessUntil) || 0;
     mySubOperator = Boolean(record?.subOperator);
+    // Approved while this tab is open: the rules ended the listeners earlier, so without this the page
+    // stays empty, with every control disabled as "stale", until someone thinks to reload it.
+    if (myAccountStatus === "approved" && databaseAccessDenied) {
+      detachDatabaseListeners();
+      attachDatabaseListeners();
+    }
     renderAccountStatus(record);
     renderBlockedScreen();
     syncControlAvailability();
@@ -680,15 +710,15 @@ function detachUserStatusListener() {
 const ACCOUNT_STATUS_TEXT = {
   pending: {
     title: "Waiting for operator approval",
-    detail: "Your account has been created, but the operator has not approved your access yet. You can see the read-only dashboard while you wait, but every control that would affect real hardware stays blocked until you're approved."
+    detail: "Your account has been created, but an operator has not approved it yet. Live readings and every control stay unavailable until you're approved. This page updates by itself once you are."
   },
   rejected: {
     title: "Access not approved",
-    detail: "The operator reviewed this account and did not approve it for hardware access. You can still see the read-only dashboard."
+    detail: "An operator reviewed this account and did not approve it, so live readings and controls are unavailable."
   },
   restricted: {
     title: "Restricted access",
-    detail: "This account can view the irrigation system but cannot operate physical equipment. The operator can unrestrict it to restore full access at any time."
+    detail: "An operator has restricted this account, so live readings and controls are unavailable. The operator can unrestrict it to restore full access at any time."
   }
   // No "disabled" entry here on purpose -- a blocked account gets the separate full-screen
   // #blockedScreen takeover (see renderBlockedScreen()) instead of this banner, and is excluded
@@ -741,7 +771,9 @@ document.getElementById("blockedSignOutBtn")?.addEventListener("click", () => {
 // seq counts as new), which would start a relay with nobody at the page. The cap is for an offline
 // browser, whose writes are never acknowledged but which must still be able to sign out.
 function releaseHoldsThenSignOut() {
-  const releases = Promise.allSettled([releaseManualHold(), mtHoldStop(true)]);
+  // Presence goes offline here too, for the same reason: the rules refuse that write once signed out, and
+  // cancelling onDisconnect then left the account showing "Online" for good (seen live, for weeks).
+  const releases = Promise.allSettled([releaseManualHold(), mtHoldStop(true), detachPresence()]);
   const capped = Promise.race([releases, new Promise(resolve => setTimeout(resolve, 1500))]);
   return capped.then(() => auth.signOut());
 }
@@ -880,12 +912,14 @@ function attachPresence(uid) {
 }
 function detachPresence() {
   if (myConnectedRef) myConnectedRef.off();
+  let offline = Promise.resolve();
   if (myPresenceRef) {
     myPresenceRef.onDisconnect().cancel();
-    myPresenceRef.set({ online: false, lastChanged: firebase.database.ServerValue.TIMESTAMP }).catch(() => {});
+    offline = myPresenceRef.set({ online: false, lastChanged: firebase.database.ServerValue.TIMESTAMP }).catch(() => {});
   }
   myConnectedRef = null;
   myPresenceRef = null;
+  return offline;
 }
 
 const USER_STATUS_ORDER = { pending: 0, approved: 1, restricted: 2, disabled: 3, rejected: 4 };
@@ -1097,7 +1131,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   const newStatus = statusMap[action];
   if (!newStatus) return;
   if (action === "block" && !confirm(`Block ${name}? They will immediately lose access.`)) return;
-  if (action === "restrict" && !confirm(`Remove ${name}'s hardware-control access while keeping dashboard access?`)) return;
+  if (action === "restrict" && !confirm(`Restrict ${name}? They keep their account, but can't see live readings or use any control until you unrestrict them.`)) return;
   // Deep-scan finding (2026-09-10): reject/block/restrict previously left any outstanding
   // tempAccessUntil grant untouched -- re-approving the account before that grant's own clock ran
   // out (up to an hour later) would silently hand privileged access straight back with no fresh
@@ -1121,7 +1155,9 @@ function writeZoneProfile(zone) {
     setCommandStatus("Your account is awaiting operator approval before it can send commands to the rig.", "error");
     return;
   }
-  db.ref(`irrigation/config/zones/${zone.id}`).set({
+  // update(), not set(): the column's "Firmware save settings" library lives under this same node, and
+  // set() wiped it every time someone changed the crop or stage.
+  db.ref(`irrigation/config/zones/${zone.id}`).update({
     name: zone.name,
     crop: zone.defaultCrop,
     stage: zone.defaultStage,
@@ -1210,6 +1246,16 @@ function queueCommand(type, payload = {}, options = {}) {
       setCommandStatus(`Could not queue command: ${error.message}`, "error");
       return false;
     });
+}
+
+// For a panel with its own result line. queueCommand() can refuse to send (cooldown, stale snapshot), and
+// without this the line would go on saying "Sending to ESP1…" although nothing was ever sent.
+function sendFromPanel(show, type, payload = {}, options = {}) {
+  show("Sending to ESP1…", false);
+  return queueCommand(type, payload, options).then(key => {
+    if (!key) show("Not sent. See the status message for the reason.", true);
+    return key;
+  });
 }
 
 // Short, human-readable "what did they do" label for the activity trail above -- deliberately NOT
@@ -1776,7 +1822,7 @@ function explainNotSafelyIdle() {
   const state = liveData.system?.state || "";
   if (Boolean(d.fault?.held) || state === "EMERGENCY_STOP") return "a fault is currently held — see the fault banner above and choose a recovery";
   if (Boolean(d.system?.workOrderActive) || Boolean(d.system?.pendingRun)) return "a run is already in progress";
-  if (Boolean(d.actuationsDisabled)) return "actuations are currently disabled";
+  if (d.actuationsDisabled) return "actuations are currently disabled";
   if (state && state !== "IDLE_STATE") return `the controller is not idle (reported state: ${state})`;
   return "a condition this dashboard cannot see directly (possibly a pump test running, the LCD menu open, or another session's Manual/Test hold) — check the Diagnostics tab or the LCD";
 }
@@ -1948,7 +1994,8 @@ let wasHeldOrStopped = false;
 const HELD_CLEAR_TEXT = {
   resumed:         { text: "Confirmed: ESP2 resumed the paused run.", tone: "" },
   cancelled:       { text: "The run was cancelled.", tone: "" },
-  estop:           { text: "Cleared by an emergency stop.", tone: "" },
+  // ESP1 records this on every emergency stop, held fault or not, and "held" may never have applied.
+  estop:           { text: "The emergency stop has ended. ESP1 re-checks ESP2 before returning to normal.", tone: "" },
   auto_cancelled:  { text: "The rig gave up retrying and auto-cancelled the run after repeated identical faults — this was not a successful recovery.", tone: "error" },
   esp2_restarted:  { text: "ESP2 appears to have restarted rather than confirming the resume — the paused run may not have continued as expected.", tone: "error" }
 };
@@ -2261,9 +2308,7 @@ function quickSetColumnMode(id, mode) {
   };
   const payload = { col: id, enabled: mode ? 1 : 0 };
   if (mode) payload.mode = mode;
-  const label = mode === "AUTO" ? "Auto" : mode === "IRRIGATION_ONLY" ? "Irrigation only" : "Off";
-  show(`Sending "${label}" to ESP1…`);
-  queueCommand("SET_COLUMN", payload);
+  sendFromPanel(show, "SET_COLUMN", payload);
 }
 
 function submitColumnConfig(id) {
@@ -2290,7 +2335,8 @@ function submitColumnConfig(id) {
     const we = hhmmToMinutes(document.getElementById(`cfgWinEnd${id}`)?.value);
     if (ws !== null) payload.winStart = ws;
     if (we !== null) payload.winEnd = we;
-    if (ws !== null && we !== null && ws === we) { show("Window start and end cannot be the same. Nothing was sent."); return; }
+    // ESP1 refuses both: the window can't be empty, and it has no support for running past midnight.
+    if (ws !== null && we !== null && ws >= we) { show("Window start must be earlier than window end, within the same day. Nothing was sent."); return; }
   }
   // Bounds mirror the firmware's own applyColumnTarget() (0-2000 ppm, pH 3-9) -- checked here too so
   // a mistyped value is refused before it round-trips to ESP1 and back, matching the pattern
@@ -2311,8 +2357,7 @@ function submitColumnConfig(id) {
     payload[key] = v;
   }
   if (Object.keys(payload).length < 2) { show("Nothing to change — fill in at least one field."); return; }
-  show("Sending to ESP1…", false);
-  queueCommand("SET_COLUMN", payload);
+  sendFromPanel(show, "SET_COLUMN", payload);
 }
 
 // Reflects each zone's own most recent SET_COLUMN outcome inline, under its own "Send to ESP1"
@@ -2422,6 +2467,7 @@ loginForm?.addEventListener("submit", async event => {
   try {
     const credential = await auth.signInWithEmailAndPassword(document.getElementById("loginEmail").value.trim(), document.getElementById("loginPassword").value);
     loginForm.reset();
+    if (credential.user.uid === ESP1_DEVICE_UID) return;   // onAuthStateChanged() refuses it and says why
     // Delete in User Management now removes the Auth account too (via the deleteUserAccount Cloud
     // Function), so this specific gap no longer applies to that path -- but a signed-in account with
     // no /users/{uid} record can still happen for other reasons (created outside this app's sign-up
@@ -2540,6 +2586,10 @@ document.addEventListener("visibilitychange", () => {
   } else if (mtHideTimer) {
     clearTimeout(mtHideTimer);
     mtHideTimer = null;
+  } else if (!mtHoldTimer && document.getElementById("manualtest")?.classList.contains("active")) {
+    // The grace period ran out while hidden and the hold went back to the rig. Still on this tab, so ask
+    // again, or the page would sit on "Waiting for the rig to grant manual mode" with nothing asking.
+    requestManualHold();
   }
 });
 document.getElementById("transferPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "transfer" }, { operatorOnly: true }));
@@ -2594,8 +2644,7 @@ document.getElementById("sysClockSendBtn")?.addEventListener("click", () => {
   const [h, mi] = timeVal.split(":").map(Number);
   if (![y, mo, d, h, mi].every(Number.isFinite)) { show("Date/time could not be read. Nothing was sent."); return; }
   if (!confirm(`Set ESP1's clock to ${dateVal} ${timeVal}? This affects every column's irrigation schedule.`)) return;
-  show("Sending to ESP1…", false);
-  queueCommand("SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi }, { operatorOnly: true });
+  sendFromPanel(show, "SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi }, { operatorOnly: true });
 });
 
 document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
@@ -2616,8 +2665,7 @@ document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
   if (start === 0 && !confirm("Soil start 0% means no column will ever be dry enough, so scheduled watering stops. Send it anyway?")) { show("Nothing was sent.", false); return; }
   const payload = { thStart: start, thGap: gap };
   if (needsStop) payload.thStop = stop;
-  show("Sending to ESP1…", false);
-  queueCommand("SET_THRESH", payload, { operatorOnly: true });
+  sendFromPanel(show, "SET_THRESH", payload, { operatorOnly: true });
 });
 
 // Dormant while the firmware builds with SECONDARY_BATT_ENABLED 0: the button only enables when ESP1
@@ -2626,8 +2674,7 @@ document.getElementById("sysClearBattSwitchBtn")?.addEventListener("click", () =
   const result = document.getElementById("sysBattSwitchResult");
   const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
   if (!confirm("Clear the battery-switch fault? Check the hold-up first: this fault means a battery switch reset the controllers, and clearing it allows the next inverter use to switch again.")) return;
-  show("Sending to ESP1…", false);
-  queueCommand("CLEAR_BATT_SWITCH", {}, { operatorOnly: true });
+  sendFromPanel(show, "CLEAR_BATT_SWITCH", {}, { operatorOnly: true });
 });
 
 document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () => {
@@ -2636,8 +2683,7 @@ document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () =
   if (!confirm("Restore Defaults? This resets every column's mode, targets, name, and schedule window, " +
                "plus the global thresholds, to factory values. This CANNOT be undone. Calibration, " +
                "column-enabled wiring, and WiFi/ThingSpeak setup are kept.")) return;
-  show("Sending to ESP1…", false);
-  queueCommand("RESTORE_DEFAULTS", {}, { operatorOnly: true });
+  sendFromPanel(show, "RESTORE_DEFAULTS", {}, { operatorOnly: true });
 });
 
 // Read-only: current device time/RTC health (for Set Clock) and LCD Lock status. No write path is
@@ -2846,7 +2892,14 @@ function requestManualHold() {
 
 function releaseManualHold() {
   if (mtHideTimer) { clearTimeout(mtHideTimer); mtHideTimer = null; }
-  if (mtHoldTimer) { clearInterval(mtHoldTimer); mtHoldTimer = null; }
+  // Only a session that asked for the hold gives it back. irrigation/manual is one node shared by every
+  // browser, and this runs on every tab change and page close: writing want:false regardless let any
+  // other signed-in user end an operator's hold just by browsing, putting the rig back in automatic
+  // while they were testing, until their next 20 s keep-alive. A session that dies without releasing is
+  // covered by ESP1's own 60 s lease.
+  if (!mtHoldTimer) return Promise.resolve(false);
+  clearInterval(mtHoldTimer);
+  mtHoldTimer = null;
   return writeManualHold(false);
 }
 
@@ -3047,9 +3100,8 @@ document.getElementById("exSaveBtn")?.addEventListener("click", () => {
   const show = (t, err = true) => { if (out) { out.textContent = t; out.className = `control-result${err ? " error" : ""}`; } };
   // Whole seconds only: ESP1 reads a decimal as absent, so it would keep its old length and still report success.
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 10) { show("Duration must be a whole number from 1 to 10 seconds. Nothing was sent."); return; }
-  show(on ? `Enabling the exercise at ${seconds}s per pump...` : "Turning the preventive exercise off...", false);
   exTouched = false;                       // let the next snapshot confirm what ESP1 actually stored
-  queueCommand("SET_EXERCISE", { exerciseEnabled: on, exerciseSeconds: seconds }, { operatorOnly: true });
+  sendFromPanel(show, "SET_EXERCISE", { exerciseEnabled: on, exerciseSeconds: seconds }, { operatorOnly: true });
 });
 
 document.getElementById("mtProceed")?.addEventListener("click", () => setManualTestArmed(true));

@@ -319,6 +319,8 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
 /* Wraps an actuating button + its info icon as one inline group without changing the button's own
    click target -- used wherever the icon would otherwise have to sit inside the button itself. */
 .btn-with-info { display: inline-flex; align-items: center; gap: 8px; }
+/* A hidden button takes its info icon with it, instead of leaving a stray "i" explaining nothing. */
+.btn-with-info:has(> button[hidden]) { display: none; }
 /* Keeps a label's leading text + icon on the SAME grid row as each other (labels on this page are
    `display:grid`, text over control) instead of the icon becoming its own row under the control. */
 .label-row { display: inline-flex; align-items: center; }
