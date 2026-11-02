@@ -348,9 +348,9 @@ function dismissToast(id) {
 
 function showToast(message, tone = "") {
   const text = String(message || "").trim();
-  if (!text) return;
+  if (!text) return null;
   const stack = document.getElementById("toastStack");
-  if (!stack) return;
+  if (!stack) return null;
   const id = ++toastSeq;
   const el = document.createElement("div");
   el.className = `toast${tone ? ` toast-${tone}` : ""}`;
@@ -364,6 +364,7 @@ function showToast(message, tone = "") {
   // visible transition at all.
   requestAnimationFrame(() => el.classList.add("toast-in"));
   rescheduleToasts();
+  return id;
 }
 
 function setCommandStatus(text, tone = "") {
@@ -372,7 +373,7 @@ function setCommandStatus(text, tone = "") {
     element.textContent = text;
     element.className = `command-status ${tone}`.trim();
   }
-  showToast(text, tone);
+  return showToast(text, tone);
 }
 
 function syncControlAvailability() {
@@ -460,7 +461,8 @@ function syncControlAvailability() {
   // refuses this one outright unless sysState is IDLE_STATE, matching the LCD's own gate.
   const restoreBtn = document.getElementById("sysRestoreDefaultsBtn");
   if (restoreBtn) {
-    const notIdle = liveData.system?.state && liveData.system.state !== "IDLE_STATE";
+    // SAFE_MODE is only ESP1's label for idle while locked out, so ESP1 accepts this then too.
+    const notIdle = liveData.system?.state && !["IDLE_STATE", "SAFE_MODE"].includes(liveData.system.state);
     restoreBtn.disabled = !signedIn || !approved || Boolean(notIdle);
     restoreBtn.title = !signedIn ? "Sign in to use the system controls."
                       : !approved ? notApprovedTitle
@@ -517,6 +519,7 @@ function initializeFirebase() {
         wasHeldOrStopped = false;
         liveData = {};
         commandData = [];
+        sentCommands.clear();
         updateDashboard();
         renderCommandHistory();
         renderAccountStatus(null);
@@ -586,6 +589,7 @@ function attachDatabaseListeners() {
     const raw = snapshot.val() || {};
     commandData = Object.entries(raw).map(([id, command]) => ({ id, ...command }));
     renderCommandHistory();
+    announceCommandReplies();     // whichever tab is open, say what ESP1 answered
     renderPulseResult();          // the pulse verdict rides on its command status detail
     renderColumnCommandResults(); // each zone's own SET_COLUMN outcome, inline under its own button
     renderPanelCommandResults();  // the same, for the Controls, Manual/Test and System panels
@@ -958,7 +962,9 @@ function renderUserManagement() {
   // The backup/creator operator is deliberately invisible here -- filtered out of the list itself,
   // not merely stripped of actions like the primary operator's own row is (see isAnyOperator
   // below). Nothing in this app ever needs to manage the backup account as if it were a normal user.
-  const rows = Object.entries(users).filter(([uid]) => uid !== BACKUP_OPERATOR_UID);
+  // ESP1's own account isn't a person either. It has no actions, so a stray record for it (the live database
+  // has one, from before the page refused that login) would sit under "pending" for good.
+  const rows = Object.entries(users).filter(([uid]) => uid !== BACKUP_OPERATOR_UID && uid !== ESP1_DEVICE_UID);
   if (!rows.length) { container.innerHTML = `<p class="muted">No registered accounts yet.</p>`; return; }
   rows.sort((a, b) => (USER_STATUS_ORDER[a[1]?.status] ?? 9) - (USER_STATUS_ORDER[b[1]?.status] ?? 9));
   container.innerHTML = rows.map(([uid, u]) => {
@@ -1208,6 +1214,42 @@ function logActivity(what) {
 // Stops are not listed: firing late is the safe direction.
 const OFFLINE_CONFIRM_TYPES = new Set(["ENABLE_ACTUATIONS", "RECOVER", "ESTOP_RECOVER", "REBOOT"]);
 
+// What this session has sent: id -> the reply last announced, and the toast showing the latest news. Only
+// some panels show their own command's reply, and Command status is on the Live dashboard tab alone. ESP1
+// doesn't publish a snapshot after most commands either, so without this a stop pressed on another tab
+// could go up to a minute with no sign that it worked. Each reply replaces the toast before it: a stack of
+// them can cover the buttons underneath, and it's only the latest news about a command that matters.
+const sentCommands = new Map();
+const COMMAND_END_STATUSES = new Set(["completed", "failed", "rejected", "withdrawn"]);
+// Their effect only reaches the rest of the page in ESP1's next scheduled snapshot.
+const SHOWN_IN_NEXT_REPORT = new Set(["EMERGENCY_STOP", "ESTOP_RECOVER", "ENABLE_ACTUATIONS", "DISABLE_ACTUATIONS", "SET_COLUMN", "SET_EXERCISE", "SET_CLOCK", "RESTORE_DEFAULTS", "CLEAR_BATT_SWITCH"]);
+
+function announceCommandReplies() {
+  sentCommands.forEach((sent, id) => {
+    const command = commandData.find(row => row.id === id);
+    if (!command || command.status === "queued" || command.status === "received") return;
+    const reply = `${command.status}|${command.detail}`;
+    if (reply === sent.reply) return;
+    sent.reply = reply;
+    if (COMMAND_END_STATUSES.has(command.status)) sentCommands.delete(id);
+    dismissToast(sent.toast);
+    const name = rawText(command.type, "Command").replaceAll("_", " ");
+    if (command.status === "withdrawn") {
+      setCommandStatus(`${name} withdrawn. ESP1 won't run it.`);
+      return;
+    }
+    let text = `${name}: ${command.status} — ${commandDetailText(command, "no detail from ESP1")}.`;
+    if (command.status === "completed" && SHOWN_IN_NEXT_REPORT.has(command.type)) {
+      text += " The rest of this page catches up with ESP1's next report, within about a minute.";
+    }
+    // ESP1 replies "completed" once it has acted on a recovery, even if the resume was then refused.
+    if (command.status === "completed" && command.type === "RECOVER") {
+      text += " That only means ESP1 acted on it. The fault banner shows the result in ESP1's next report, within about a minute.";
+    }
+    sent.toast = setCommandStatus(text, commandStatusTone(command.status));
+  });
+}
+
 function queueCommand(type, payload = {}, options = {}) {
   const emergency = Boolean(options.emergency);
   if (!currentUserIsSignedIn()) {
@@ -1258,14 +1300,17 @@ function queueCommand(type, payload = {}, options = {}) {
     source: "dashboard",
     requestedAt: firebase.database.ServerValue.TIMESTAMP
   };
-  setCommandStatus(queuedStatusText(type, payload, emergency), "pending");
-  return db.ref("irrigation/commands").push(command)
+  const toast = setCommandStatus(queuedStatusText(type, payload, emergency), "pending");
+  const pushed = db.ref("irrigation/commands").push(command);
+  sentCommands.set(pushed.key, { reply: "", toast });
+  return pushed
     .then(reference => {
       if (!emergency) lastCommandAt = Date.now();
       logActivity(activitySummary(type, payload));
       return reference.key;
     })
     .catch(error => {
+      sentCommands.delete(pushed.key);
       if (!emergency) lastCommandAt = 0;
       setCommandStatus(`Could not queue command: ${error.message}`, "error");
       return false;
@@ -1280,6 +1325,16 @@ function sendFromPanel(show, type, payload = {}, options = {}) {
     if (!key) show("Not sent. See the status message for the reason.", true);
     return key;
   });
+}
+
+// The "show" function sendFromPanel() needs, for a panel with a plain result line.
+function resultLine(id) {
+  return (text, error = false) => {
+    const line = document.getElementById(id);
+    if (!line) return;
+    line.textContent = text;
+    line.className = `control-result${error ? " error" : ""}`;
+  };
 }
 
 // Short, human-readable "what did they do" label for the activity trail above -- deliberately NOT
@@ -1769,6 +1824,20 @@ function diagnosticGroup(title, rows) {
   return card;
 }
 
+// The modem's AT+CSQ scale. ESP1 sends -1 until it has a reading and 99 for no signal, and the LCD shows
+// both as "--".
+function gsmSignalText(rssi) {
+  if (!hasValue(rssi)) return "Unavailable";
+  return Number(rssi) < 0 || Number(rssi) === 99 ? "No signal" : `${rssi} of 31`;
+}
+// The modem's CREG/CEREG status. The firmware counts 1, 5, 6, 7, 9 and 10 as registered (gsmRegStatOk).
+// The A7670C has been seen reporting 6.
+const GSM_REGISTRATION_TEXT = {
+  "-1": "No reply yet", 0: "Not searching", 1: "Registered, home network", 2: "Searching", 3: "Denied", 4: "Unknown",
+  5: "Registered, roaming", 6: "Registered, home network (SMS only)", 7: "Registered, roaming (SMS only)",
+  9: "Registered, home network", 10: "Registered, roaming"
+};
+
 function renderDiagnostics() {
   const container = document.getElementById("diagnosticsGrid");
   if (!container) return;
@@ -1787,7 +1856,7 @@ function renderDiagnostics() {
     ["Nano & sensors", [["Last sample age", formatAge(d.nano?.lastSampleAgeMs)], ["Environment", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
     ["RTC / SD / power sensors", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")], ["Main battery INA226", v3Only(booleanText(d.peripherals?.mainInaOk, "In use", "Not in use"))], ["ACS758 fallback", v3Only(booleanText(d.peripherals?.batteryAdsOk, "OK", "Not OK"))], ["Solar INA226", v3Only(booleanText(d.peripherals?.solarSensorOk, "OK", "Not answering"))], ["Secondary INA226", v3Only(booleanText(d.peripherals?.secondaryBatterySensorOk, "OK", "Not answering"))]]],
     ["Battery switching", [["Boards powered from", v3Only(boardSupplyText())], ["Switching", v3Only(booleanText(liveData.system?.secondaryBattSwitching, "On", "Off in this firmware"))], ["Switch fault", v3Only(booleanText(liveData.system?.battSwitchFault, "Latched: inverter use blocked", "None"))], ["Reset strikes", v3Only(rawText(liveData.system?.battSwitchStrikes))], ["Backup mode", v3Only(booleanText(liveData.system?.backupEnabled, "On", "Off in this firmware"))], ["Backup state", v3Only(rawText(liveData.system?.backupState))]]],
-    ["GSM", [["SIM", booleanText(d.gsm?.simReady, "Ready", "Not ready")], ["Network", booleanText(d.gsm?.networkRegistered, "Registered", "Not registered")], ["RSSI", hasValue(d.gsm?.rssi) ? String(d.gsm.rssi) : "Unavailable"], ["CREG", rawText(d.gsm?.creg)], ["Last health age", formatAge(d.gsm?.lastHealthAgeMs)]]],
+    ["GSM", [["SIM", booleanText(d.gsm?.simReady, "Ready", "Not ready")], ["Network", booleanText(d.gsm?.networkRegistered, "Registered", "Not registered")], ["Signal", gsmSignalText(d.gsm?.rssi)], ["Registration", GSM_REGISTRATION_TEXT[d.gsm?.creg] ?? rawText(d.gsm?.creg)], ["Last health age", formatAge(d.gsm?.lastHealthAgeMs)]]],
     ["Power", [["Battery low", booleanText(d.power?.batteryLow, "Yes", "No")], ["Battery critical", booleanText(d.power?.batteryCritical, "Yes", "No")], ["Current", numberText(d.power?.batteryCurrent, 2, "A")], ["Power", numberText(d.power?.batteryPower, 1, "W")]]],
     ["Actuator status", [["Relay feedback", d.actuator?.relayFeedback === "notReported" ? "Not reported by ESP1" : rawText(d.actuator?.relayFeedback)], ["Work order", booleanText(d.actuator?.workOrderActive, "Active", "Inactive")], ["Pump test", booleanText(d.actuator?.pumpTestActive, "Active", "Inactive")], ["Pump under test", rawText(d.actuator?.pumpUnderTest)]]]
   ];
@@ -2181,22 +2250,41 @@ function updateFaultBanner() {
  * be seen long after it was written, by a page loaded later. Runs every second, and from each snapshot
  * and command update. */
 let armedSeed = null;                // { stamp, at: epoch ms, left: seconds } from the last armed snapshot
+// A snapshot can carry data from several seconds before its own stamp (one second of telemetry age, plus
+// a slow upload). One this much newer than the arming reply has definitely seen the countdown.
+const ARMED_SNAPSHOT_SETTLE_MS = 8000;
+
+// Has a reply written after this moment ended the countdown? ESP1 doesn't publish a snapshot when one
+// ends, so its last snapshot can go on saying "armed" for up to a minute. An emergency stop doesn't update
+// the run's own row at all, so that row can't be relied on by itself either.
+function countdownEndedAfter(stamp) {
+  return commandData.some(row => {
+    if (Number(row.updatedAt || 0) <= stamp) return false;
+    if (row.type === "CANCEL_FORCE" || row.type === "EMERGENCY_STOP" || row.type === "DISABLE_ACTUATIONS") return row.status === "completed";
+    if (row.type !== "FORCE_RUN") return false;
+    return row.status === "failed" || row.status === "completed" || String(row.detail || "").startsWith("force run started");
+  });
+}
 
 function armedRowFromCommands() {
-  const latest = latestCommandOfType("FORCE_RUN");
-  if (!latest || latest.status !== "accepted") return null;
-  const armed = /^armed: starts in (\d+)s/.exec(String(latest.detail || ""));
-  const stamp = Number(latest.updatedAt || 0);
-  if (!armed || !stamp) return null;
-  const left = Number(armed[1]) - Math.floor((serverNow() - stamp) / 1000);
-  return left > 0 ? { left, payload: latest.payload || {} } : null;
+  // The newest row that armed a run, not simply the newest row: a second request refused with "another
+  // forced run is already armed" must not hide the first one's Cancel.
+  const row = commandData
+    .filter(c => c.type === "FORCE_RUN" && c.status === "accepted" && /^armed: starts in \d+s/.test(String(c.detail || "")))
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
+  const stamp = Number(row?.updatedAt || 0);
+  if (!stamp || countdownEndedAfter(stamp)) return null;
+  const snapshotStamp = Number(liveData.meta?.updatedAt || 0);
+  if (snapshotStamp > stamp + ARMED_SNAPSHOT_SETTLE_MS && !liveData.diagnostics?.forceArmed?.armed) return null;
+  const left = Number(/^armed: starts in (\d+)s/.exec(row.detail)[1]) - Math.floor((serverNow() - stamp) / 1000);
+  return left > 0 ? { left, payload: row.payload || {} } : null;
 }
 
 function updateForceArmed() {
   const panel = document.getElementById("forceArmedPanel");
   if (!panel) return;
   const a = liveData.diagnostics?.forceArmed || {};
-  const snapshotArmed = Boolean(a.armed) && deviceIsFresh();
+  const snapshotArmed = Boolean(a.armed) && deviceIsFresh() && !countdownEndedAfter(Number(liveData.meta?.updatedAt || 0));
   const row = armedRowFromCommands();
   if (!snapshotArmed) {
     armedSeed = null;
@@ -2221,8 +2309,9 @@ function updateForceArmed() {
 function ageFlag(ms) {
   const v = Number(ms);
   if (!Number.isFinite(v) || v === 0xFFFFFFFF) return "never";
-  if (v > 90000) return "STALE";                   // mirrors the firmware's NANO_STALE_MS
-  return "ok";
+  // The firmware's NANO_STALE_MS. web v.3 raised it from 90 s to 5 minutes, because the Nano only reports
+  // every 2 minutes at night.
+  return v > (isV3Firmware() ? 300000 : 90000) ? "STALE" : "ok";
 }
 
 function renderRawSensors() {
@@ -2405,16 +2494,19 @@ function renderColumnCommandResults() {
 
 // The same for the panels that send one command type. Without this they froze at "Sending to ESP1…",
 // and the real outcome only appeared in Command status on another tab.
-const PANEL_COMMAND_RESULTS = {
-  FORCE_RUN: "forceRunResult",
-  SET_EXERCISE: "exResult",
-  SET_CLOCK: "sysClockResult",
-  SET_THRESH: "sysThreshResult",
-  RESTORE_DEFAULTS: "sysRestoreResult",
-  CLEAR_BATT_SWITCH: "sysBattSwitchResult"
-};
+const PANEL_COMMAND_RESULTS = [
+  ["FORCE_RUN", "forceRunResult"],
+  ["SET_EXERCISE", "exResult"],
+  ["RUN_PUMP_TEST", "mtExerciseResult"],
+  ["DIAG_SWEEP", "mtSweepResult"],
+  ["DIAG_SWEEP", "sweepResult"],
+  ["SET_CLOCK", "sysClockResult"],
+  ["SET_THRESH", "sysThreshResult"],
+  ["RESTORE_DEFAULTS", "sysRestoreResult"],
+  ["CLEAR_BATT_SWITCH", "sysBattSwitchResult"]
+];
 function renderPanelCommandResults() {
-  Object.entries(PANEL_COMMAND_RESULTS).forEach(([type, id]) => {
+  PANEL_COMMAND_RESULTS.forEach(([type, id]) => {
     const result = document.getElementById(id);
     const latest = latestCommandOfType(type);
     if (!result || !latest) return;
@@ -2616,9 +2708,9 @@ document.addEventListener("visibilitychange", () => {
     requestManualHold();
   }
 });
-document.getElementById("transferPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "transfer" }, { operatorOnly: true }));
-document.getElementById("boosterPumpBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "booster" }, { operatorOnly: true }));
-document.getElementById("mixerBtn")?.addEventListener("click", () => queueCommand("RUN_PUMP_TEST", { pump: "mixer" }, { operatorOnly: true }));
+document.getElementById("transferPumpBtn")?.addEventListener("click", () => sendFromPanel(resultLine("mtExerciseResult"), "RUN_PUMP_TEST", { pump: "transfer" }, { operatorOnly: true }));
+document.getElementById("boosterPumpBtn")?.addEventListener("click", () => sendFromPanel(resultLine("mtExerciseResult"), "RUN_PUMP_TEST", { pump: "booster" }, { operatorOnly: true }));
+document.getElementById("mixerBtn")?.addEventListener("click", () => sendFromPanel(resultLine("mtExerciseResult"), "RUN_PUMP_TEST", { pump: "mixer" }, { operatorOnly: true }));
 bindAll(["emergencyStop", "emergencyStopTop"], () => queueCommand("EMERGENCY_STOP", {}, { emergency: true }));
 document.getElementById("forceRunForm")?.addEventListener("submit", submitForceRun);
 
@@ -2853,11 +2945,17 @@ function mtHoldStart(btn) {
 
 document.querySelectorAll(".hold-btn").forEach(btn => {
   const isCorrosive = btn.classList.contains("danger");
+  // Did this mouse press start a hold? Releasing it then fires a click, which must not be taken for a new
+  // request to dispense. A touch press fires no click, because its preventDefault() below cancels it.
+  let mousePressBeganHold = false;
   const start = ev => {
+    if (ev.type === "mousedown") mousePressBeganHold = false;
+    const target = btn.dataset.holdTarget;
+    // Needs the confirm click first, below. Checked before preventDefault(): on a touchscreen that would
+    // also cancel the click, so a pH button could never be armed from a phone.
+    if (isCorrosive && mtHoldArmedTarget !== target) return;
     ev.preventDefault();
     if (btn.disabled || mtHoldActiveBtn) return;
-    const target = btn.dataset.holdTarget;
-    if (isCorrosive && mtHoldArmedTarget !== target) return;   // needs the confirm click first, below
     const wait = MT_HOLD_RESTART_GAP_MS - (Date.now() - mtHoldLastStopAt);
     if (wait > 0) {
       const note = document.getElementById("mtHoldResult");
@@ -2865,6 +2963,7 @@ document.querySelectorAll(".hold-btn").forEach(btn => {
       return;
     }
     mtHoldStart(btn);
+    if (ev.type === "mousedown") mousePressBeganHold = true;
   };
   const stop = () => { if (mtHoldActiveBtn === btn) mtHoldStop(true); };
   btn.addEventListener("mousedown", start);
@@ -2880,6 +2979,7 @@ document.querySelectorAll(".hold-btn").forEach(btn => {
   // immediately starting the pump. A plain click (press+release without ever arming) does nothing.
   if (isCorrosive) {
     btn.addEventListener("click", () => {
+      if (mousePressBeganHold) { mousePressBeganHold = false; return; }
       if (btn.disabled || mtHoldActiveBtn) return;
       const target = btn.dataset.holdTarget;
       if (mtHoldArmedTarget === target) return;   // already armed from a previous click
@@ -2908,6 +3008,9 @@ function reportHoldResult(target, ms, stoppedAtCap) {
 }
 
 function requestManualHold() {
+  const answer = liveData.diagnostics?.webManual?.state;
+  mtStaleAnswer = answer === "refused" || answer === "revoked" ? answer : null;
+  mtAskedAt = serverNow();
   writeManualHold(true);
   if (mtHoldTimer) clearInterval(mtHoldTimer);
   // 20 s against a 60 s lease: two keep-alives may be lost before the rig takes the hold back.
@@ -2927,11 +3030,27 @@ function releaseManualHold() {
   return writeManualHold(false);
 }
 
+// ESP1 leaves "refused" and "revoked" published after the page stops asking, until it next grants a hold.
+// So they aren't an answer to this page unless they arrive after it asked, and the same word as before
+// isn't one until ESP1 has had time to read the request: it polls every 3 s, and an upload may already be
+// under way. It re-decides on each 20 s keep-alive, so a real refusal still comes through soon after.
+let mtAskedAt = 0;            // Firebase's time when this page last started asking
+let mtStaleAnswer = null;     // the "refused" or "revoked" already published when it did
+const MT_HOLD_ANSWER_GRACE_MS = 6000;
+
+function manualHoldState() {
+  const state = String(liveData.diagnostics?.webManual?.state || "idle");
+  if (state !== "refused" && state !== "revoked") return state;
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  const leftOver = stamp < mtAskedAt || (state === mtStaleAnswer && stamp < mtAskedAt + MT_HOLD_ANSWER_GRACE_MS);
+  return leftOver ? "idle" : state;
+}
+
 // Reflect what ESP1 decided. The controls stay hidden until it actually says "held" -- the gate's
 // Proceed button reveals them, but only once the rig has agreed to hand over control.
 function renderManualHold() {
   const wm = liveData.diagnostics?.webManual || {};
-  const state = String(wm.state || "idle");
+  const state = manualHoldState();
   const note = document.getElementById("mtHoldNote");
   const gate = document.getElementById("mtGate");
   const proceed = document.getElementById("mtProceed");
@@ -2948,10 +3067,12 @@ function renderManualHold() {
     // be actively misleading.
     else if (!deviceIsFresh()) note.textContent = `ESP1 appears offline — ${snapshotAgeText()}. Your request is queued but cannot be granted until it reconnects.`;
     else if (state === "held")    note.textContent = `Manual mode active — the rig is out of automatic${wm.secondsLeft ? ` (renews, ${wm.secondsLeft}s left)` : ""}.`;
-    else if (state === "refused") note.textContent = `The rig refused manual mode: ${rawText(wm.reason, "not idle")}. Wait for it to finish, then reopen this tab.`;
+    else if (state === "refused") note.textContent = `The rig refused manual mode: ${rawText(wm.reason, "not idle")}. Wait for it to finish, then press Proceed to ask again.`;
     else if (state === "revoked") note.textContent = "The rig operator took control at the LCD.";
     else note.textContent = "Requesting manual control from the rig…";
-    note.className = (state === "held") ? "field-note" : "control-result error";
+    // Asking is the normal first step, not an error.
+    const refusedOrUnavailable = !isApprovedUser() || !deviceIsFresh() || state === "refused" || state === "revoked";
+    note.className = refusedOrUnavailable ? "control-result error" : state === "held" ? "field-note" : "control-result";
   }
   // Proceed reveals the screen regardless of hold state (2026-09-10 revision) -- previously this
   // stayed disabled until ESP1 actually granted the hold, which meant a stale/offline snapshot
@@ -3012,8 +3133,9 @@ function renderManualHold() {
       // A genuinely transient state (idle/requesting): device is fresh but ESP1 hasn't granted the
       // hold yet. Revoked/refused are handled above (they flip mtArmed off before this note runs), so
       // this branch cannot see them -- nothing here needs to stop an in-progress hold-to-run press.
-      controlsNote.textContent = `Waiting for the rig to grant manual mode (currently: ${state})…`;
-      controlsNote.className = "control-result error";
+      // The grant forces a snapshot, but that one can miss it, and then the next is up to a minute away.
+      controlsNote.textContent = "Waiting for the rig to grant manual mode. This can take up to a minute to show here.";
+      controlsNote.className = "control-result";
     }
   }
 }
@@ -3128,7 +3250,10 @@ document.getElementById("exSaveBtn")?.addEventListener("click", () => {
   sendFromPanel(show, "SET_EXERCISE", { exerciseEnabled: on, exerciseSeconds: seconds }, { operatorOnly: true });
 });
 
-document.getElementById("mtProceed")?.addEventListener("click", () => setManualTestArmed(true));
+document.getElementById("mtProceed")?.addEventListener("click", () => {
+  if (!mtHoldTimer) requestManualHold();   // a refusal stopped the asking, so proceeding asks again
+  setManualTestArmed(true);
+});
 document.getElementById("mtBack")?.addEventListener("click", () => {
   setManualTestArmed(false);
   document.querySelector('.tab[data-view="dashboard"]')?.click();
@@ -3159,11 +3284,11 @@ function sweepSecondsOrReject(inputId) {
 }
 document.getElementById("sweepBtn")?.addEventListener("click", () => {
   const seconds = sweepSecondsOrReject("sweepSeconds");
-  if (seconds !== null) queueCommand("DIAG_SWEEP", { seconds });
+  if (seconds !== null) sendFromPanel(resultLine("sweepResult"), "DIAG_SWEEP", { seconds });
 });
 document.getElementById("mtSweepBtn")?.addEventListener("click", () => {
   const seconds = sweepSecondsOrReject("mtSweepSeconds");
-  if (seconds !== null) queueCommand("DIAG_SWEEP", { seconds }, { operatorOnly: true });
+  if (seconds !== null) sendFromPanel(resultLine("mtSweepResult"), "DIAG_SWEEP", { seconds }, { operatorOnly: true });
 });
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
   // Defense-in-depth (2026-09-10, concern raised about non-privileged Manual/Test access): a tab
@@ -3185,6 +3310,8 @@ document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", (
   else { setManualTestArmed(false); releaseManualHold(); mtHoldStop(true); }
   document.querySelectorAll(".tab").forEach(item => item.classList.toggle("active", item === tab));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === view));
+  // Don't leave the gate blank until the next snapshot, which can be a minute away.
+  if (view === "manualtest") renderManualHold();
 }));
 
 const themeToggle = document.getElementById("theme-toggle");

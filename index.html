@@ -186,8 +186,8 @@
         <article class="card"><h3>Air temperature<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Air temperature" data-info-title="Air temperature" data-info-text="Air temperature at the rig. Monitoring only — doesn't trigger anything automatically.">i</button></h3><p id="temperature">Unavailable</p></article>
         <article class="card"><h3>Ambient humidity<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Ambient humidity" data-info-title="Ambient humidity" data-info-text="Air humidity around the plants. Monitoring only.">i</button></h3><p id="humidity">Unavailable</p></article>
         <article class="card"><h3>Light level<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Light level" data-info-title="Light level" data-info-text="Light reaching the plants, in lux. Monitoring only.">i</button></h3><p id="lightLevel">Unavailable</p></article>
-        <article class="card"><h3>Mix tank pH<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mix tank pH" data-info-title="Mix tank pH" data-info-text="Mixed water's acidity. Faults if outside the safe range — nothing doses pH adjuster automatically.">i</button></h3><p id="waterPH">Unavailable</p></article>
-        <article class="card"><h3>Mix tank EC<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mix tank EC" data-info-title="Mix tank EC" data-info-text="Nutrient concentration of the mixed water, in mS/cm. Checked against a safe range, not auto-corrected.">i</button></h3><p id="waterEC">Unavailable</p></article>
+        <article class="card"><h3>Mix tank pH<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mix tank pH" data-info-title="Mix tank pH" data-info-text="The mixed water's acidity, measured only during a run, so between runs this is the last batch. Faults if outside the safe range — nothing doses pH adjuster automatically.">i</button></h3><p id="waterPH">Unavailable</p></article>
+        <article class="card"><h3>Mix tank EC<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Mix tank EC" data-info-title="Mix tank EC" data-info-text="Nutrient concentration of the mixed water, in mS/cm, measured only during a run, so between runs this is the last batch. Checked against a safe range, not auto-corrected.">i</button></h3><p id="waterEC">Unavailable</p></article>
         <article class="card"><h3>Battery voltage<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery voltage" data-info-title="Battery voltage" data-info-text="Battery bank voltage, from the rig's own sensor.">i</button></h3><p id="batteryVoltage">Unavailable</p></article>
         <article class="card"><h3>Battery charge<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery charge" data-info-title="Battery charge" data-info-text="Estimated battery charge.">i</button></h3><p id="batteryPercent">Unavailable</p></article>
         <article class="card"><h3>Battery current<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Battery current" data-info-title="Battery current" data-info-text="Current flowing to or from the battery, in amps.">i</button></h3><p id="batteryCurrent">Unavailable</p></article>
@@ -363,6 +363,7 @@
           <span class="btn-with-info"><button id="boosterPumpBtn" type="button">Exercise booster pump</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise booster pump" data-info-title="Booster pump" data-info-text="Runs the booster pump for the exercise length set above, then stops. ESP2 raises the inverter first.">i</button></span>
           <span class="btn-with-info"><button id="mixerBtn" type="button">Exercise tank mixer</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Exercise tank mixer" data-info-title="Tank mixer" data-info-text="Runs the mixer for the exercise length set above, then stops. ESP2 raises the inverter first, because the mixer is an AC motor.">i</button></span>
         </div>
+        <p id="mtExerciseResult" class="control-result" aria-live="polite"></p>
 
         <h3>Timed pulses<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Timed pulses" data-info-title="Timed pulses" data-info-text="Runs the chosen combination for the seconds you set, then stops. pH pumps dispense corrosive adjuster — confirm first.">i</button></h3>
         <p class="hint">Same combinations as the LCD Testing screen, on a timer instead of a held button. Transfer runs as <em>fill</em> (inverter + pump, drawing straight from the reservoir), and the tank mixer also raises the inverter first.</p>
@@ -412,6 +413,7 @@
             <label>Sweep length (seconds)<input id="mtSweepSeconds" type="number" min="10" max="120" step="10" value="60"></label>
             <span class="btn-with-info"><button id="mtSweepBtn" type="button">Run flow sweep</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Run flow sweep" data-info-title="Run flow sweep" data-info-text="Powers up ESP2 for the length you set, reads all eight meters, then powers down.">i</button></span>
           </div>
+          <p id="mtSweepResult" class="control-result" aria-live="polite"></p>
           <div id="mtFlowGrid" class="diagnostics-grid"><p class="muted">No sweep has run in this session.</p></div>
         </article>
       </div>
@@ -446,6 +448,7 @@
           <label>Sweep length (seconds)<input id="sweepSeconds" type="number" min="10" max="120" step="10" value="60"></label>
           <span class="btn-with-info"><button id="sweepBtn" type="button">Run ESP2 sweep</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Run ESP2 sweep" data-info-title="Run ESP2 sweep" data-info-text="Powers up ESP2 for the length you set, reads its sensors, then powers down.">i</button></span>
         </div>
+        <p id="sweepResult" class="control-result" aria-live="polite"></p>
         <div id="rawEsp2Grid" class="diagnostics-grid"><p class="muted">No sweep has run in this session.</p></div>
       </article>
       <article class="panel event-panel">
