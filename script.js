@@ -97,6 +97,10 @@ let firebaseReady = false;
 let databaseListenersAttached = false;
 let databaseAccessDenied = false;   // the rules refused a listener, which also ended it
 let serverOffsetRef = null;
+let firebaseLinkRef = null;
+let firebaseLinkSeen = false;       // has this page connected yet? Until then, "not connected" is just loading
+let firebaseConnected = true;       // this browser's own link to Firebase, which says nothing about ESP1
+let lastKnownFresh = false;         // whether the page last drew ESP1 as reporting (see syncFreshness())
 let liveRef = null;
 let commandsRef = null;
 let zonesRef = null;
@@ -383,7 +387,7 @@ function syncControlAvailability() {
   // as a signed-out one -- approval is a separate axis from freshness/cooldown, not a replacement
   // for it, so it is ANDed into every gate below rather than only checked at queueCommand() time.
   const notApprovedTitle = "Your account is awaiting operator approval before it can use this control.";
-  const normalAllowed = signedIn && approved && deviceIsFresh();
+  const normalAllowed = signedIn && approved && deviceIsFresh() && firebaseConnected;
   // Every actuating control needs a fresh snapshot: ESP1 will refuse anything that arrives while it
   // is not idle, and without live data the page cannot tell "idle" from "device offline".
   // The pulse and the ESP2 sweep both reach the rig, so they belong with the other actuating
@@ -562,17 +566,26 @@ function attachDatabaseListeners() {
   if (databaseListenersAttached || !db) return;
   databaseListenersAttached = true;
   databaseAccessDenied = false;
-  setConnection(true, "Connecting to Firebase…");
+  setConnection(false, "Connecting to Firebase…");
   serverOffsetRef = db.ref(".info/serverTimeOffset");
   serverOffsetRef.on("value", snapshot => { serverTimeOffsetMs = Number(snapshot.val()) || 0; });
+  firebaseLinkRef = db.ref(".info/connected");
+  firebaseLinkRef.on("value", snapshot => {
+    const up = snapshot.val() === true;
+    if (up) firebaseLinkSeen = true;
+    if (!firebaseLinkSeen) return;
+    firebaseConnected = up;
+    syncConnection();
+    syncControlAvailability();
+  });
   liveRef = db.ref("irrigation/live");
   commandsRef = db.ref("irrigation/commands").limitToLast(25);
 
   liveRef.on("value", snapshot => {
     liveData = snapshot.val() || {};
+    lastKnownFresh = deviceIsFresh();
     updateDashboard();
-    const fresh = deviceIsFresh();
-    setConnection(fresh, fresh ? "Live system connected" : "Waiting for a current ESP1 snapshot");
+    syncConnection();
     syncControlAvailability();
   }, error => {
     if (error.code === "PERMISSION_DENIED") {
@@ -625,12 +638,36 @@ function attachDatabaseListeners() {
   }, error => console.warn("Could not read dashboard zone profiles", error));
 }
 
+// The top bar and sidebar. Called from a snapshot, from the 1 s tick when ESP1 goes quiet, and when this
+// browser's own connection changes.
+function syncConnection() {
+  if (!databaseListenersAttached || databaseAccessDenied) return;
+  if (!firebaseConnected) { setConnection(false, "This browser has lost its connection"); return; }
+  const fresh = deviceIsFresh();
+  setConnection(fresh, fresh ? "Live system connected" : "Waiting for a current ESP1 snapshot");
+}
+
+// A rig that stops reporting sends nothing to react to, so nothing else would redraw the page: the top bar
+// would go on saying it's connected, and a pump last reported running would stay lit, for as long as the page
+// stayed open.
+function syncFreshness() {
+  const fresh = deviceIsFresh();
+  if (fresh === lastKnownFresh) return;
+  lastKnownFresh = fresh;
+  updateDashboard();
+  syncConnection();
+}
+
 function detachDatabaseListeners() {
   if (serverOffsetRef) serverOffsetRef.off();
+  if (firebaseLinkRef) firebaseLinkRef.off();
   if (liveRef) liveRef.off();
   if (commandsRef) commandsRef.off();
   if (zonesRef) zonesRef.off();
   serverOffsetRef = null;
+  firebaseLinkRef = null;
+  firebaseLinkSeen = false;
+  firebaseConnected = true;
   liveRef = null;
   commandsRef = null;
   zonesRef = null;
@@ -1224,6 +1261,17 @@ const COMMAND_END_STATUSES = new Set(["completed", "failed", "rejected", "withdr
 // Their effect only reaches the rest of the page in ESP1's next scheduled snapshot.
 const SHOWN_IN_NEXT_REPORT = new Set(["EMERGENCY_STOP", "ESTOP_RECOVER", "ENABLE_ACTUATIONS", "DISABLE_ACTUATIONS", "SET_COLUMN", "SET_EXERCISE", "SET_CLOCK", "RESTORE_DEFAULTS", "CLEAR_BATT_SWITCH"]);
 
+// ESP1 answers CANCEL_FORCE with "armed forced run cancelled" even if the run started a moment before, and the
+// run carries on. A cancel takes up to 3 s to be picked up, so this is easy to hit near the end of a countdown.
+// Only the run's own row and the snapshot can tell. The age limit is for rows left on "accepted" for good.
+const FORCED_RUN_LONGEST_MS = 15 * 60 * 1000;
+function forcedRunHasStarted() {
+  if (liveData.diagnostics?.runProgress?.active === true) return true;
+  return commandData.some(row => row.type === "FORCE_RUN" && row.status === "accepted"
+    && String(row.detail || "").startsWith("force run started")
+    && serverNow() - Number(row.updatedAt || 0) < FORCED_RUN_LONGEST_MS);
+}
+
 function announceCommandReplies() {
   sentCommands.forEach((sent, id) => {
     const command = commandData.find(row => row.id === id);
@@ -1236,6 +1284,10 @@ function announceCommandReplies() {
     const name = rawText(command.type, "Command").replaceAll("_", " ");
     if (command.status === "withdrawn") {
       setCommandStatus(`${name} withdrawn. ESP1 won't run it.`);
+      return;
+    }
+    if (command.status === "completed" && command.type === "CANCEL_FORCE" && forcedRunHasStarted()) {
+      sent.toast = setCommandStatus("Too late to cancel: ESP1 replied \"cancelled\", but the run had already started and is still going. Use Emergency stop to stop it.", "error");
       return;
     }
     let text = `${name}: ${command.status} — ${commandDetailText(command, "no detail from ESP1")}.`;
@@ -1274,6 +1326,12 @@ function queueCommand(type, payload = {}, options = {}) {
   // independently enforces the identical operator-or-temp-access check for these six command types.
   if (options.operatorOnly && !canAccessPrivilegedTabs()) {
     setCommandStatus("This control is limited to the main/creator operator account.", "error");
+    return Promise.resolve(false);
+  }
+  // Firebase holds a write made while this browser is offline and sends it on reconnect, perhaps much later, and
+  // ESP1 runs a queued row however old it is. Only a command that can only stop something is worth that.
+  if (!firebaseConnected && !NOT_WITHDRAWABLE.has(type)) {
+    setCommandStatus(`${type.replaceAll("_", " ")} not sent: this browser has lost its connection to Firebase. Try again once it's back.`, "error");
     return Promise.resolve(false);
   }
   if (OFFLINE_CONFIRM_TYPES.has(type) && !deviceIsFresh() &&
@@ -1362,6 +1420,7 @@ function activitySummary(type, payload) {
 // regardless of which recovery button (Hold/Release/Only irrigate/Resume normal/Return to normal) was
 // actually pressed.
 function queuedStatusText(type, payload, emergency) {
+  if (type === "EMERGENCY_STOP" && !firebaseConnected) return "Emergency stop NOT delivered yet: this browser has lost its connection, so nothing has stopped. Use the physical cutoff, MODE + BACK at the unit, or SMS STOP,ALL. The stop goes out when the connection returns.";
   if (type === "EMERGENCY_STOP" && !deviceIsFresh()) return "Emergency stop queued, but ESP1 appears offline, so nothing has stopped. Use the physical cutoff, MODE + BACK at the unit, or SMS STOP,ALL.";
   if (type === "EMERGENCY_STOP") return "Emergency stop queued. This is not physical-stop confirmation; wait for ESP1 status.";
   if (type === "RECOVER") return `Recovery (${rawText(payload.action, "?")}) queued. This is not confirmation the rig has resumed; wait for ESP1 status.`;
@@ -1570,6 +1629,10 @@ function renderZonesUI() {
     }
     updateZoneTargets(zone);
   });
+  // The blocks just built are blank, and the next snapshot can be a minute away. This also runs when an account's
+  // approval arrives, which is usually after the first snapshot.
+  updateZoneReadings();
+  renderColumnCommandResults();
 }
 
 function updateWindowVisibility(zoneId) {
@@ -1595,7 +1658,7 @@ function updateZoneTargets(zone) {
   setText(`targetP${zone.id}`, `Target: ${target.p} ppm`);
   setText(`targetK${zone.id}`, `Target: ${target.k} ppm`);
   setText(`targetPH${zone.id}`, `Target: ${target.ph}`);
-  setText(`targetEC${zone.id}`, `Target: ${target.ec} mS/cm`);
+  setText(`targetEC${zone.id}`, `Target: ${Math.round(target.ec * 1000)} µS/cm`);
   setText(`targetMoisture${zone.id}`, `Target: ${target.moisture}%`);
 }
 
@@ -1670,6 +1733,39 @@ function zoneMetric(zone, metric, id, digits, unit, targetKey) {
   element.classList.toggle("lacking-nutrient", Number.isFinite(Number(target)) && Number(value) < Number(target));
 }
 
+// The 7-in-1 probe's EC register reaches the page as a whole number in µS/cm: the Nano sends it with no decimals
+// and ESP1 doesn't scale it (calNpkScale in the firmware). The crop table holds mS/cm, as agronomy tables do.
+function updateSoilEc(zone) {
+  const element = document.getElementById(`soilEC${zone.id}`);
+  if (!element) return;
+  const value = liveData.sensors?.zones?.[zone.id]?.ec;
+  if (!hasValue(value)) {
+    element.textContent = "Unavailable";
+    element.classList.remove("lacking-nutrient");
+    return;
+  }
+  element.textContent = numberText(value, 0, "µS/cm");
+  const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage]?.ec;
+  element.classList.toggle("lacking-nutrient", Number.isFinite(Number(target)) && Number(value) < Number(target) * 1000);
+}
+
+function updateZoneReadings() {
+  activeZones.forEach(zone => {
+    zoneMetric(zone, "nitrogen", `nitrogen${zone.id}`, 1, "ppm", "n");
+    zoneMetric(zone, "phosphorus", `phosphorus${zone.id}`, 1, "ppm", "p");
+    zoneMetric(zone, "potassium", `potassium${zone.id}`, 1, "ppm", "k");
+    zoneMetric(zone, "ph", `soilPH${zone.id}`, 2, "", "ph");
+    updateSoilEc(zone);
+    zoneMetric(zone, "moisture", `soil${zone.id}`, 0, "%", "moisture");
+    // No target key for these two: the probe's own moisture is shown for comparison against the
+    // blended figure, and soil temperature has no configured target to fall short of.
+    const z = liveData.sensors?.zones?.[zone.id] || {};
+    setText(`npkMoist${zone.id}`, numberText(z.npkMoisture, 1, "%"));
+    setText(`soilTemp${zone.id}`, numberText(z.soilTemperature, 1, "°C"));
+    updateZoneConfigDisplay(zone);
+  });
+}
+
 function updateDashboard() {
   const sensors = liveData.sensors || {};
   const system = liveData.system || {};
@@ -1721,21 +1817,7 @@ function updateDashboard() {
   setPumpLamp("transferPumpStatus", fresh && Boolean(actuators.transferRunning));
   setPumpLamp("boosterPumpStatus", fresh && Boolean(actuators.boosterRunning));
   setPumpLamp("mixerPumpStatus", fresh && Boolean(actuators.mixerRunning));
-
-  activeZones.forEach(zone => {
-    zoneMetric(zone, "nitrogen", `nitrogen${zone.id}`, 1, "ppm", "n");
-    zoneMetric(zone, "phosphorus", `phosphorus${zone.id}`, 1, "ppm", "p");
-    zoneMetric(zone, "potassium", `potassium${zone.id}`, 1, "ppm", "k");
-    zoneMetric(zone, "ph", `soilPH${zone.id}`, 2, "", "ph");
-    zoneMetric(zone, "ec", `soilEC${zone.id}`, 2, "mS/cm", "ec");
-    zoneMetric(zone, "moisture", `soil${zone.id}`, 0, "%", "moisture");
-    // No target key for these two: the probe's own moisture is shown for comparison against the
-    // blended figure, and soil temperature has no configured target to fall short of.
-    const z = liveData.sensors?.zones?.[zone.id] || {};
-    setText(`npkMoist${zone.id}`, numberText(z.npkMoisture, 1, "%"));
-    setText(`soilTemp${zone.id}`, numberText(z.soilTemperature, 1, "°C"));
-    updateZoneConfigDisplay(zone);
-  });
+  updateZoneReadings();
 
   renderDiagnostics();
   renderRawSensors();
@@ -1781,8 +1863,10 @@ function syncForceColumnOptions() {
 function updateRunProgress(run) {
   const active = Boolean(run.active);
   const phase = rawText(run.phase, "IDLE");
-  setDeviceStatus("sideRunState", active ? phase : "NO ACTIVE RUN", active ? "active" : "off");
-  setDeviceStatus("runStateBadge", active ? phase : "IDLE", active ? "active" : "off");
+  // A run in ESP1's last report may or may not still be going, so the page can't claim either.
+  const unknown = active && !deviceIsFresh();
+  setDeviceStatus("sideRunState", unknown ? "UNKNOWN" : active ? phase : "NO ACTIVE RUN", active && !unknown ? "active" : "off");
+  setDeviceStatus("runStateBadge", unknown ? "UNKNOWN" : active ? phase : "IDLE", active && !unknown ? "active" : "off");
   if (!active) {
     setText("runSummary", "No active irrigation or fertigation run reported by ESP1.");
     setText("runStage", "Unavailable");
@@ -1792,13 +1876,20 @@ function updateRunProgress(run) {
     return;
   }
   const stageOrder = hasValue(run.stageOrdinal) && hasValue(run.stageTotal) ? `Stage ${run.stageOrdinal} of ${run.stageTotal}` : "Stage order unavailable";
-  setText("runSummary", `${run.operation || "Run"} for Zone ${run.zone || "?"} — ${stageOrder}.`);
+  setText("runSummary", unknown
+    ? `ESP1 has stopped reporting. Its last report showed ${run.operation || "a run"} for Zone ${run.zone || "?"}, and this page can't tell whether that is still going.`
+    : `${run.operation || "Run"} for Zone ${run.zone || "?"} — ${stageOrder}.`);
   setText("runStage", rawText(run.stage));
-  setText("runStageProgress", hasValue(run.stageTargetLiters)
+  // Stages that move no water, such as Mixing, report a target of 0.
+  setText("runStageProgress", Number(run.stageTargetLiters) > 0
     ? `${numberText(run.stageLiters, 1, "L")} of ${numberText(run.stageTargetLiters, 1, "L")}`
     : stageOrder);
+  // ESP2 only adds a Release stage's water to its total when the stage ends, so count the one in progress too,
+  // or this would sit still while water is moving.
+  const releasing = run.stage === "Release" || run.stage === "Flush Release";
+  const delivered = Number(run.waterDeliveredLiters || 0) + (releasing ? Number(run.stageLiters || 0) : 0);
   setText("runWaterProgress", hasValue(run.waterTargetLiters)
-    ? `${numberText(run.waterDeliveredLiters, 1, "L")} of ${numberText(run.waterTargetLiters, 1, "L")}`
+    ? `${numberText(delivered, 1, "L")} of ${numberText(run.waterTargetLiters, 1, "L")}`
     : "Unavailable");
   const doses = run.dosesMl || {};
   const doseText = ["A", "B", "C"].filter(key => hasValue(doses[key]?.target) || hasValue(doses[key]?.delivered))
@@ -1851,7 +1942,7 @@ function renderDiagnostics() {
     ["Firebase", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
     ["ThingSpeak", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
     ["Supabase logs", [["Configured", booleanText(d.supabase?.configured, "Configured", "Not configured")], ["Upload", booleanText(d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.supabase?.lastUploadedDay) : "No completed upload"]]],
-    ["System", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Pending run", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")]]],
+    ["System", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Pending run", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")]]],
     ["ESP2", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last response age", formatAge(d.esp2?.lastResponseAgeMs)]]],
     ["Nano & sensors", [["Last sample age", formatAge(d.nano?.lastSampleAgeMs)], ["Environment", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
     ["RTC / SD / power sensors", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")], ["Main battery INA226", v3Only(booleanText(d.peripherals?.mainInaOk, "In use", "Not in use"))], ["ACS758 fallback", v3Only(booleanText(d.peripherals?.batteryAdsOk, "OK", "Not OK"))], ["Solar INA226", v3Only(booleanText(d.peripherals?.solarSensorOk, "OK", "Not answering"))], ["Secondary INA226", v3Only(booleanText(d.peripherals?.secondaryBatterySensorOk, "OK", "Not answering"))]]],
@@ -1963,7 +2054,10 @@ function explainCommandDetail(detail) {
   const noFlow = text.match(/^(.*NO FLOW - 0 pulses)/);
   if (noFlow) return `${noFlow[1]}, check pump, line or sensor`;
   const known = COMMAND_DETAIL_FULL_TEXT.find(([start]) => text.startsWith(start));
-  return known ? known[1] : text;
+  if (known) return known[1];
+  // Cut off, with nothing to expand it from. "COL_A: mode=AUTO sched=AUTO N=140.0 P" otherwise reads as if P was
+  // left unset. ESP1 applied the whole request: only its reply is short.
+  return text.length === 47 ? `${text}…` : text;
 }
 
 // One place for turning ESP1's reply into words, for every panel that shows a command's outcome.
@@ -2075,6 +2169,11 @@ document.getElementById("commandHistory")?.addEventListener("click", event => {
  * the cooldown on purpose, because a stale snapshot is often *why* you are trying to recover, and a
  * dashboard that locks you out at that moment is worse than useless. */
 let faultAckLocalUntil = 0;          // client-side half of the "ask me again in 2 minutes" snooze
+// The faults that hold a run (enterFaultHold() in the firmware). ESP1 reports everything in one text field, so
+// after pressing Hold it says "HELD - waiting" there, and "Resume refused: ..." after a refused resume, and a
+// minor fault can land there too. The banner must go on naming the fault that is actually being held.
+const HELD_FAULT_CODE = /^(ESP2_ERROR|FLOW_FAIL|PWR_FAIL|SAFE_STOP|DOSE_TIMEOUT)\b/;
+let heldFaultCode = "";
 
 // Tracks held||stopped SPECIFICALLY (not lockedOut) across snapshots so the moment it clears can be
 // caught and explained -- otherwise "ESP2 confirmed the resume", "the auto-cancel circuit breaker
@@ -2204,12 +2303,17 @@ function updateFaultBanner() {
   setText("faultKind", held ? "Held fault — awaiting your decision"
                      : stopped ? "Emergency stop active"
                      : "Actuations disabled");
-  setText("faultTitle", held ? rawText(f.code, "Fault reported by ESP2")
+  const latestText = String(f.code || "");
+  if (!held) heldFaultCode = "";
+  else if (HELD_FAULT_CODE.test(latestText)) heldFaultCode = latestText;
+  const heldName = heldFaultCode || latestText;
+  setText("faultTitle", held ? rawText(heldName, "Fault reported by ESP2")
                        : stopped ? "The system is stopped"
                        : "Monitoring only — nothing will run");
-  const faultExplain = held ? explainFaultCode(f.code) : "";
+  const faultExplain = held ? explainFaultCode(heldName) : "";
+  const faultNews = held && latestText !== heldName ? ` ESP1's latest message: ${latestText}.` : "";
   setText("faultDetail", held
-    ? `Reported ${rawText(f.at, "at an unknown time")}. ESP2 is paused with the actuator bank de-energised; pick how to continue.` + (faultExplain ? ` ${faultExplain}` : "")
+    ? `Reported ${rawText(f.at, "at an unknown time")}. ESP2 is paused with the actuator bank de-energised; pick how to continue.` + (faultExplain ? ` ${faultExplain}` : "") + faultNews
     : stopped
       ? "All actuators are off and ESP2 is unpowered. Returning to normal re-powers and re-validates ESP2 before anything runs."
       : "Sensors, logging and telemetry are still running. Scheduled runs, pump exercises and forced runs are all blocked until actuations are re-enabled.");
@@ -2303,6 +2407,12 @@ function updateForceArmed() {
     + ` · armed from the ${source === "web" ? "dashboard" : "LCD"}`);
   const left = row ? row.left : Math.max(0, armedSeed.left - Math.floor((Date.now() - armedSeed.at) / 1000));
   setDeviceStatus("forceArmedCountdown", left > 0 ? `STARTS IN ${left}s` : "STARTING…", "active");
+  // Past this point Cancel can't stop anything, though ESP1 would still reply "cancelled".
+  const cancel = document.getElementById("cancelForceBtn");
+  if (cancel) {
+    cancel.disabled = left <= 0;
+    cancel.title = left > 0 ? "" : "Too late to cancel. Use Emergency stop to stop the run.";
+  }
 }
 
 /* ---- Raw sensor diagnostics -------------------------------------------------------------------- */
@@ -3346,6 +3456,7 @@ setInterval(() => {
 // and the fault banner has to re-raise itself the moment a "do nothing" snooze expires -- that
 // re-prompt is the whole point of the option.
 setInterval(() => {
+  syncFreshness();
   updateForceArmed();
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;
   updateFaultBanner();
