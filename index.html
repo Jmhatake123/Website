@@ -39,7 +39,7 @@
       <p class="eyebrow">CIT-U Electrical Engineering</p>
       <h1>Create account</h1>
       <p>New accounts start as <strong>pending</strong><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About pending approval" data-info-title="Pending approval" data-info-text="An operator must approve your account before you can see live readings or use any control.">i</button> until an operator approves them. Live readings and controls stay unavailable until then.</p>
-      <label>Name<input id="signupName" type="text" autocomplete="name" required></label>
+      <label>Name<input id="signupName" type="text" autocomplete="name" maxlength="80" required></label>
       <label>Email<input id="signupEmail" type="email" autocomplete="email" required></label>
       <label>Password<input id="signupPassword" type="password" autocomplete="new-password" minlength="6" required></label>
       <label>Confirm password<input id="signupConfirm" type="password" autocomplete="new-password" minlength="6" required></label>
@@ -299,6 +299,7 @@
           </fieldset>
           <p class="field-note">Max 20 L total, 500 mL per nutrient. A run with nutrients needs at least 6.3 L. Mixing time is fixed by the firmware, and ESP1 re-checks safety right as the countdown ends.</p>
           <span class="btn-with-info"><button type="submit">Queue forced run</button><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Queue forced run" data-info-title="Queue forced run" data-info-text="Sends the request. ESP1 re-checks safety right before the countdown ends.">i</button></span>
+          <p id="forceRunBlocked" class="control-result error" aria-live="polite" hidden></p>
           <p id="forceRunResult" class="control-result" aria-live="polite"></p>
         </form>
 
@@ -406,6 +407,7 @@
           <button type="button" class="hold-btn danger" data-hold-target="phUp">Hold: pH UP pump (corrosive)</button>
           <button type="button" class="hold-btn danger" data-hold-target="phDn">Hold: pH DOWN pump (corrosive)</button>
         </div>
+        <p id="mtHoldBlocked" class="field-note" aria-live="polite" hidden></p>
         <p id="mtHoldResult" class="control-result" aria-live="polite">No hold-to-run test has been used in this session.</p>
 
         <article class="panel">

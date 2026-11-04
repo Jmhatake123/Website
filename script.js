@@ -121,6 +121,9 @@ const FORCE_MAX_DOSE_ML = 500;
 // flush) to reach MIXING_TANK_SAFE_MIN (5 L), which is 6.25 L of water. The form steps by 0.1 L, so
 // the smallest amount it can actually send is 6.3 L.
 const FORCE_MIN_DOSING_LITERS = 6.3;
+// The years ESP1's SET_CLOCK accepts (RTC_YEAR_MIN / RTC_YEAR_MAX in the firmware's pure_math.h).
+const RTC_YEAR_MIN = 2025;
+const RTC_YEAR_MAX = 2099;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
@@ -260,8 +263,10 @@ function isApprovedUser() {
 // branches) -- canAccessPrivilegedTabs() is the one broadened check, used only for Manual/Test +
 // System tab visibility and the commands they send.
 let myTempAccessUntil = 0;
+// tempAccessUntil is Firebase's time (grantTempAccess() sets it from the server clock), so compare it with
+// Firebase's time too. A PC clock 18 hours slow kept an hour's grant open on this page all day.
 function hasTempAccess() {
-  return Date.now() < myTempAccessUntil;
+  return serverNow() < myTempAccessUntil;
 }
 // Sub-operator (2026-09-10): a SECOND, separate elevation from the 1h temp grant above -- persistent
 // (no expiry clock) until an operator explicitly withholds it again, same on/off spirit as e.g. the
@@ -380,6 +385,58 @@ function setCommandStatus(text, tone = "") {
   return showToast(text, tone);
 }
 
+/* What ESP1 publishes that stops it starting something new. ESP1 checks again itself: these only keep the page
+ * from offering a control that is bound to fail, and say why. */
+const STATE_BUSY_TEXT = {
+  ACTIVE_STATE: "a run or pump test is in progress",
+  TEST_MODE: "a timed pulse or hold-to-run test is running",
+  STARTUP_SYNC: "ESP1 is re-checking ESP2 after a restart or a stop",
+  RECOVERY_STATE: "ESP1 is recovering its link to ESP2",
+  BOOT_STATE: "ESP1 is still starting up"
+};
+let forceArmedShown = false;    // the "Forced run armed" panel is up (see updateForceArmed())
+
+function rigBusyReason() {
+  const d = liveData.diagnostics || {};
+  const state = liveData.system?.state || "";
+  if (d.actuationsDisabled) return "actuations are disabled";
+  if (d.fault?.held) return "a fault is held";
+  if (state === "EMERGENCY_STOP") return "the emergency stop is active";
+  // Not runProgress.active: that stays true while the LCD shows a finished run's receipt ("finishing"), when
+  // ESP1 is idle again and accepts everything. These two are what its gates actually check.
+  if (d.system?.workOrderActive || d.system?.pendingRun) return "a run is in progress";
+  if (forceArmedShown) return "a forced run is armed";
+  return "";
+}
+
+// FORCE_RUN's own gate in firebaseCommandTick(): idle, nothing armed, no pump test. Its Manual/Test check is left
+// to ESP1, which refuses with a clear reason: the snapshot ESP1 forces when a hold is released can still carry
+// "held" (see the note for the master), and the next one is a minute away, so checking it here would keep
+// this button off for up to a minute after leaving Manual/Test.
+function forceRunBlockReason() {
+  const busy = rigBusyReason();
+  if (busy) return busy === "a forced run is armed" ? "another forced run is already armed" : busy;
+  const d = liveData.diagnostics || {};
+  if (d.actuator?.pumpTestActive) return "a pump test is running";
+  const state = liveData.system?.state || "";
+  if (state && state !== "IDLE_STATE") return STATE_BUSY_TEXT[state] || `ESP1 is not idle (${state})`;
+  return "";
+}
+
+// A hold has no command row, so ESP1 can't refuse one out loud: pulseTick() just never starts the relay, and
+// the page went on to report the press as if it had run. TEST_MODE and ACTIVE_STATE alone don't count here,
+// because this page's own pulse, hold or pump test causes them, and ESP1's report that it has finished can be
+// a minute away. target "" asks about the rig as a whole.
+function holdBlockReason(target) {
+  const busy = rigBusyReason();
+  if (busy) return busy;
+  const state = liveData.system?.state || "";
+  if (["STARTUP_SYNC", "RECOVERY_STATE", "BOOT_STATE"].includes(state)) return STATE_BUSY_TEXT[state];
+  const column = /^col([ABC])$/.exec(target || "")?.[1];
+  if (column && liveData.sensors?.zones?.[column]?.enabled === false) return `column ${column} is disabled on ESP1`;
+  return "";
+}
+
 function syncControlAvailability() {
   const signedIn = currentUserIsSignedIn();
   const approved = isApprovedUser();
@@ -402,32 +459,47 @@ function syncControlAvailability() {
   // If the rig drops out of "fresh" or the account loses approval WHILE a button is physically held,
   // the press must not keep silently running -- mtHoldStop() releases it immediately, same as losing
   // the Manual/Test hold itself does in renderManualHold().
+  // A button ESP1 would ignore is off as well, with the reason beside the buttons (see holdBlockReason()) --
+  // but never the one being held: a disabled button doesn't receive its own release.
+  const holdTitle = (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before using a hold-to-run test.";
   document.querySelectorAll(".hold-btn").forEach(button => {
-    button.disabled = !normalAllowed;
-    button.title = normalAllowed ? "" : (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before using a hold-to-run test.";
+    const reason = normalAllowed ? holdBlockReason(button.dataset.holdTarget) : "";
+    button.disabled = !normalAllowed || (Boolean(reason) && button !== mtHoldActiveBtn);
+    button.title = !normalAllowed ? holdTitle : reason ? `ESP1 would ignore this right now: ${reason}.` : "";
   });
-  if (!normalAllowed) mtHoldStop(true);
+  const holdNote = document.getElementById("mtHoldBlocked");
+  if (holdNote) {
+    const general = normalAllowed ? holdBlockReason("") : "";
+    const offColumns = normalAllowed && !general ? ["A", "B", "C"].filter(id => liveData.sensors?.zones?.[id]?.enabled === false) : [];
+    // A column that is simply switched off (C, on this rig) is a standing fact, not a problem, so it reads as a
+    // plain note rather than an error.
+    holdNote.textContent = general ? `ESP1 won't start a hold right now: ${general}.`
+      : offColumns.length > 1 ? `ESP1 has columns ${offColumns.join(" and ")} disabled, so their hold buttons are off.`
+      : offColumns.length ? `ESP1 has column ${offColumns[0]} disabled, so its hold button is off.`
+      : "";
+    holdNote.className = general ? "control-result error" : "field-note";
+    holdNote.hidden = !holdNote.textContent;
+  }
+  // ESP1 has already dropped the relay for these, and ignores every keep-alive until the button comes up.
+  const fd = liveData.diagnostics || {};
+  if (!normalAllowed || fd.actuationsDisabled || fd.fault?.held || liveData.system?.state === "EMERGENCY_STOP") mtHoldStop(true);
 
   const forceButton = document.querySelector("#forceRunForm button[type=submit]");
   if (forceButton) {
-    // C-H2 workaround (audit): the CURRENTLY-FLASHED ESP1 firmware's FORCE_RUN idle-gate does not
-    // check actuationsDisabled or an in-progress run at ARM time -- only at fire time, inside
-    // forceTick()/sendForceWorkOrder(). That means a request submitted right now could be accepted
-    // and armed (a live countdown shown) and then silently abort seconds later. Pre-checking the
-    // same conditions here, from data ESP1 already publishes, stops the doomed request from ever
-    // being sent instead of letting it fail invisibly downstream. This cannot see every condition
-    // the firmware checks (the LCD menu state and another session's Manual/Test hold aren't
-    // published anywhere) so it narrows the window without fully closing it -- only a reflash does.
-    const fd = liveData.diagnostics || {};
-    const busyState = liveData.system?.state && liveData.system.state !== "IDLE_STATE";
-    const busy = Boolean(busyState) || Boolean(fd.actuationsDisabled) || Boolean(fd.fault?.held) ||
-                 Boolean(fd.system?.workOrderActive) || Boolean(fd.system?.pendingRun);
-    forceButton.disabled = !normalAllowed || busy;
+    // ESP1 refuses a forced run unless the rig is idle (FORCE_RUN in firebaseCommandTick()). Checked here as
+    // well, from what ESP1 publishes, so a request bound to be refused isn't sent, and the reason shows beside
+    // the button instead of only on hover. It can't see everything ESP1 checks (someone in the LCD menu, the
+    // mixing-tank check, a low reservoir), so ESP1's own reply still has the last word.
+    const reason = normalAllowed ? forceRunBlockReason() : "";
+    forceButton.disabled = !normalAllowed || Boolean(reason);
     forceButton.title = !normalAllowed
       ? ((signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.")
-      : busy
-        ? "Blocked right now: the controller is not idle, a fault is held, or actuations are disabled -- starting would only be accepted and then silently fail. Resolve that first."
-        : "";
+      : reason ? `ESP1 would refuse a forced run right now: ${reason}.` : "";
+    const note = document.getElementById("forceRunBlocked");
+    if (note) {
+      note.textContent = reason ? `Not available right now: ${reason}.` : "";
+      note.hidden = !reason;
+    }
   }
 
   // Emergency stop is intentionally independent of live-data freshness and the normal cooldown --
@@ -1019,7 +1091,8 @@ function renderUserManagement() {
     // section above) -- only ever meaningful for an approved, non-operator account; an operator
     // already has full access, and a pending/restricted/blocked account can't be elevated without
     // first being approved.
-    const tempActive = status === "approved" && !isAnyOperator && Number(u?.tempAccessUntil) > Date.now();
+    // Server timestamps, all of them, so they are measured against Firebase's clock, not this PC's.
+    const tempActive = status === "approved" && !isAnyOperator && Number(u?.tempAccessUntil) > serverNow();
     // Sub-operator (2026-09-10): a SECOND, separate elevation to Manual/Test + System -- persistent
     // (no expiry) rather than the 1h temp grant above, toggled on/off like a switch until an operator
     // changes it again. Independent of tempActive -- an account can hold either, both, or neither;
@@ -1031,7 +1104,7 @@ function renderUserManagement() {
     // symptom that clicking Kick repeatedly on an offline user produced before this gate existed.
     const pres = presenceData[uid];
     const isOnline = Boolean(pres?.online);
-    const presenceLabel = isOnline ? "Online" : pres?.lastChanged ? `Offline (${formatAge(Date.now() - pres.lastChanged)} ago)` : "Offline (never seen)";
+    const presenceLabel = isOnline ? "Online" : pres?.lastChanged ? `Offline (${formatAge(serverNow() - pres.lastChanged)} ago)` : "Offline (never seen)";
     // Recent activity (2026-09-10): last 5 commands this account actually queued (see
     // activitySummary()/queueCommand() above), newest first. Operator-viewing-only, same as presence
     // -- enforced server-side by activity/.read, not just by this tab being hidden from everyone else.
@@ -1078,9 +1151,9 @@ function renderUserManagement() {
         ${subOpActive ? `<span class="muted">Sub-operator — Manual/Test + System access until withheld</span>` : ""}
         ${recent.length
           ? `<details class="user-activity" data-uid="${escapeHtml(uid)}"${expandedActivityUids.has(uid) ? " open" : ""}>
-              <summary>Recent: ${escapeHtml(rawText(recent[0]?.what, "?"))} — ${escapeHtml(formatAge(Date.now() - Number(recent[0]?.at || 0)))} ago${recent.length > 1 ? ` (${recent.length} shown)` : ""}</summary>
+              <summary>Recent: ${escapeHtml(rawText(recent[0]?.what, "?"))} — ${escapeHtml(formatAge(serverNow() - Number(recent[0]?.at || 0)))} ago${recent.length > 1 ? ` (${recent.length} shown)` : ""}</summary>
               <ul class="user-activity-list">${recent.map(a =>
-                `<li>${escapeHtml(rawText(a?.what, "?"))} — ${escapeHtml(formatAge(Date.now() - Number(a?.at || 0)))} ago</li>`
+                `<li>${escapeHtml(rawText(a?.what, "?"))} — ${escapeHtml(formatAge(serverNow() - Number(a?.at || 0)))} ago</li>`
               ).join("")}</ul>
             </details>`
           : `<span class="muted">No recent activity.</span>`}
@@ -1107,7 +1180,17 @@ async function deleteUserAccount(uid) {
     body: JSON.stringify({ uid })
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const message = result.error || `Request failed (${response.status})`;
+    // The login is already gone (deleted in the Firebase console, say), so the API's deleteUser() fails
+    // before it reaches its own cleanup, and the row could never be removed from this list. Only the record
+    // is left, and the rules let an operator remove that directly.
+    if (/no user record/i.test(message)) {
+      await db.ref(`users/${uid}`).remove();
+      return { success: true, recordOnly: true };
+    }
+    throw new Error(message);
+  }
   return result;
 }
 /* Bug report (2026-09-10): granting temp access failed with PERMISSION_DENIED for BOTH operator
@@ -1803,10 +1886,14 @@ function updateDashboard() {
   setText("boardSupply", boardSupplyText());
   setText("secondaryBatteryVoltage", numberText(sensors.secondaryBatteryVoltage, 2, "V"));
   setText("secondaryBatteryPercent", numberText(sensors.secondaryBatteryPercent, 0, "%"));
-  setText("secondaryBatteryCurrent", signedCurrentText(sensors.secondaryBatteryCurrent, sensors.secondaryBatteryCurrent));
+  // ESP1 publishes this one signed only (+ = discharging), so the size comes from it as well. Passed as it
+  // was, a charging pack read "-0.50 A charging".
+  const secondaryAmps = sensors.secondaryBatteryCurrent;
+  setText("secondaryBatteryCurrent", signedCurrentText(hasValue(secondaryAmps) ? Math.abs(Number(secondaryAmps)) : secondaryAmps, secondaryAmps));
   setText("secondaryBatteryPower", numberText(sensors.secondaryBatteryPower, 1, "W"));
   setText("secondaryBatteryStatus", booleanText(sensors.secondaryBatteryLow, "Low", "OK"));
   syncForceColumnOptions();
+  syncPulseTargetOptions();
 
   const fresh = deviceIsFresh();
   setDeviceStatus("systemState", system.state || "WAITING FOR DATA", fresh ? "active" : "off");
@@ -1858,6 +1945,20 @@ function syncForceColumnOptions() {
     if (option.textContent !== label) option.textContent = label;
   });
   if (select.selectedOptions[0]?.disabled) select.value = "";
+}
+
+// The Timed pulses list says the same about its push-to-column targets. The choice itself is left alone,
+// because this list has no empty entry to fall back to; the Run pulse button refuses it instead.
+function syncPulseTargetOptions() {
+  const select = document.getElementById("pulseTarget");
+  if (!select) return;
+  [...select.options].forEach(option => {
+    const column = /^col([ABC])$/.exec(option.value)?.[1];
+    if (!column) return;
+    if (option.dataset.label === undefined) option.dataset.label = option.textContent;
+    const label = `${option.dataset.label}${forceColumnsDisabled(column) ? " (disabled on ESP1)" : ""}`;
+    if (option.textContent !== label) option.textContent = label;
+  });
 }
 
 function updateRunProgress(run) {
@@ -2395,7 +2496,13 @@ function updateForceArmed() {
   } else if (armedSeed?.stamp !== liveData.meta?.updatedAt) {
     armedSeed = { stamp: liveData.meta?.updatedAt, at: Date.now(), left: Number(a.secondsLeft || 0) };
   }
-  if (!snapshotArmed && !row) { panel.hidden = true; return; }
+  // The forced-run and hold-to-run buttons are off while a run is armed, so they follow the panel.
+  const shown = snapshotArmed || Boolean(row);
+  if (shown !== forceArmedShown) {
+    forceArmedShown = shown;
+    syncControlAvailability();
+  }
+  if (!shown) { panel.hidden = true; return; }
   panel.hidden = false;
   const run = snapshotArmed ? a : row.payload;
   const source = snapshotArmed ? a.source : "web";
@@ -2529,9 +2636,18 @@ function quickSetColumnMode(id, mode) {
     result.textContent = text;
     result.className = `control-result${error ? " error" : ""}`;
   };
+  if (mode && !confirmEnableColumn(id)) { show("Nothing was sent."); return; }
   const payload = { col: id, enabled: mode ? 1 : 0 };
   if (mode) payload.mode = mode;
   sendFromPanel(show, "SET_COLUMN", payload);
+}
+
+// ESP1's column list is editable from here, but ESP2's is compiled into its firmware. Turning on a column that
+// ESP2 has off makes ESP2 refuse every run for it: ESP1 raises COL_MISMATCH (a Major alert and SMS) and skips
+// the column for the day. Only asked when ESP1 reports the column as off, so re-sending an enabled one is quiet.
+function confirmEnableColumn(id) {
+  if (liveData.sensors?.zones?.[id]?.enabled !== false) return true;
+  return confirm(`ESP1 reports column ${id} as disabled. Turn it on only if it is wired and plumbed, and ESP2's firmware has it enabled too: ESP2's column list is compiled in, and if it disagrees, ESP1 raises COL_MISMATCH and skips the column for the day. Enable column ${id}?`);
 }
 
 function submitColumnConfig(id) {
@@ -2580,6 +2696,7 @@ function submitColumnConfig(id) {
     payload[key] = v;
   }
   if (Object.keys(payload).length < 2) { show("Nothing to change — fill in at least one field."); return; }
+  if (payload.enabled === true && !confirmEnableColumn(id)) { show("Nothing was sent.", false); return; }
   sendFromPanel(show, "SET_COLUMN", payload);
 }
 
@@ -2770,6 +2887,9 @@ signupForm?.addEventListener("submit", async event => {
   const confirm = document.getElementById("signupConfirm")?.value || "";
   show("");
   if (!name) { show("Enter your name."); return; }
+  // The rules refuse a longer name. Checked first, because the login is created before the record, and a
+  // refused record left the new account stuck on "Setting up your account".
+  if (name.length > 80) { show("Name must be 80 characters or fewer."); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { show("Enter a valid email address."); return; }
   if (password.length < 6) { show("Password must be at least 6 characters."); return; }
   if (password !== confirm) { show("Passwords do not match."); return; }
@@ -2869,6 +2989,8 @@ document.getElementById("sysClockSendBtn")?.addEventListener("click", () => {
   const [y, mo, d] = dateVal.split("-").map(Number);
   const [h, mi] = timeVal.split(":").map(Number);
   if (![y, mo, d, h, mi].every(Number.isFinite)) { show("Date/time could not be read. Nothing was sent."); return; }
+  // ESP1's RTC_YEAR_MIN/MAX. Outside them it only answers "clock fields out of range", which doesn't say why.
+  if (y < RTC_YEAR_MIN || y > RTC_YEAR_MAX) { show(`ESP1 only accepts a year from ${RTC_YEAR_MIN} to ${RTC_YEAR_MAX}. Nothing was sent.`); return; }
   if (!confirm(`Set ESP1's clock to ${dateVal} ${timeVal}? This affects every column's irrigation schedule.`)) return;
   sendFromPanel(show, "SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi }, { operatorOnly: true });
 });
@@ -2943,6 +3065,7 @@ let mtArmed = false;
  * away. */
 let mtHoldTimer = null;
 let mtHideTimer = null;
+let lastManualSeq = 0;          // the last seq this page wrote to irrigation/manual (see writeManualHold())
 const MT_HIDE_GRACE_MS = 15000; // < the 20 s keep-alive, so a genuinely abandoned tab still gives up the hold promptly
 
 function writeManualHold(want) {
@@ -2970,7 +3093,11 @@ function writeManualHold(want) {
   // fixing this without a reflash. 1-second resolution is coarser than the 20 s keep-alive interval
   // this is used with, so it cannot collide in normal use. The unflashed dev-tree firmware already
   // reads this as int64_t and accepts either form, so this is compatible with both trees.
-  const seq = Math.floor(Date.now() / 1000);
+  // ESP1 only re-decides when seq CHANGES, so it must never repeat: a release and a fresh request inside
+  // the same second (leaving the tab and coming straight back) used to send the same number, and the new
+  // request then went unanswered until the next keep-alive, 20 s later.
+  const seq = Math.max(Math.floor(Date.now() / 1000), lastManualSeq + 1);
+  lastManualSeq = seq;
   return db.ref("irrigation/manual").set({ seq, want })
     .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
 }
@@ -3361,7 +3488,11 @@ document.getElementById("exSaveBtn")?.addEventListener("click", () => {
 });
 
 document.getElementById("mtProceed")?.addEventListener("click", () => {
-  if (!mtHoldTimer) requestManualHold();   // a refusal stopped the asking, so proceeding asks again
+  // A refusal stops the asking once inside, so proceeding asks again. Ask again as well when the gate is
+  // showing a refusal while still asking: otherwise the controls opened, and the next report, up to a minute
+  // later, carried the same refusal and threw the operator straight back out to press Proceed a second time.
+  const state = manualHoldState();
+  if (!mtHoldTimer || state === "refused" || state === "revoked") requestManualHold();
   setManualTestArmed(true);
 });
 document.getElementById("mtBack")?.addEventListener("click", () => {
@@ -3373,6 +3504,11 @@ document.getElementById("pulseSeconds")?.addEventListener("input", updatePulseNo
 document.getElementById("pulseBtn")?.addEventListener("click", () => {
   const target = document.getElementById("pulseTarget")?.value || "transfer";
   const seconds = numberFromInput("pulseSeconds");
+  // ESP1 refuses a push to a column it has disabled ("that column is disabled"), so say so before sending.
+  const column = /^col([ABC])$/.exec(target)?.[1];
+  if (column && liveData.sensors?.zones?.[column]?.enabled === false) {
+    setCommandStatus(`Pulse not sent: ESP1 reports column ${column} as disabled.`, "error"); return;
+  }
   // Whole seconds only: ESP1 reads a decimal as 0, then runs its default 5 s, even on a pH pump.
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 15) {
     setCommandStatus("Pulse not sent: duration must be a whole number from 1 to 15 seconds.", "error"); return;
