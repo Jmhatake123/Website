@@ -1986,7 +1986,9 @@ function updateRunProgress(run) {
     ? `${numberText(run.stageLiters, 1, "L")} of ${numberText(run.stageTargetLiters, 1, "L")}`
     : stageOrder);
   // ESP2 only adds a Release stage's water to its total when the stage ends, so count the one in progress too,
-  // or this would sit still while water is moving.
+  // or this would sit still while water is moving. After the run, ESP1 fixed on 5 Nov 2026 takes the total from
+  // ESP2's DONE and zeroes the stage's own litres, so nothing is counted twice; older firmware leaves the total
+  // short by that last release, and adding it here is what makes the finished run read right.
   const releasing = run.stage === "Release" || run.stage === "Flush Release";
   const delivered = Number(run.waterDeliveredLiters || 0) + (releasing ? Number(run.stageLiters || 0) : 0);
   setText("runWaterProgress", hasValue(run.waterTargetLiters)
@@ -2147,7 +2149,9 @@ const COMMAND_DETAIL_FULL_TEXT = [
   // With the colon: the success reply "battery-switch fault cleared" starts with the same words.
   ["battery-switch fault:", "battery-switch fault: a switch reset the controllers. Clear it on the System tab to retry"],
   ["the controllers just restarted", "the controllers just restarted: waiting for the hold-up to recharge"],
-  ["the mixing tank must be checked first", "the mixing tank must be checked first. Confirm it with SMS TANKCHECK,OK or in the LCD Settings menu; this website cannot clear it"]
+  ["the mixing tank must be checked first", "the mixing tank must be checked first. Confirm it with SMS TANKCHECK,OK or in the LCD Settings menu; this website cannot clear it"],
+  // ESP1 from 5 Nov 2026 on refuses a cancel once the run has fired, instead of claiming to have cancelled it.
+  ["run already started", "the run had already started, so nothing was cancelled. Use Emergency stop to stop it"]
 ];
 
 function explainCommandDetail(detail) {
