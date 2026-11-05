@@ -86,6 +86,82 @@ const readableCropNames = {
   silinglabuyo: "Siling Labuyo", kamatis: "Kamatis", basil: "Basil"
 };
 
+/* ---- Crop profiles: the crop library (2026-11-05) -------------------------------------------------
+ * The two tables above are only the crops the website starts with. Operators and privileged accounts can change
+ * or remove them and add their own plants, on Zone profiles (Crop profiles). Those changes live in
+ * irrigation/config/crops/{cropKey} and take precedence: a full entry ({name, variety?, notes?, stages}) replaces
+ * the built-in crop of the same key or adds a new one, and {removed: true} hides a built-in until it is restored.
+ * Stages are kept by key, so a column's saved stage survives renaming it. EC is in mS/cm, moisture in %. ESP1 never
+ * reads any of this: a column's own targets only change through SET_COLUMN (Save to rig). */
+let cropOverrides = {};                     // irrigation/config/crops, as last read
+const CROP_LIMITS = {
+  n: [0, 2000], p: [0, 2000], k: [0, 2000], ph: [3, 9], ec: [0, 20], moisture: [0, 100], days: [0, 365]
+};
+const MAX_STAGES = 10;
+
+function stageLabel(key) {
+  return key ? key[0].toUpperCase() + key.slice(1) : "";
+}
+
+function builtInCrop(key) {
+  const stages = cropDatabase[key];
+  if (!stages) return null;
+  return {
+    key, name: readableCropNames[key] || key, variety: "", notes: "", builtIn: true, changed: false,
+    stages: Object.entries(stages).map(([stageKey, t]) => ({
+      key: stageKey, name: stageLabel(stageKey), n: t.n, p: t.p, k: t.k, ph: t.ph, ec: t.ec, moisture: t.moisture, days: null, notes: ""
+    }))
+  };
+}
+
+function cropFromStore(key, stored, builtIn) {
+  const text = value => (typeof value === "string" ? value : "");
+  const stages = Object.entries(stored.stages || {})
+    .map(([stageKey, s]) => ({
+      key: stageKey, order: Number(s?.order) || 0, name: text(s?.name) || stageLabel(stageKey),
+      n: numberOrNull(s?.n), p: numberOrNull(s?.p), k: numberOrNull(s?.k), ph: numberOrNull(s?.ph),
+      ec: numberOrNull(s?.ec), moisture: numberOrNull(s?.moisture), days: numberOrNull(s?.days), notes: text(s?.notes)
+    }))
+    .sort((a, b) => a.order - b.order);
+  return {
+    key, name: text(stored.name) || key, variety: text(stored.variety), notes: text(stored.notes), builtIn, changed: builtIn,
+    stages, updatedAt: Number(stored.updatedAt) || 0, updatedBy: text(stored.updatedBy)
+  };
+}
+
+// Every crop in use, by name: the built-ins (as changed, unless removed) and the ones added on this website.
+function cropLibrary() {
+  const list = [];
+  Object.keys(cropDatabase).forEach(key => {
+    const stored = cropOverrides[key];
+    if (stored?.removed) return;
+    list.push(stored?.stages ? cropFromStore(key, stored, true) : builtInCrop(key));
+  });
+  Object.entries(cropOverrides).forEach(([key, stored]) => {
+    if (cropDatabase[key] || !stored || stored.removed || !stored.stages) return;
+    list.push(cropFromStore(key, stored, false));
+  });
+  return list.filter(crop => crop.stages.length).sort((a, b) => a.name.localeCompare(b.name));
+}
+function findCrop(key) {
+  return cropLibrary().find(crop => crop.key === key) || null;
+}
+function removedBuiltIns() {
+  return Object.keys(cropDatabase).filter(key => cropOverrides[key]?.removed).map(key => ({ key, name: readableCropNames[key] || key }));
+}
+function cropLabel(crop) {
+  return crop.variety ? `${crop.name} (${crop.variety})` : crop.name;
+}
+
+// The crop and stage a column is compared with: its saved choice, or, when that is gone from the list (removed on
+// another device, or not loaded yet), the first there is. Only for showing: nothing is written.
+function zoneCrop(zone) {
+  const library = cropLibrary();
+  const crop = library.find(c => c.key === zone.defaultCrop) || library[0] || null;
+  const stage = crop ? (crop.stages.find(s => s.key === zone.defaultStage) || crop.stages[0] || null) : null;
+  return { crop, stage };
+}
+
 // Kept separate from the mutable activeZones below so each zone's OWN original default survives a
 // partial reload (see attachDatabaseListeners' zones.once() handler) instead of every never-saved
 // zone falling back to one generic crop/name the moment any single zone is ever saved.
@@ -111,6 +187,7 @@ let lastKnownFresh = false;         // whether the page last drew ESP1 as report
 let liveRef = null;
 let commandsRef = null;
 let zonesRef = null;
+let cropsRef = null;
 let lastCommandAt = 0;
 const COMMAND_COOLDOWN_MS = 10000;
 // Grant duration for the operator's "temporary Manual/Test + System access" action (see
@@ -138,7 +215,39 @@ function escapeHtml(value) {
 
 function setText(id, text) {
   const element = document.getElementById(id);
-  if (element) element.textContent = text;
+  if (!element) return;
+  if (element.classList.contains("reading-value") && rollNumber(element, String(text))) return;
+  element.textContent = text;
+}
+
+// Visuals (2026-11-05): a reading that changes from one number to another rolls to it instead of jumping. Only between
+// two numbers with the same unit and decimals, never from "Unavailable", and not when the phone asks for reduced motion.
+const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
+const NUMBER_ROLL_MS = 450;
+const rollingNumbers = new WeakMap();
+function rollNumber(element, text) {
+  const running = rollingNumbers.get(element);
+  if (running) { cancelAnimationFrame(running); rollingNumbers.delete(element); }
+  const shown = element.textContent;
+  if (shown === text) return true;
+  if (reduceMotionQuery?.matches || document.hidden) return false;
+  const parse = value => {
+    const match = /^(-?\d+(?:\.(\d+))?)( .+)?$/.exec(value);
+    return match ? { value: Number(match[1]), digits: (match[2] || "").length, unit: match[3] || "" } : null;
+  };
+  const from = parse(shown);
+  const to = parse(text);
+  if (!from || !to || from.unit !== to.unit || from.digits !== to.digits) return false;
+  const started = performance.now();
+  const step = now => {
+    const t = Math.min(1, (now - started) / NUMBER_ROLL_MS);
+    if (t >= 1) { element.textContent = text; rollingNumbers.delete(element); return; }
+    const eased = 1 - Math.pow(1 - t, 3);
+    element.textContent = `${(from.value + (to.value - from.value) * eased).toFixed(to.digits)}${to.unit}`;
+    rollingNumbers.set(element, requestAnimationFrame(step));
+  };
+  rollingNumbers.set(element, requestAnimationFrame(step));
+  return true;
 }
 
 function hasValue(value) {
@@ -244,10 +353,9 @@ function currentUserIsSignedIn() {
  * firebase-rules.json. This constant and these two helpers are for UI purposes only (showing/
  * hiding the pending banner and the User Management tab, greying out buttons); the REAL
  * enforcement is the rules themselves, which check the identical literal UID server-side. */
-// Two fixed operator identities -- primary (espoperator32@gmail.com) and a hidden backup/creator
-// account (johnmichaelsugian123@gmail.com), both granted identically by firebase-rules.json's own
-// matching literals. Client-side use is UI-only (which tab/actions to show); the real enforcement
-// is server-side, keyed on these same two UIDs.
+// The operator accounts, granted identically by firebase-rules.json's own matching literals. Client-side use is
+// UI-only (which tab/actions to show); the real enforcement is server-side, keyed on these same UIDs. Only the first
+// is ever shown on this page: the other is never listed, named or mentioned anywhere a person can see.
 const OPERATOR_UIDS = ["KaiqrwlOHeVdebbokPxZfcFLZiu2", "C8V39t4EDgUgjOt9GA6OeMukMsw2"];
 const BACKUP_OPERATOR_UID = "C8V39t4EDgUgjOt9GA6OeMukMsw2";
 // Same literal UID firebase-rules.json's ESP1-only branches use -- referenced here only for the
@@ -285,7 +393,7 @@ function hasTempAccess() {
 // Sub-operator (2026-09-10): a SECOND, separate elevation from the 1h temp grant above -- persistent
 // (no expiry clock) until an operator explicitly withholds it again, same on/off spirit as e.g. the
 // preventive-exercise toggle. Stored as /users/{uid}/subOperator (boolean), settable only by either
-// operator UID (see firebase-rules.json) -- both Main and Creator/backup accounts can grant/withhold
+// operator UID (see firebase-rules.json) -- every operator account can grant/withhold
 // it, identically to how both can already grant/revoke temp access.
 let mySubOperator = false;
 function canAccessPrivilegedTabs() {
@@ -299,6 +407,25 @@ function canAccessPrivilegedTabs() {
   return isOperator() || ((hasTempAccess() || mySubOperator) && isApprovedUser());
 }
 
+// Access levels (2026-11-05, the owner's design). An approved account on its own can only look: the Live dashboard,
+// Zone profiles (read-only) and Help. Two separate grants, each asked for on the website and given or taken back by
+// an operator, open the rest:
+//   Control    (users/{uid}/controlAccess):  the Controls and Diagnostics tabs, the Emergency stop, every rig command
+//                                            except a column's own settings.
+//   Edit zones (users/{uid}/zoneEditAccess): the column cards (settings, watering times, targets, on/off, crop, name).
+// Sub-operators, 1-hour access and operators have both, plus Manual/Test, System, the rig lock and crop profiles.
+// firebase-rules.json enforces the same split; these only decide what the page offers.
+let myControlAccess = false;
+let myZoneEditAccess = false;
+function hasControlAccess() {
+  return canAccessPrivilegedTabs() || (isApprovedUser() && myControlAccess);
+}
+function hasZoneEditAccess() {
+  return canAccessPrivilegedTabs() || (isApprovedUser() && myZoneEditAccess);
+}
+const NO_CONTROL_TITLE = "Needs control access. Ask an operator for it on the Controls tab.";
+const NO_ZONE_EDIT_TITLE = "Needs access to edit zone profiles. Ask an operator for it at the top of Zone profiles.";
+
 // Access-control revision (2026-09-09): renderZonesUI()'s editable-vs-read-only variant depends on
 // isApprovedUser(), which can change mid-session (operator approves/restricts/blocks an account
 // while its tab stays open -- see Part 6 of the access-control spec). Re-rendering on every single
@@ -308,7 +435,7 @@ function canAccessPrivilegedTabs() {
 // only thing that can change isApprovedUser() while isOperator() stays fixed for the session).
 let lastZoneEditCapability = undefined;
 function syncZoneEditCapability() {
-  const canEdit = isApprovedUser();
+  const canEdit = hasZoneEditAccess();
   if (canEdit === lastZoneEditCapability) return;
   lastZoneEditCapability = canEdit;
   renderZonesUI();
@@ -369,7 +496,8 @@ function dismissToast(id) {
   rescheduleToasts();   // fewer toasts left now -- the remaining ones can afford to slow back down
 }
 
-function showToast(message, tone = "") {
+// onClick (optional): what a click on the toast does as well as dismissing it, e.g. open the tab it is about.
+function showToast(message, tone = "", onClick = null) {
   const text = String(message || "").trim();
   if (!text) return null;
   const stack = document.getElementById("toastStack");
@@ -378,8 +506,8 @@ function showToast(message, tone = "") {
   const el = document.createElement("div");
   el.className = `toast${tone ? ` toast-${tone}` : ""}`;
   el.textContent = text;
-  el.title = "Click to dismiss";
-  el.addEventListener("click", () => dismissToast(id));
+  el.title = onClick ? "Click to open" : "Click to dismiss";
+  el.addEventListener("click", () => { dismissToast(id); if (onClick) onClick(); });
   stack.appendChild(el);
   activeToasts.set(id, { el, timer: null });
   // Force layout before adding the "in" class, or the transition never plays -- the browser would
@@ -485,7 +613,7 @@ function rigLocked() {
 function lockKnown() {
   return typeof liveData.diagnostics?.system?.lcdLocked === "boolean";
 }
-// The name the rules accept with a lock: the account's own, or "Operator" for the two operator accounts.
+// The name the rules accept with a lock: the account's own, or "Operator" for an operator account.
 function myDisplayName() {
   return isOperator() ? "Operator" : myAccountName;
 }
@@ -597,10 +725,9 @@ function renderActuationSwitch() {
   if (!toggle) return;
   toggle.setAttribute("aria-checked", String(known && !off));
   const signedIn = currentUserIsSignedIn();
-  const approved = isApprovedUser();
   // Off is a stop: it works while the rig is locked and on a stale report. Back on is not, while locked.
   const block = !signedIn ? "Sign in to use the system controls."
-    : !approved ? "Your account is awaiting operator approval before it can use this control."
+    : !hasControlAccess() ? (isApprovedUser() ? NO_CONTROL_TITLE : "Your account is awaiting operator approval before it can use this control.")
     : !known ? "ESP1 hasn't reported this yet."
     : waiting ? "Waiting for ESP1."
     : off && rigLocked() ? LOCKED_TITLE
@@ -630,15 +757,14 @@ function waitForActuationReply(key) {
 
 function syncControlAvailability() {
   const signedIn = currentUserIsSignedIn();
-  const approved = isApprovedUser();
-  // A signed-in-but-not-yet-approved account must see every actuating control as unavailable, same
-  // as a signed-out one -- approval is a separate axis from freshness/cooldown, not a replacement
-  // for it, so it is ANDed into every gate below rather than only checked at queueCommand() time.
-  const notApprovedTitle = "Your account is awaiting operator approval before it can use this control.";
+  // Control access (2026-11-05): an approved account only looks until an operator gives it Control. It is ANDed
+  // into every gate below, the same as approval was, rather than only checked at queueCommand() time.
+  const control = hasControlAccess();
+  const notApprovedTitle = !isApprovedUser() ? "Your account is awaiting operator approval before it can use this control." : NO_CONTROL_TITLE;
   // The rig lock: the rules refuse everything but the stops while it is on, so those controls are off too.
   const locked = rigLocked();
-  const normalAllowed = signedIn && approved && deviceIsFresh() && firebaseConnected && !locked;
-  const normalTitle = (signedIn && !approved) ? notApprovedTitle : locked ? LOCKED_TITLE
+  const normalAllowed = signedIn && control && deviceIsFresh() && firebaseConnected && !locked;
+  const normalTitle = (signedIn && !control) ? notApprovedTitle : locked ? LOCKED_TITLE
     : "Sign in and wait for a fresh ESP1 snapshot before using this control.";
   renderRigLock();
   renderActuationSwitch();
@@ -658,8 +784,8 @@ function syncControlAvailability() {
   // the Manual/Test hold itself does in renderManualHold().
   // A button ESP1 would ignore is off as well, with the reason beside the buttons (see holdBlockReason()) --
   // but never the one being held: a disabled button doesn't receive its own release.
-  const holdAllowed = normalAllowed || (locked && signedIn && approved && deviceIsFresh() && firebaseConnected);
-  const holdTitle = (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before using a hold-to-run test.";
+  const holdAllowed = normalAllowed || (locked && signedIn && control && deviceIsFresh() && firebaseConnected);
+  const holdTitle = (signedIn && !control) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before using a hold-to-run test.";
   // While locked, holdBlockReason() says so ("the rig is locked"), so the note below explains the buttons being off.
   document.querySelectorAll(".hold-btn").forEach(button => {
     const reason = holdAllowed ? holdBlockReason(button.dataset.holdTarget) : "";
@@ -697,7 +823,7 @@ function syncControlAvailability() {
     const reason = holdAllowed ? forceRunBlockReason() : "";
     forceButton.disabled = !holdAllowed || Boolean(reason);
     forceButton.title = !holdAllowed
-      ? ((signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.")
+      ? ((signedIn && !control) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.")
       : reason ? `ESP1 would refuse a forced run right now: ${reason}.` : "";
     const note = document.getElementById("forceRunBlocked");
     if (note) {
@@ -706,34 +832,34 @@ function syncControlAvailability() {
     }
   }
 
-  // Emergency stop is intentionally independent of live-data freshness and the normal cooldown --
-  // but NOT independent of approval, which is a distinct safety gate, not a staleness workaround.
-  // There are two copies: the Controls panel, and the bar that stays on screen on every tab.
+  // Emergency stop is intentionally independent of live-data freshness and the normal cooldown -- but not of
+  // Control access: an account without it gets no stop button at all (the owner's choice, 5 Nov 2026), and the
+  // rules refuse its EMERGENCY_STOP too. There are two copies: the Controls panel, and the bar on every tab.
   document.querySelectorAll(".estop-btn").forEach(emergency => {
-    emergency.disabled = !signedIn || !approved;
-    emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !approved ? notApprovedTitle : "";
+    emergency.disabled = !signedIn || !control;
+    emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !control ? notApprovedTitle : "";
   });
   const estopBar = document.getElementById("estopBar");
-  if (estopBar) estopBar.hidden = !signedIn || !approved;
+  if (estopBar) estopBar.hidden = !signedIn || !control;
   // A remote stop silently does nothing while ESP1 is offline, so say so before it is relied on.
   const estopNote = document.getElementById("emergencyOfflineNote");
-  if (estopNote) estopNote.hidden = !signedIn || !approved || deviceIsFresh();
+  if (estopNote) estopNote.hidden = !signedIn || !control || deviceIsFresh();
   // This page can't see why ESP1 stopped reporting, but the LCD can, so say where to look.
   const offlineHelp = document.getElementById("esp1OfflineHelp");
-  if (offlineHelp) offlineHelp.hidden = !signedIn || !approved || deviceIsFresh();
+  if (offlineHelp) offlineHelp.hidden = !signedIn || !control || deviceIsFresh();
 
-  // Recovery + reboot: signed-in AND approved, deliberately NOT freshness-gated. A stale snapshot is often
+  // Recovery + reboot: signed-in AND Control, deliberately NOT freshness-gated. A stale snapshot is often
   // exactly why you are reaching for these. None of them is a stop, so the rig lock switches them off. The
   // pumps-and-valves switch has its own gate (renderActuationSwitch()).
   ["rebootNanoBtn2", "rebootEsp2Btn2", "rebootEsp1Btn2", "estopRecoverBtn", "enableActBtn"].forEach(id => {
     const b = document.getElementById(id);
     if (!b) return;
-    b.disabled = !signedIn || !approved || locked;
-    b.title = !signedIn ? "Sign in to use the system controls." : !approved ? notApprovedTitle : locked ? LOCKED_TITLE : "";
+    b.disabled = !signedIn || !control || locked;
+    b.title = !signedIn ? "Sign in to use the system controls." : !control ? notApprovedTitle : locked ? LOCKED_TITLE : "";
   });
   document.querySelectorAll("#faultRecovery button[data-recover]").forEach(b => {
-    b.disabled = locked;
-    b.title = locked ? LOCKED_TITLE : "";
+    b.disabled = locked || !control;
+    b.title = !control ? notApprovedTitle : locked ? LOCKED_TITLE : "";
   });
 
   // Restore Defaults: signed-in + approved, like the reboot buttons, PLUS idle-gated -- ESP1
@@ -742,9 +868,9 @@ function syncControlAvailability() {
   if (restoreBtn) {
     // SAFE_MODE is only ESP1's label for idle while locked out, so ESP1 accepts this then too.
     const notIdle = liveData.system?.state && !["IDLE_STATE", "SAFE_MODE"].includes(liveData.system.state);
-    restoreBtn.disabled = !signedIn || !approved || Boolean(notIdle) || locked;
+    restoreBtn.disabled = !signedIn || !control || Boolean(notIdle) || locked;
     restoreBtn.title = !signedIn ? "Sign in to use the system controls."
-                      : !approved ? notApprovedTitle
+                      : !control ? notApprovedTitle
                       : locked ? LOCKED_TITLE
                       : notIdle ? "ESP1 must be idle to restore defaults, same as the LCD menu."
                       : "";
@@ -792,6 +918,8 @@ function initializeFirebase() {
         lastZoneEditCapability = undefined;   // force a fresh evaluation on the next sign-in, not a stale match
         myTempAccessUntil = 0;         // a temp-access grant must never survive into a later sign-in
         mySubOperator = false;         // ditto for a persistent sub-operator grant
+        myControlAccess = false;       // and for Control and Edit zones
+        myZoneEditAccess = false;
         clearZoneDrafts();             // nobody else should find this person's half-made column edits
         lockSentKey = null;            // nor a "Locking…" or "Sending…" left from their own request
         actSentKey = null;
@@ -803,10 +931,13 @@ function initializeFirebase() {
         liveData = {};
         commandData = [];
         sentCommands.clear();
+        renderZonesUI();
+        renderCropLibrary();
         updateDashboard();
         renderCommandHistory();
         renderAccountStatus(null);
         renderBlockedScreen();
+        renderWaitingScreen();
         if (loginScreen) loginScreen.hidden = false;
         showAuthForm("login");
         if (logoutButton) logoutButton.hidden = true;
@@ -905,8 +1036,10 @@ function attachDatabaseListeners() {
       // ITS OWN original default -- previously every unsaved zone fell back to one hardcoded
       // crop/name the moment any single zone was ever saved, silently mangling the other two.
       if (!zone) return { ...def, savedSettings: {} };
-      const crop = cropDatabase[zone.crop] ? zone.crop : def.defaultCrop;
-      const stage = cropDatabase[crop][zone.stage] ? zone.stage : def.defaultStage;
+      // Kept as saved, even when it isn't in the crop list: that list arrives separately (and a crop added on
+      // another device may not be here yet), so zoneCrop() resolves it when drawing instead.
+      const crop = typeof zone.crop === "string" && zone.crop ? zone.crop : def.defaultCrop;
+      const stage = typeof zone.stage === "string" && zone.stage ? zone.stage : def.defaultStage;
       // savedSettings: this column's own "Firmware save settings" library (see
       // saveColumnSettings()/renderZonesUI()) -- lives under the same dashboard-only config/zones
       // node as crop/stage, so no new Firebase rule or listener was needed; this one already
@@ -914,8 +1047,17 @@ function attachDatabaseListeners() {
       return { id: def.id, name: zone.name || def.name, defaultCrop: crop, defaultStage: stage, savedSettings: zone.savedSettings || {} };
     });
     renderZonesUI();
+    renderCropLibrary();          // "Used by column A" follows the columns' choices
     updateDashboard();
   }, error => console.warn("Could not read dashboard zone profiles", error));
+
+  cropsRef = db.ref("irrigation/config/crops");
+  cropsRef.on("value", snapshot => {
+    cropOverrides = snapshot.val() || {};
+    renderZonesUI();
+    renderCropLibrary();
+    updateDashboard();
+  }, error => console.warn("Could not read the crop profiles", error));
 }
 
 // The top bar and sidebar. Called from a snapshot, from the 1 s tick when ESP1 goes quiet, and when this
@@ -944,6 +1086,7 @@ function detachDatabaseListeners() {
   if (liveRef) liveRef.off();
   if (commandsRef) commandsRef.off();
   if (zonesRef) zonesRef.off();
+  if (cropsRef) cropsRef.off();
   serverOffsetRef = null;
   firebaseLinkRef = null;
   firebaseLinkSeen = false;
@@ -951,6 +1094,10 @@ function detachDatabaseListeners() {
   liveRef = null;
   commandsRef = null;
   zonesRef = null;
+  cropsRef = null;
+  // Back to the built-in list until it is read again; a half-made crop edit isn't kept for the next account.
+  cropOverrides = {};
+  cropDraft = null;
   databaseListenersAttached = false;
 }
 
@@ -987,6 +1134,7 @@ function syncLiveDataAccess() {
   activeZones = DEFAULT_ZONES.map(zone => ({ ...zone }));
   clearZoneDrafts();
   renderZonesUI();
+  renderCropLibrary();
   updateDashboard();
   renderCommandHistory();
   setConnection(false, "Live data needs an approved account");
@@ -1021,38 +1169,51 @@ function attachUserStatusListener(uid) {
       return;
     }
     const wasApproved = myAccountStatus === "approved";
+    const hadControl = hasControlAccess();
     myAccountStatus = record ? record.status : null;
     myAccountName = typeof record?.name === "string" ? record.name : "";
     myTempAccessUntil = Number(record?.tempAccessUntil) || 0;
     mySubOperator = Boolean(record?.subOperator);
+    myControlAccess = record?.controlAccess === true;
+    myZoneEditAccess = record?.zoneEditAccess === true;
     syncLiveDataAccess();
     renderAccountStatus(record);
     renderBlockedScreen();
+    renderWaitingScreen();
     syncControlAvailability();
     syncZoneEditCapability();
-    refreshOperatorUI();   // an operator's temp-access/sub-operator grant/revoke must show/hide my tabs live
+    refreshOperatorUI();   // an operator's grant or take-back must show/hide my tabs live
+    renderAccessRequests();
     // Block/Restrict must release an in-progress Manual/Test hold immediately, the same way Kick's
     // forced sign-out already does via onAuthStateChanged -- otherwise the rig stays out of
     // automatic for up to the full 60s lease after the operator believes access was cut off at once.
     if (wasApproved && myAccountStatus !== "approved") releaseManualHold();
+    if (hadControl && !hasControlAccess()) mtHoldStop(true);
   }, error => {
     console.warn("Could not read account status", error);
     myAccountStatus = null;
     myTempAccessUntil = 0;
     mySubOperator = false;
+    myControlAccess = false;
+    myZoneEditAccess = false;
     syncLiveDataAccess();
     renderAccountStatus(null);
     renderBlockedScreen();
+    renderWaitingScreen();
     syncControlAvailability();
     syncZoneEditCapability();
     refreshOperatorUI();
   });
+  attachMyRequestsListener(uid);
 }
 function detachUserStatusListener() {
   if (myAccountRef) myAccountRef.off();
   myAccountRef = null;
   myAccountStatus = undefined;
   myAccountName = "";
+  myControlAccess = false;
+  myZoneEditAccess = false;
+  detachMyRequestsListener();
 }
 
 const ACCOUNT_STATUS_TEXT = {
@@ -1085,7 +1246,8 @@ function renderAccountStatus(record) {
   // "disabled" (blocked) gets its own full-screen takeover (#blockedScreen, see renderBlockedScreen())
   // instead of this banner -- a blocked account should see nothing else on the page at all, not a
   // dismissible banner over an otherwise-normal dashboard.
-  if (!currentUserIsSignedIn() || isOperator() || myAccountStatus === "approved" || myAccountStatus === "disabled") { banner.hidden = true; return; }
+  // Pending, rejected and restricted accounts get the full-screen waiting page instead (renderWaitingScreen()).
+  if (!currentUserIsSignedIn() || isOperator() || ["approved", "disabled", ...WAITING_STATUSES].includes(myAccountStatus)) { banner.hidden = true; return; }
   banner.hidden = false;
   if (myAccountStatus === undefined) {
     if (title) title.textContent = "Loading your account status…";
@@ -1108,8 +1270,133 @@ function renderBlockedScreen() {
   const screen = document.getElementById("blockedScreen");
   if (!screen) return;
   screen.hidden = !(currentUserIsSignedIn() && !isOperator() && myAccountStatus === "disabled");
+  syncTakeover();
+}
+// While the blocked or waiting page is up, the site itself isn't laid out at all (body.takeover in style.css).
+function syncTakeover() {
+  const covered = ["blockedScreen", "waitingScreen"].some(id => document.getElementById(id)?.hidden === false);
+  document.body.classList.toggle("takeover", covered);
 }
 document.getElementById("blockedSignOutBtn")?.addEventListener("click", () => {
+  if (auth) releaseHoldsThenSignOut().catch(error => console.error(error));
+});
+
+/* ---- Waiting page and access requests (2026-11-05) ------------------------------------------------------------
+ * A new, rejected or restricted account sees nothing of the rig: only this page, with one button to ask for approval
+ * (or to be unrestricted). A blocked account gets #blockedScreen and can't ask. An approved account asks for Control
+ * on the Controls tab and for Edit zones on Zone profiles. Requests live in accessRequests/{uid}/{kind} as
+ * {state: "waiting" | "declined", at, decidedAt?}; the rules let an account write only its own, only the kind its
+ * status allows, and only when none is already waiting. Operators see them at once (a pop-up and a count on User
+ * Management) and answer there. */
+const WAITING_STATUSES = ["pending", "rejected", "restricted"];
+// ask: the button; asked: "You asked for ..."; what: an operator's "<name> asks for ..."; log: the activity trail.
+const REQUEST_WORDS = {
+  approval:   { ask: "Ask for approval",              asked: "approval",                        what: "approval of their account",          log: "Asked for approval" },
+  unrestrict: { ask: "Ask to be unrestricted",        asked: "your account to be unrestricted", what: "their account to be unrestricted",   log: "Asked to be unrestricted" },
+  zones:      { ask: "Request to edit zone profiles", asked: "access to edit zone profiles",    what: "access to edit zone profiles",       log: "Asked to edit zone profiles" },
+  control:    { ask: "Request control",               asked: "control access",                  what: "control access",                     log: "Asked for control" }
+};
+const WAITING_TEXT = {
+  pending: ["Waiting for approval", "Your account is created. An operator has to approve it before you can see the rig. Ask for approval below, and this page opens by itself once you are approved."],
+  rejected: ["Not approved", "An operator looked at this account and didn't approve it. You can ask again below."],
+  restricted: ["Restricted", "An operator has restricted this account, so the rig can't be seen from it for now. You can ask to be unrestricted below."]
+};
+let myRequestsRef = null;
+let myRequests = {};
+
+function renderWaitingScreen() {
+  const screen = document.getElementById("waitingScreen");
+  if (!screen) return;
+  const status = myAccountStatus;
+  const show = currentUserIsSignedIn() && !isOperator() && WAITING_STATUSES.includes(status);
+  screen.hidden = !show;
+  syncTakeover();
+  if (!show) return;
+  const [title, detail] = WAITING_TEXT[status];
+  setText("waitingTitle", title);
+  setText("waitingDetail", detail);
+  const account = document.getElementById("waitingAccount");
+  if (account) account.textContent = auth?.currentUser?.email ? `Signed in as ${auth.currentUser.email}` : "";
+  renderRequestControls("waiting", status === "restricted" ? "unrestrict" : "approval");
+}
+
+function attachMyRequestsListener(uid) {
+  detachMyRequestsListener();
+  if (!db || !uid) return;
+  myRequestsRef = db.ref(`accessRequests/${uid}`);
+  myRequestsRef.on("value", snapshot => {
+    myRequests = snapshot.val() || {};
+    renderAccessRequests();
+  }, error => console.warn("Could not read your requests", error));
+}
+function detachMyRequestsListener() {
+  if (myRequestsRef) myRequestsRef.off();
+  myRequestsRef = null;
+  myRequests = {};
+}
+
+// One request button with its state, in a slot of the page: "waiting" (the waiting page), "zones" (Zone profiles) or
+// "control" (the Controls tab). Each slot has #<slot>RequestBtn, #<slot>RequestState and #<slot>RequestWithdraw.
+function renderRequestControls(slot, kind) {
+  const button = document.getElementById(`${slot}RequestBtn`);
+  const state = document.getElementById(`${slot}RequestState`);
+  const withdraw = document.getElementById(`${slot}RequestWithdraw`);
+  if (!button) return;
+  const request = myRequests[kind];
+  const waiting = request?.state === "waiting";
+  const declined = request?.state === "declined";
+  button.dataset.kind = kind;
+  button.hidden = waiting;
+  button.textContent = declined ? `${REQUEST_WORDS[kind].ask} again` : REQUEST_WORDS[kind].ask;
+  button.disabled = !firebaseConnected;
+  if (withdraw) { withdraw.hidden = !waiting; withdraw.dataset.kind = kind; }
+  if (state) {
+    state.textContent = waiting
+      ? `You asked for ${REQUEST_WORDS[kind].asked} ${formatAge(Math.max(0, serverNow() - Number(request.at || 0)))} ago. An operator will see it, and this page changes by itself when they answer.`
+      : declined
+        ? `An operator declined your request${request.decidedAt ? ` on ${new Date(request.decidedAt).toLocaleDateString()}` : ""}. You can ask again.`
+        : "";
+    state.hidden = !state.textContent;
+  }
+}
+
+// Every request slot on the page, from the account's own status and grants.
+function renderAccessRequests() {
+  renderWaitingScreen();
+  const approvedOnly = isApprovedUser() && !isOperator() && !canAccessPrivilegedTabs();
+  const zonePanel = document.getElementById("zoneRequestPanel");
+  if (zonePanel) zonePanel.hidden = !(approvedOnly && !myZoneEditAccess);
+  if (zonePanel && !zonePanel.hidden) renderRequestControls("zones", "zones");
+  const controlPanel = document.getElementById("controlRequestPanel");
+  const controlsBody = document.getElementById("controlsBody");
+  const control = hasControlAccess();
+  if (controlsBody) controlsBody.hidden = !control;
+  if (controlPanel) controlPanel.hidden = control || !isApprovedUser();
+  if (controlPanel && !controlPanel.hidden) renderRequestControls("control", "control");
+}
+
+function sendAccessRequest(kind) {
+  const uid = auth?.currentUser?.uid;
+  if (!uid || !REQUEST_WORDS[kind]) return;
+  db.ref(`accessRequests/${uid}/${kind}`).set({ state: "waiting", at: firebase.database.ServerValue.TIMESTAMP })
+    .then(() => {
+      logActivity(REQUEST_WORDS[kind].log);
+      showToast(`Asked. An operator will see your request for ${REQUEST_WORDS[kind].asked}.`);
+    })
+    .catch(error => showToast(`Could not send your request: ${error.code === "PERMISSION_DENIED" ? "this account can't ask for that right now" : error.message}.`, "error"));
+}
+function withdrawAccessRequest(kind) {
+  const uid = auth?.currentUser?.uid;
+  if (!uid || myRequests[kind]?.state !== "waiting") return;
+  db.ref(`accessRequests/${uid}/${kind}`).remove()
+    .then(() => logActivity(`Took back: ${REQUEST_WORDS[kind].log.toLowerCase()}`))
+    .catch(error => showToast(`Could not withdraw your request: ${error.message}.`, "error"));
+}
+["waiting", "zones", "control"].forEach(slot => {
+  document.getElementById(`${slot}RequestBtn`)?.addEventListener("click", event => sendAccessRequest(event.currentTarget.dataset.kind));
+  document.getElementById(`${slot}RequestWithdraw`)?.addEventListener("click", event => withdrawAccessRequest(event.currentTarget.dataset.kind));
+});
+document.getElementById("waitingSignOutBtn")?.addEventListener("click", () => {
   if (auth) releaseHoldsThenSignOut().catch(error => console.error(error));
 });
 
@@ -1121,7 +1408,7 @@ document.getElementById("blockedSignOutBtn")?.addEventListener("click", () => {
 function releaseHoldsThenSignOut() {
   // Presence goes offline here too, for the same reason: the rules refuse that write once signed out, and
   // cancelling onDisconnect then left the account showing "Online" for good (seen live, for weeks).
-  const releases = Promise.allSettled([releaseManualHold(), mtHoldStop(true), detachPresence()]);
+  const releases = Promise.allSettled([releaseManualHold(), mtHoldStop(true), logActivity("Signed out"), detachPresence()]);
   const capped = Promise.race([releases, new Promise(resolve => setTimeout(resolve, 1500))]);
   return capped.then(() => auth.signOut());
 }
@@ -1159,6 +1446,29 @@ function refreshOperatorUI() {
   if (!privileged && document.querySelector('.tab[data-view="manualtest"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
+  // Diagnostics comes with Control (2026-11-05). The Controls tab stays for every approved account: without Control
+  // it holds only the request for it.
+  const control = hasControlAccess();
+  const diagnosticsTab = document.getElementById("diagnosticsTab");
+  if (diagnosticsTab) diagnosticsTab.hidden = !control;
+  if (!control && document.querySelector('.tab[data-view="diagnostics"]')?.classList.contains("active")) {
+    document.querySelector('.tab[data-view="dashboard"]')?.click();
+  }
+  // Changing crop profiles is for the same tier: redraw the list (and drop a half-made edit) only when that flips,
+  // since this runs every 15 s.
+  if (canEditCrops() !== lastCropEditCapability) renderCropLibrary();
+  renderAccessRequests();
+  syncHelpAudience();
+  if (op) attachRequestsWatch(); else detachRequestsWatch();
+}
+// Help is split by account type. Re-filtered only when what this account can do changes: this runs every 15 s, and
+// filtering folds the open entries.
+let lastHelpAudience = null;
+function syncHelpAudience() {
+  const signature = ["all", "asker", "zones", "control", "privileged", "operator"].map(a => (helpAudienceAllowed(a) ? "1" : "0")).join("");
+  if (signature === lastHelpAudience) return;
+  lastHelpAudience = signature;
+  filterHelp(document.getElementById("helpSearch")?.value || "");
 }
 let lastKnownUsers = {};
 function attachUserManagementListener() {
@@ -1191,9 +1501,33 @@ function detachUserManagementListener() {
  * a per-connection-id counter for a account open in several tabs/devices at once); with two
  * operators and a handful of field users this was judged not worth the extra complexity -- closing
  * one of two open tabs for the same account will show it as offline even though the other tab is
- * still live. Upgrade to the counter form if that ever actually causes confusion. */
+ * still live. Upgrade to the counter form if that ever actually causes confusion.
+ * It did (2026-11-05): an account nobody was using showed "Online now", because a tab left open anywhere kept the
+ * one flag on, and closing one of two tabs turned it off. Now each open page has its own entry,
+ * presence/{uid}/sessions/{id} = {since, lastActive, visible}, removed by the server when that page goes; lastActive
+ * moves only on real use (a tap, a key, scrolling) while the page is on screen; presence/{uid}/lastActive and
+ * lastSeen keep the latest across them for when no page is open. See presenceStatus() for how it reads. */
 let presenceRef = null;
 let presenceData = {};
+// Real use within this long, on a page that is on screen, counts as "Active now".
+const ACTIVE_NOW_MS = 3 * 60 * 1000;
+// What User Management says about an account, from its pages' entries. Records written before 5 Nov 2026 have only
+// {online, lastChanged}; their "online" can be stale for weeks, so only lastChanged is used, as a last-seen time.
+function presenceStatus(uid) {
+  const p = presenceData[uid] || {};
+  const sessions = Object.values(p.sessions || {}).filter(s => s && typeof s === "object");
+  const now = serverNow();
+  const lastActive = Math.max(Number(p.lastActive) || 0, ...sessions.map(s => Number(s.lastActive) || 0));
+  if (sessions.length) {
+    if (sessions.some(s => s.visible === true && now - (Number(s.lastActive) || 0) < ACTIVE_NOW_MS)) {
+      return { online: true, active: true, label: "Active now" };
+    }
+    const where = sessions.every(s => s.visible !== true) ? "Page open in the background" : "Page open but idle";
+    return { online: true, active: false, label: `${where}, last used ${formatAge(Math.max(0, now - lastActive))} ago${sessions.length > 1 ? ` (${sessions.length} pages)` : ""}` };
+  }
+  const seen = lastActive || Number(p.lastSeen) || Number(p.lastChanged) || 0;
+  return { online: false, active: false, label: seen ? `Offline, last active ${formatAge(Math.max(0, now - seen))} ago` : "Not seen on the website yet" };
+}
 function attachPresenceWatch() {
   if (presenceRef) return;
   presenceRef = db.ref("presence");
@@ -1208,8 +1542,127 @@ function detachPresenceWatch() {
   presenceData = {};
 }
 
+/* ---- Access requests, the operators' side (2026-11-05) --------------------------------------------------------
+ * Every operator account reads accessRequests/. A request that arrives while one is signed in pops up at once, and
+ * all waiting ones are counted on the User Management tab and listed at the top of it, to accept or decline. */
+let requestsRef = null;
+let requestsData = {};
+const announcedRequests = new Set();
+let requestsLoadedOnce = false;
+const ACCEPT_WORDS = { approval: "Approve", unrestrict: "Unrestrict", zones: "Give zone editing", control: "Give control" };
+
+function attachRequestsWatch() {
+  if (requestsRef || !db) return;
+  requestsRef = db.ref("accessRequests");
+  requestsRef.on("value", snapshot => {
+    requestsData = snapshot.val() || {};
+    announceNewRequests();
+    renderRequestsBadge();
+    renderUserManagement();
+  }, error => console.warn("Could not read access requests", error));
+}
+function detachRequestsWatch() {
+  if (requestsRef) requestsRef.off();
+  requestsRef = null;
+  requestsData = {};
+  announcedRequests.clear();
+  requestsLoadedOnce = false;
+  renderRequestsBadge();
+}
+// Waiting requests, oldest first. Never one from an operator account (the rules don't let one exist anyway).
+function waitingRequests() {
+  const list = [];
+  Object.entries(requestsData).forEach(([uid, kinds]) => {
+    if (OPERATOR_UIDS.includes(uid)) return;
+    Object.entries(kinds || {}).forEach(([kind, request]) => {
+      if (request?.state === "waiting" && REQUEST_WORDS[kind]) list.push({ uid, kind, at: Number(request.at) || 0 });
+    });
+  });
+  return list.sort((a, b) => a.at - b.at);
+}
+function requesterName(uid) {
+  const user = lastKnownUsers[uid];
+  return user?.name || user?.email || "Someone";
+}
+function openUserManagement() {
+  document.querySelector('.tab[data-view="users"]')?.click();
+}
+// The pop-up. On the first read, several waiting requests are summed up in one; after that each new one gets its own.
+function announceNewRequests() {
+  const fresh = waitingRequests().filter(r => !announcedRequests.has(`${r.uid}/${r.kind}/${r.at}`));
+  fresh.forEach(r => announcedRequests.add(`${r.uid}/${r.kind}/${r.at}`));
+  const first = !requestsLoadedOnce;
+  requestsLoadedOnce = true;
+  if (!fresh.length) return;
+  if (first && fresh.length > 1) {
+    showToast(`${fresh.length} access requests are waiting. Click to answer them in User Management.`, "pending", openUserManagement);
+    return;
+  }
+  fresh.forEach(r => showToast(`${requesterName(r.uid)} asks for ${REQUEST_WORDS[r.kind].what}. Click to answer in User Management.`, "pending", openUserManagement));
+}
+function renderRequestsBadge() {
+  const tab = document.getElementById("usersTab");
+  if (!tab) return;
+  const count = isOperator() ? waitingRequests().length : 0;
+  let badge = tab.querySelector(".tab-badge");
+  if (!count) {
+    badge?.remove();
+    tab.removeAttribute("aria-label");
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.className = "tab-badge";
+    badge.setAttribute("aria-hidden", "true");
+    tab.append(badge);
+  }
+  badge.textContent = String(count);
+  tab.setAttribute("aria-label", `User Management, ${count} ${count === 1 ? "request" : "requests"} waiting`);
+}
+function requestsSectionHtml() {
+  const waiting = waitingRequests();
+  if (!waiting.length) return "";
+  return `<section class="user-group requests-group" aria-label="Requests waiting">
+      <h3>Requests waiting <span class="user-count">${waiting.length}</span></h3>
+      ${waiting.map(r => {
+        const user = lastKnownUsers[r.uid] || {};
+        return `<article class="user-row request-row">
+          <div class="user-row-info">
+            <strong>${escapeHtml(user.name || "(no name)")}</strong>
+            <span class="muted">${escapeHtml(user.email || "")}</span>
+            <span>Asks for ${escapeHtml(REQUEST_WORDS[r.kind].what)}, ${escapeHtml(formatAge(Math.max(0, serverNow() - r.at)))} ago.</span>
+          </div>
+          <div class="user-row-actions">
+            <button type="button" class="user-action" data-request-answer="accept" data-kind="${r.kind}" data-uid="${escapeHtml(r.uid)}">${ACCEPT_WORDS[r.kind]}</button>
+            <button type="button" class="user-action warn" data-request-answer="decline" data-kind="${r.kind}" data-uid="${escapeHtml(r.uid)}">Decline</button>
+          </div>
+        </article>`;
+      }).join("")}
+    </section>`;
+}
+// Accepting gives the access (or the status) and clears the request in one write; declining keeps it, marked, so the
+// account sees the answer and can ask again.
+function answerAccessRequest(uid, kind, accept) {
+  if (!isOperator() || OPERATOR_UIDS.includes(uid) || !REQUEST_WORDS[kind]) return Promise.resolve();
+  const name = requesterName(uid);
+  const updates = {};
+  if (accept) {
+    if (kind === "approval" || kind === "unrestrict") updates[`users/${uid}/status`] = "approved";
+    if (kind === "zones") updates[`users/${uid}/zoneEditAccess`] = true;
+    if (kind === "control") updates[`users/${uid}/controlAccess`] = true;
+    updates[`accessRequests/${uid}/${kind}`] = null;
+  } else {
+    updates[`accessRequests/${uid}/${kind}/state`] = "declined";
+    updates[`accessRequests/${uid}/${kind}/decidedAt`] = firebase.database.ServerValue.TIMESTAMP;
+  }
+  return db.ref().update(updates).then(() => {
+    logActivity(`${accept ? ACCEPT_WORDS[kind] : "Declined"}: ${name}${accept ? "" : `, ${REQUEST_WORDS[kind].log.toLowerCase()}`}`.slice(0, 80));
+    showToast(accept ? `${name}: done. ${kind === "zones" ? "They can edit zone profiles now." : kind === "control" ? "They have control access now." : "Their account is approved."}` : `Declined. ${name} sees that, and can ask again.`);
+  });
+}
+
 /* Per-account recent activity (2026-09-10) -- operator-viewing-only (see firebase-rules.json's
- * activity/.read: only the two operator UIDs can read ANY of it, not even a user their own trail).
+ * activity/.read: only the operator accounts can read ANY of it, not even a user their own trail).
  * Same whole-tree-listener shape as attachPresenceWatch() above; fine at this project's scale (a
  * handful of accounts) -- see that function's own note on why a per-row listener wasn't used either. */
 let activityRef = null;
@@ -1241,34 +1694,63 @@ function recentActivityFor(uid) {
 // listener below.
 let expandedActivityUids = new Set();
 
-let myPresenceRef = null;
+let myPresenceRef = null;          // presence/{uid}
+let mySessionRef = null;           // presence/{uid}/sessions/{this page}
 let myConnectedRef = null;
+let lastUseWrittenAt = 0;
+// Real use is written at most this often, so a busy page doesn't write on every tap.
+const PRESENCE_USE_WRITE_MS = 60000;
 function attachPresence(uid) {
   if (!db) return;
   detachPresence();
   myPresenceRef = db.ref(`presence/${uid}`);
+  mySessionRef = myPresenceRef.child("sessions").push();     // this page's own entry
   myConnectedRef = db.ref(".info/connected");
   myConnectedRef.on("value", snap => {
     if (snap.val() !== true) return;
-    // Register the disconnect write FIRST -- if the connection drops between here and the .set()
-    // just below landing, the server-side onDisconnect still leaves an accurate offline+timestamp
-    // record instead of a stuck "online" one.
-    myPresenceRef.onDisconnect().set({ online: false, lastChanged: firebase.database.ServerValue.TIMESTAMP })
-      .then(() => myPresenceRef.set({ online: true, lastChanged: firebase.database.ServerValue.TIMESTAMP }))
+    const now = firebase.database.ServerValue.TIMESTAMP;
+    // The disconnect writes go FIRST: if the connection drops before the entry lands, the server still removes it
+    // and stamps lastSeen, instead of leaving this page counted as open.
+    mySessionRef.onDisconnect().remove()
+      .then(() => myPresenceRef.child("lastSeen").onDisconnect().set(now))
+      .then(() => mySessionRef.set({ since: now, lastActive: now, visible: !document.hidden }))
+      // The single flag from before 5 Nov 2026 goes, so nothing reads a stale "online" again.
+      .then(() => myPresenceRef.update({ lastActive: now, online: null, lastChanged: null }))
+      .then(() => { lastUseWrittenAt = Date.now(); })
       .catch(error => console.warn("Could not set presence", error));
   });
 }
 function detachPresence() {
   if (myConnectedRef) myConnectedRef.off();
   let offline = Promise.resolve();
-  if (myPresenceRef) {
-    myPresenceRef.onDisconnect().cancel();
-    offline = myPresenceRef.set({ online: false, lastChanged: firebase.database.ServerValue.TIMESTAMP }).catch(() => {});
+  if (mySessionRef && myPresenceRef) {
+    mySessionRef.onDisconnect().cancel();
+    myPresenceRef.child("lastSeen").onDisconnect().cancel();
+    offline = Promise.all([
+      mySessionRef.remove(),
+      myPresenceRef.update({ lastSeen: firebase.database.ServerValue.TIMESTAMP })
+    ]).catch(() => {});
   }
   myConnectedRef = null;
   myPresenceRef = null;
+  mySessionRef = null;
   return offline;
 }
+// A tap, a key or scrolling while this page is on screen: the account is in use.
+function notePresenceUse() {
+  if (!mySessionRef || !myPresenceRef || document.hidden) return;
+  if (Date.now() - lastUseWrittenAt < PRESENCE_USE_WRITE_MS) return;
+  lastUseWrittenAt = Date.now();
+  const now = firebase.database.ServerValue.TIMESTAMP;
+  mySessionRef.update({ lastActive: now, visible: true }).catch(() => {});
+  myPresenceRef.update({ lastActive: now }).catch(() => {});
+}
+["pointerdown", "keydown", "wheel", "touchstart"].forEach(type => document.addEventListener(type, notePresenceUse, { passive: true, capture: true }));
+document.addEventListener("visibilitychange", () => {
+  if (!mySessionRef) return;
+  mySessionRef.update({ visible: !document.hidden }).catch(() => {});
+  if (!document.hidden) { lastUseWrittenAt = 0; notePresenceUse(); }
+});
 
 // One group per status, in this order: the accounts that need something done come first. The labels are what
 // people read; the values are what the rules enforce ("disabled" is shown as Blocked).
@@ -1284,10 +1766,16 @@ const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED", restricted: "RESTRICTED" };
 const USER_ACTION_LABEL = {
   approve: "Approve", reject: "Reject", restrict: "Restrict", unrestrict: "Unrestrict", block: "Block", unblock: "Unblock",
   kick: "Sign them out", delete: "Delete",
+  givezones: "Give zone editing", takezones: "Take back zone editing",
+  givecontrol: "Give control", takecontrol: "Take back control",
   granttemp: "Give 1-hour access", revoketemp: "End 1-hour access",
   grantsubop: "Make Sub-operator", withholdsubop: "Remove Sub-operator"
 };
 const USER_ACTION_INFO = {
+  givezones: ["Zone editing", "Lets this account change the column cards on Zone profiles: settings, watering times, targets, on or off, crop and name. It lasts until you take it back."],
+  takezones: ["Zone editing", "Ends this account's zone editing now. It can still see everything, and can ask again."],
+  givecontrol: ["Control", "Lets this account use the Controls tab (Emergency stop, pumps and valves, forced runs, restarts) and see Diagnostics. It lasts until you take it back."],
+  takecontrol: ["Control", "Ends this account's control access now. It can still see the Live dashboard and Zone profiles, and can ask again."],
   granttemp: ["1-hour access", "Opens Manual/Test, System and the rig lock to this account for exactly 1 hour, then it ends by itself. Use it for a one-off job."],
   revoketemp: ["1-hour access", "Ends this account's 1-hour access now, instead of waiting for its hour to run out."],
   grantsubop: ["Sub-operator", "The same access as 1-hour access, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
@@ -1297,7 +1785,7 @@ function renderUserManagement() {
   const container = document.getElementById("usersContainer");
   if (!container) return;
   const users = lastKnownUsers;
-  // The backup/creator operator is deliberately invisible here -- filtered out of the list itself,
+  // The unlisted operator account is deliberately invisible here -- filtered out of the list itself,
   // not merely stripped of actions like the primary operator's own row is (see isAnyOperator
   // below). Nothing in this app ever needs to manage the backup account as if it were a normal user.
   // ESP1's own account isn't a person either. It has no actions, so a stray record for it (the live database
@@ -1312,7 +1800,7 @@ function renderUserManagement() {
     // record; this is the UI half, so there is nothing to accidentally click in the first place.
     // Same exclusion for ESP1's device UID as defense-in-depth, though nothing today ever creates a
     // /users record for it. Kept separate from "is this row the person actually viewing the screen"
-    // below -- with two operators, a row is not automatically "you" just because it's *an* operator.
+    // below -- with more than one operator account, a row is not automatically "you" just because it's *an* operator.
     const isAnyOperator = OPERATOR_UIDS.includes(uid) || uid === ESP1_DEVICE_UID;
     const isViewerSelf = uid === auth.currentUser?.uid;
     // Temporary Manual/Test + System access (see canAccessPrivilegedTabs() in the capability-check
@@ -1326,13 +1814,16 @@ function renderUserManagement() {
     // changes it again. Independent of tempActive -- an account can hold either, both, or neither;
     // canAccessPrivilegedTabs() ORs them together client-side.
     const subOpActive = status === "approved" && !isAnyOperator && Boolean(u?.subOperator);
+    // Control and Edit zones (2026-11-05), each given and taken back on its own. A Sub-operator has both anyway.
+    const controlActive = status === "approved" && !isAnyOperator && u?.controlAccess === true;
+    const zonesActive = status === "approved" && !isAnyOperator && u?.zoneEditAccess === true;
     // Online/offline (see attachPresence()/attachPresenceWatch() above) -- also decides whether
     // Kick is even offered: kicking an already-offline account just wrote a fresh kickToken that
     // would immediately re-fire the moment they reconnect, which is exactly the "kicked N times"
     // symptom that clicking Kick repeatedly on an offline user produced before this gate existed.
-    const pres = presenceData[uid];
-    const isOnline = Boolean(pres?.online);
-    const presenceLabel = isOnline ? "Online now" : pres?.lastChanged ? `Offline, last seen ${formatAge(serverNow() - pres.lastChanged)} ago` : "Offline, never seen online";
+    const presence = presenceStatus(uid);
+    const isOnline = presence.online;
+    const presenceLabel = presence.label;
     // Recent activity (2026-09-10): the last commands this account actually queued (see
     // activitySummary()/queueCommand() above), newest first. Operator-viewing-only, same as presence
     // -- enforced server-side by activity/.read, not just by this tab being hidden from everyone else.
@@ -1341,6 +1832,7 @@ function renderUserManagement() {
     if (!isAnyOperator) {
       if (status === "pending")    actions.push("approve", "reject", "restrict", "delete");
       if (status === "approved") {
+        if (!subOpActive) actions.push(zonesActive ? "takezones" : "givezones", controlActive ? "takecontrol" : "givecontrol");
         actions.push(tempActive ? "revoketemp" : "granttemp", subOpActive ? "withholdsubop" : "grantsubop");
         actions.push(...(isOnline ? ["kick"] : []), "restrict", "block", "delete");
       }
@@ -1349,24 +1841,28 @@ function renderUserManagement() {
       if (status === "disabled")   actions.push("unblock", "delete");
     }
     const tone = status === "approved" ? "active" : (status === "pending" || status === "restricted") ? "off" : "danger";
-    const tones = { delete: " danger", block: " warn", revoketemp: " warn", withholdsubop: " warn" };
+    const tones = { delete: " danger", block: " warn", revoketemp: " warn", withholdsubop: " warn", takezones: " warn", takecontrol: " warn" };
     const buttons = actions.map(action => {
       const btn = `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(USER_ACTION_LABEL[action])}</button>`;
       // The two grants look alike at a glance, so each says how it ends. The icon is a sibling, never inside the
       // button, as everywhere else on this page.
       const info = USER_ACTION_INFO[action];
       return info
-        ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${info[0]}" data-info-title="${info[0]}" data-info-text="${info[1]}" data-help="help-grants">i</button></span>`
+        ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${info[0]}" data-info-title="${info[0]}" data-info-text="${info[1]}" data-help="${/zones$|control$/.test(action) ? "help-access" : "help-grants"}">i</button></span>`
         : btn;
     }).join("");
     const access = [];
+    if (status === "approved" && !isAnyOperator && !subOpActive) {
+      access.push(zonesActive ? "Can edit zone profiles." : "Can't edit zone profiles.");
+      access.push(controlActive ? "Has control: Controls, Diagnostics and the Emergency stop." : "No control access: can only look.");
+    }
     if (tempActive) access.push(`Can use Manual/Test, System and the rig lock until ${new Date(u.tempAccessUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (1-hour access).`);
     if (subOpActive) access.push("Sub-operator: can use Manual/Test, System and the rig lock until you remove it.");
     return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
       <div class="user-row-info">
         <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
         <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
-        <span class="${isOnline ? "user-online" : "muted"}">${escapeHtml(presenceLabel)}</span>
+        <span class="${presence.active ? "user-online" : isOnline ? "user-idle" : "muted"}">${escapeHtml(presenceLabel)}</span>
         <span class="muted">Signed up ${escapeHtml(created)}</span>
         ${access.map(line => `<span class="user-access">${escapeHtml(line)}</span>`).join("")}
         ${recent.length
@@ -1376,7 +1872,7 @@ function renderUserManagement() {
                 `<li>${escapeHtml(rawText(a?.what, "?"))}, ${escapeHtml(formatAge(serverNow() - Number(a?.at || 0)))} ago</li>`
               ).join("")}</ul>
             </details>`
-          : `<span class="muted">Nothing sent to the rig recently.</span>`}
+          : `<span class="muted">No recent actions on the website.</span>`}
       </div>
       <span class="device-status ${isAnyOperator ? "active" : tone}">${escapeHtml(isAnyOperator ? "OPERATOR" : STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
       <div class="user-row-actions">${buttons}</div>
@@ -1396,7 +1892,7 @@ function renderUserManagement() {
       ${members.map(rowHtml).join("")}
     </section>`;
   });
-  container.innerHTML = groups.join("");
+  container.innerHTML = requestsSectionHtml() + groups.join("");
 }
 /* The one privileged operation this static site cannot do itself: deleting another user's
  * Firebase Auth identity. Calls the operator-only endpoint in delete-user-api/ (a separate Vercel
@@ -1457,6 +1953,14 @@ document.getElementById("usersContainer")?.addEventListener("toggle", event => {
   if (event.target.open) expandedActivityUids.add(uid); else expandedActivityUids.delete(uid);
 }, true);
 document.getElementById("usersContainer")?.addEventListener("click", event => {
+  const answer = event.target.closest("[data-request-answer]");
+  if (answer) {
+    answer.disabled = true;
+    answerAccessRequest(answer.dataset.uid, answer.dataset.kind, answer.dataset.requestAnswer === "accept")
+      .catch(error => showToast(`Could not answer the request: ${error.message}`, "error"))
+      .finally(() => { answer.disabled = false; });
+    return;
+  }
   const button = event.target.closest("[data-user-action]");
   if (!button) return;
   const uid = button.dataset.uid;
@@ -1465,7 +1969,31 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   const row = button.closest(".user-row");
   const name = row?.querySelector(".user-row-info strong")?.textContent || "this account";
   const email = row?.dataset.email || "";
-  const run = write => { button.disabled = true; write().catch(error => showToast(`Could not update this account: ${error.message}`, "error")).finally(() => { button.disabled = false; }); };
+  // Each change is also kept in this operator's own recent actions.
+  const run = (write, done) => {
+    button.disabled = true;
+    write()
+      .then(() => { if (done) logActivity(`${done}: ${name}`.slice(0, 80)); })
+      .catch(error => showToast(`Could not update this account: ${error.message}`, "error"))
+      .finally(() => { button.disabled = false; });
+  };
+  // Control and Edit zones (2026-11-05). Giving one also clears a waiting request for it.
+  if (action === "givezones" || action === "givecontrol") {
+    const zones = action === "givezones";
+    run(() => db.ref().update({
+      [`users/${uid}/${zones ? "zoneEditAccess" : "controlAccess"}`]: true,
+      [`accessRequests/${uid}/${zones ? "zones" : "control"}`]: null
+    }), zones ? "Gave zone editing" : "Gave control");
+    return;
+  }
+  if (action === "takezones" || action === "takecontrol") {
+    const zones = action === "takezones";
+    if (!confirm(zones
+      ? `Take back ${name}'s zone editing? They can still see every column, and can ask again.`
+      : `Take back ${name}'s control access? They lose the Controls and Diagnostics tabs and the Emergency stop, and can ask again.`)) return;
+    run(() => db.ref(`users/${uid}/${zones ? "zoneEditAccess" : "controlAccess"}`).remove(), zones ? "Took back zone editing" : "Took back control");
+    return;
+  }
 
   if (action === "delete") {
     // Deliberately the strongest confirmation of the three (a plain confirm() for the others) --
@@ -1475,16 +2003,16 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // both the Auth account and /users/{uid} in one trusted call.
     const typed = prompt(`Delete ${name}? Their account (login and all) will be permanently deleted -- they would need to sign up again as a brand-new account. This cannot be undone.\n\nType the account's email to confirm:\n${email}`);
     if (typed === null || typed.trim() !== email) return;
-    run(() => deleteUserAccount(uid));
+    run(() => deleteUserAccount(uid).then(() => db.ref(`accessRequests/${uid}`).remove().catch(() => {})), "Deleted");
     return;
   }
   if (action === "kick") {
     // Defense-in-depth re-check: renderUserManagement() already omits this button once offline,
     // but re-verify against the live presence data at click time too, in case this row was mid-
     // re-render (a stale "Kick" button briefly clickable is otherwise possible in that gap).
-    if (!presenceData[uid]?.online) { showToast(`${name} isn't online, so there is nobody to sign out.`, "error"); return; }
+    if (!presenceStatus(uid).online) { showToast(`${name} has no page open, so there is nobody to sign out.`, "error"); return; }
     if (!confirm(`Sign ${name} out now? They can sign in again straight away.`)) return;
-    run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
+    run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }), "Signed out");
     return;
   }
   if (action === "granttemp") {
@@ -1494,22 +2022,27 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // grant longer than intended. grantTempAccess() anchors to Firebase's own server clock rather
     // than this browser's Date.now() -- see its own comment (bug report, 2026-09-10) for why.
     if (!confirm(`Give ${name} 1-hour access to Manual/Test, System and the rig lock? It ends by itself after an hour.`)) return;
-    run(() => grantTempAccess(uid));
+    run(() => grantTempAccess(uid), "Gave 1-hour access");
     return;
   }
   if (action === "revoketemp") {
-    run(() => db.ref(`users/${uid}`).update({ tempAccessUntil: null }));
+    run(() => db.ref(`users/${uid}`).update({ tempAccessUntil: null }), "Ended 1-hour access");
     return;
   }
   if (action === "grantsubop") {
     // Persistent elevation, not a role change -- status stays "approved" throughout, same as temp
-    // access above. No expiry: stays in effect until an operator withholds it again.
+    // access above. No expiry: stays in effect until an operator withholds it again. Given by an operator, never
+    // asked for (the owner's design): a Sub-operator has no request buttons.
     if (!confirm(`Make ${name} a Sub-operator? They can use Manual/Test, System and the rig lock until you remove it.`)) return;
-    run(() => db.ref(`users/${uid}`).update({ subOperator: true }));
+    run(() => db.ref().update({
+      [`users/${uid}/subOperator`]: true,
+      [`accessRequests/${uid}/zones`]: null,
+      [`accessRequests/${uid}/control`]: null
+    }), "Made Sub-operator");
     return;
   }
   if (action === "withholdsubop") {
-    run(() => db.ref(`users/${uid}`).update({ subOperator: null }));
+    run(() => db.ref(`users/${uid}`).update({ subOperator: null }), "Removed Sub-operator");
     return;
   }
   const statusMap = { approve: "approved", reject: "rejected", block: "disabled", unblock: "approved", restrict: "restricted", unrestrict: "approved" };
@@ -1524,9 +2057,15 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   // (2026-09-10) is persistent rather than time-limited, so this matters even more for it -- without
   // this, re-approving a once-blocked sub-operator would silently hand the elevation straight back
   // with no fresh grant, indefinitely, not just within some grant's remaining hour.
-  const updates = { status: newStatus };
-  if (newStatus !== "approved") { updates.tempAccessUntil = null; updates.subOperator = null; }
-  run(() => db.ref(`users/${uid}`).update(updates));
+  // Control and Edit zones (2026-11-05) go the same way. A status change also answers every request the account has
+  // made: an approval or an unrestrict is what it asked for, and anything else no longer applies.
+  const updates = { [`users/${uid}/status`]: newStatus };
+  if (newStatus !== "approved") {
+    ["tempAccessUntil", "subOperator", "controlAccess", "zoneEditAccess"].forEach(field => { updates[`users/${uid}/${field}`] = null; });
+  }
+  Object.keys(REQUEST_WORDS).forEach(kind => { updates[`accessRequests/${uid}/${kind}`] = null; });
+  const done = { approve: "Approved", reject: "Rejected", block: "Blocked", unblock: "Unblocked", restrict: "Restricted", unrestrict: "Unrestricted" }[action];
+  run(() => db.ref().update(updates), done);
 });
 
 function writeZoneProfile(zone) {
@@ -1535,9 +2074,9 @@ function writeZoneProfile(zone) {
   // isApprovedUser(), not just sign-in. The Firebase rule already rejects this write for a
   // non-approved account either way, so there was no security gap -- but a pending/rejected account
   // changing a crop/stage dropdown got a raw PERMISSION_DENIED error instead of the same friendly
-  // "awaiting approval" message shown everywhere else.
-  if (!isApprovedUser()) {
-    setCommandStatus("Your account is awaiting operator approval before it can send commands to the rig.", "error");
+  // "awaiting approval" message shown everywhere else. Since 2026-11-05 it needs Edit zones, as the rules do.
+  if (!hasZoneEditAccess()) {
+    setCommandStatus(NO_ZONE_EDIT_TITLE, "error");
     return;
   }
   // update(), not set(): the column's "Firmware save settings" library lives under this same node, and
@@ -1554,11 +2093,14 @@ function writeZoneProfile(zone) {
 // renderUserManagement(). A failure here must never affect the action it records, so it has its own
 // silent catch. auth.currentUser can legitimately be null by the time this runs, if the user signed out
 // just after the action; skip the entry rather than throw inside the caller's promise chain.
+// Since 2026-11-05 it records every change made on the website (sign-ins, column and crop edits, requests, account
+// decisions, Manual/Test), not only rig commands. Returns the write, so signing out can wait for its own entry.
 function logActivity(what) {
-  const myUid = auth.currentUser?.uid;
-  if (!myUid) return;
-  db.ref(`activity/${myUid}`).push({
-    what,
+  const myUid = auth?.currentUser?.uid;
+  const text = String(what || "").trim().slice(0, 80);
+  if (!myUid || !text) return Promise.resolve();
+  return db.ref(`activity/${myUid}`).push({
+    what: text,
     at: firebase.database.ServerValue.TIMESTAMP
   }).catch(error => console.warn("Could not log activity", error));
 }
@@ -1634,6 +2176,15 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus("Your account is awaiting operator approval before it can send commands to the rig.", "error");
     return Promise.resolve(false);
   }
+  // Access levels (2026-11-05): a column's own settings need Edit zones, everything else Control (the rules agree).
+  if (!options.operatorOnly && type === "SET_COLUMN" && !hasZoneEditAccess()) {
+    setCommandStatus(`Not sent. ${NO_ZONE_EDIT_TITLE}`, "error");
+    return Promise.resolve(false);
+  }
+  if (!options.operatorOnly && type !== "SET_COLUMN" && !hasControlAccess()) {
+    setCommandStatus(`Not sent. ${NO_CONTROL_TITLE}`, "error");
+    return Promise.resolve(false);
+  }
   // Access-control revision (2026-09-09): a handful of command types (Manual/Test's pump exercise/
   // timed pulse/flow sweep, System's Set Clock/Thresholds/Restore Defaults) are meant for the two
   // privileged operator accounts -- or a normal approved account an operator has temporarily
@@ -1643,7 +2194,7 @@ function queueCommand(type, payload = {}, options = {}) {
   // longer just a client-side convenience: firebase-rules.json's commands/$commandId write rule
   // independently enforces the identical operator-or-temp-access check for these six command types.
   if (options.operatorOnly && !canAccessPrivilegedTabs()) {
-    setCommandStatus("This control is limited to the main/creator operator account.", "error");
+    setCommandStatus("This control is for operators, and accounts with 1-hour access or Sub-operator.", "error");
     return Promise.resolve(false);
   }
   // The rules refuse everything but the stops while ESP1 reports the rig locked: say so instead of a bare refusal.
@@ -1797,14 +2348,62 @@ const ZONE_CONFIRM_SETTLE_MS = 3000;
 const zoneDrafts = {};
 // column id -> the SET_COLUMN key of a switch press still waiting for ESP1.
 const zonePowerSent = {};
+// column id -> the name being typed while that column is renamed (website only).
+const zoneRenames = {};
+const ZONE_NAME_MAX = 40;
+// column id -> the card's last note about a website-only step (a rename, a saved or loaded setup): { text, error, at }.
+// Kept here because the zones listener rebuilds every card, and fires a second time once the server fills in
+// updatedAt. Shown until a SET_COLUMN outcome newer than it (renderColumnCommandResults()).
+const zoneNotes = {};
 
 function clearZoneDrafts() {
   Object.keys(zoneDrafts).forEach(id => delete zoneDrafts[id]);
   Object.keys(zonePowerSent).forEach(id => delete zonePowerSent[id]);
+  Object.keys(zoneRenames).forEach(id => delete zoneRenames[id]);
+  Object.keys(zoneNotes).forEach(id => delete zoneNotes[id]);
+}
+
+// The card's result line, for a note that should outlive the card being rebuilt.
+function zoneNote(id) {
+  const show = resultLine(`cfgResult${id}`);
+  return (text, error = false) => {
+    zoneNotes[id] = { text, error, at: serverNow() };
+    show(text, error);
+  };
+}
+
+// Saves a column's website name with its crop choice (config/zones/{id}). The rules allow any approved account, the
+// same as the crop choice, and check the length.
+function saveZoneName(zone) {
+  const show = resultLine(`cfgResult${zone.id}`);       // about the open form: no need to outlive it
+  const name = String(zoneRenames[zone.id] ?? "").trim();
+  if (!name) { show("Type a name first. Nothing was saved.", true); return; }
+  if (name.length > ZONE_NAME_MAX) { show(`Names are up to ${ZONE_NAME_MAX} characters. Nothing was saved.`, true); return; }
+  delete zoneRenames[zone.id];
+  if (name === zone.name) { renderZonesUI(); return; }
+  zone.name = name;
+  zoneNote(zone.id)(`Renamed to "${name}". The new name is on this website only: the LCD and SMS keep ESP1's own name for the column.`);
+  writeZoneProfile(zone);
+  logActivity(`Renamed column ${zone.id} to "${name}"`);
+  renderZonesUI();
+  document.getElementById(`zoneRename${zone.id}`)?.focus();
 }
 
 function numberOrNull(value) {
   return hasValue(value) ? Number(value) : null;
+}
+
+// ESP1 from 5 Nov 2026 can water a column in up to MAX_RUNS_PER_DAY windows a day, and says so by publishing each
+// column's "runs". Older firmware waters once a day in one window, and only understands winStart/winEnd.
+const MAX_RUNS_PER_DAY = 4;
+let zoneCardsMultiRun = false;     // whether the cards were last built with the several-times editor
+function multiRunSupported() {
+  return Object.values(liveData.sensors?.zones || {}).some(z => hasValue(z?.runs));
+}
+function windowPairs(list) {
+  if (!Array.isArray(list)) return null;
+  const pairs = list.filter(p => Array.isArray(p) && p.length === 2 && hasValue(p[0]) && hasValue(p[1])).map(([a, b]) => [Number(a), Number(b)]);
+  return pairs.length ? pairs : null;
 }
 
 // What ESP1 has for a column right now.
@@ -1817,8 +2416,13 @@ function zoneSettings(id) {
     sched: hasValue(z.schedMode) ? Number(z.schedMode) : null,
     ws: numberOrNull(z.winStart),
     we: numberOrNull(z.winEnd),
+    // Every window in use (several a day since 5 Nov 2026); from older firmware, the one it has.
+    windows: windowPairs(z.windows),
+    runsToday: numberOrNull(z.runsToday),
+    fedToday: z.fedToday === true,
     targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, numberOrNull(z[f.key])]))
   };
+  if (!s.windows && s.ws !== null && s.we !== null) s.windows = [[s.ws, s.we]];
   // ESP1 applies a SET_COLUMN all at once or not at all, so a completed one is exactly what it now has.
   const stamp = Number(liveData.meta?.updatedAt || 0);
   commandData
@@ -1828,24 +2432,35 @@ function zoneSettings(id) {
     .forEach(({ payload: p }) => {
       if (hasValue(p.enabled)) { s.known = true; s.enabled = p.enabled === true || Number(p.enabled) === 1; }
       if (p.mode === "AUTO" || p.mode === "IRRIGATION_ONLY") s.mode = p.mode;
-      if (hasValue(p.schedMode)) {
-        s.sched = Number(p.schedMode);
-        // On the default window ESP1 reports the default, whatever own time it has kept.
-        if (s.sched === 0 && DEFAULT_WINDOWS[id]) [s.ws, s.we] = DEFAULT_WINDOWS[id];
+      // ESP1 keeps the own times it was sent even while on the rig default, and reports the windows in use.
+      const sentWindows = windowPairs(p.windows);
+      if (sentWindows) { s.ownWindows = sentWindows; }
+      else if (hasValue(p.winStart) || hasValue(p.winEnd)) {
+        const first = s.ownWindows?.[0] || (s.sched === 1 ? s.windows?.[0] : null) || [s.ws, s.we];
+        s.ownWindows = [[hasValue(p.winStart) ? Number(p.winStart) : first[0], hasValue(p.winEnd) ? Number(p.winEnd) : first[1]], ...(s.ownWindows || []).slice(1)];
       }
-      if (hasValue(p.winStart)) s.ws = Number(p.winStart);
-      if (hasValue(p.winEnd)) s.we = Number(p.winEnd);
+      if (hasValue(p.schedMode)) s.sched = Number(p.schedMode);
       TARGET_FIELDS.forEach(f => { if (hasValue(p[f.key])) s.targets[f.key] = Number(p[f.key]); });
     });
+  // On the default window ESP1 reports the default, whatever own times it has kept; on its own times, those.
+  if (s.sched === 0 && DEFAULT_WINDOWS[id]) s.windows = [DEFAULT_WINDOWS[id]];
+  else if (s.sched === 1 && s.ownWindows) s.windows = s.ownWindows;
+  delete s.ownWindows;
+  if (s.windows) [s.ws, s.we] = s.windows[0];
   return s;
 }
 
-function windowText(id, sched, ws, we) {
+// "06:00–07:00", "06:00–07:00 and 12:00–13:00", "06:00–07:00, 12:00–13:00 and 17:00–18:00"
+function windowListText(windows) {
+  const parts = (windows || []).map(([a, b]) => `${minutesToHhmm(a)}–${minutesToHhmm(b)}`);
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0] || "";
+}
+function scheduleText(id, sched, windows) {
   if (sched === 0) {
-    const [ds, de] = DEFAULT_WINDOWS[id] || [ws, we];
+    const [ds, de] = DEFAULT_WINDOWS[id] || windows?.[0] || [null, null];
     return `${minutesToHhmm(ds)}–${minutesToHhmm(de)} (rig default)`;
   }
-  if (sched === 1) return `${minutesToHhmm(ws)}–${minutesToHhmm(we)} (my own time)`;
+  if (sched === 1 && windows?.length) return `${windowListText(windows)} (${windows.length > 1 ? "my own times" : "my own time"})`;
   return "Unavailable";
 }
 
@@ -1861,6 +2476,7 @@ function targetsText(targets) {
 // why a column's switch or Save to rig is off, or "" when they can be used.
 function rigControlBlock() {
   if (!currentUserIsSignedIn() || !isApprovedUser()) return "Needs an approved account.";
+  if (!hasZoneEditAccess()) return NO_ZONE_EDIT_TITLE;
   if (!firebaseConnected) return "This browser has lost its connection to Firebase.";
   if (!deviceIsFresh()) return "Needs a fresh ESP1 snapshot: ESP1 isn't reporting right now.";
   if (rigLocked()) return LOCKED_TITLE;
@@ -1874,8 +2490,22 @@ function renderZoneSummary(zone) {
   const block = document.querySelector(`.zone-block[data-zone="${id}"]`);
   if (block) block.classList.toggle("is-off", s.known && !s.enabled);
   setText(`zoneDoes${id}`, s.mode ? MODE_TEXT[s.mode] : "Unavailable");
+  const runs = s.sched === 1 && s.windows ? s.windows.length : 1;
   setText(`zoneWhen${id}`, s.sched === null ? "Unavailable"
-    : `${windowText(id, s.sched, s.ws, s.we)}, once a day, when the soil is drier than Soil start %`);
+    : `${scheduleText(id, s.sched, s.windows)}, ${runs > 1 ? "at most once in each" : "once a day"}, when the soil is drier than Soil start %`);
+  // How far through the day it is. Only ESP1 from 5 Nov 2026 reports it. "Done" rather than "watered": ESP1 also
+  // closes the rest of the day on a STOP reply or a lost fault. A time that passed while the soil was wet stays open.
+  const today = document.getElementById(`zoneToday${id}`);
+  if (today) {
+    const done = s.runsToday === null ? null : Math.min(s.runsToday, runs);
+    const shown = done !== null && s.sched !== null && !(s.known && !s.enabled);
+    today.hidden = !shown;
+    if (shown) {
+      today.textContent = (runs === 1 ? (done ? "Done for today." : "Not watered so far today.")
+                                      : `Today: ${done} of ${runs} watering times done.`) +
+        (s.fedToday && s.mode === "AUTO" && done < runs ? " Nutrients already went in today, so the rest of today's waterings are plain water." : "");
+    }
+  }
   setText(`zoneTargets${id}`, targetsText(s.targets));
   const offNote = document.getElementById(`zoneOffNote${id}`);
   if (offNote) offNote.hidden = !(s.known && !s.enabled);
@@ -1926,14 +2556,35 @@ function confirmEnableColumn(id) {
 }
 
 /* ---- Edit settings ---- */
+// The editor's watering-time boxes: window 1 keeps the ids it has always had, the rest are numbered (cfgWinStartA2).
+function winInputId(prefix, id, w) {
+  return w === 0 ? `${prefix}${id}` : `${prefix}${id}${w + 1}`;
+}
+const ORDINALS = ["1st", "2nd", "3rd", "4th"];
+// ESP1's own defaults for watering times 2 to 4 (COL_EXTRA_START/END in its main.cpp).
+const EXTRA_WINDOW_DEFAULTS = [[720, 780], [960, 1020], [1080, 1140]];
+// Where a newly added watering time starts: ESP1's default for it when that comes after the time above, otherwise an
+// hour long, an hour after the time above. Either way it is checked like a typed one.
+function suggestWindow(w, prevEnd) {
+  const def = EXTRA_WINDOW_DEFAULTS[w - 1];
+  if (def && (prevEnd === null || def[0] > prevEnd)) return def;
+  const start = Math.min((prevEnd ?? 0) + 60, 1438);
+  return [start, Math.min(start + 60, 1439)];
+}
+function sameWindows(a, b) {
+  return Boolean(a && b) && a.length === b.length && a.every(([s, e], i) => s === b[i][0] && e === b[i][1]);
+}
+
 function openZoneEditor(id) {
   const s = zoneSettings(id);
-  const own = s.sched === 1;
+  const own = s.sched === 1 && s.windows;
   zoneDrafts[id] = {
     mode: s.mode || "",
     sched: s.sched === null ? "" : String(s.sched),
-    ws: own && s.ws !== null ? minutesToHhmm(s.ws) : "",
-    we: own && s.we !== null ? minutesToHhmm(s.we) : "",
+    // How many watering times, and every box's text, kept for all four so a row hidden by a lower count keeps
+    // what was typed in it.
+    runs: own ? Math.min(s.windows.length, MAX_RUNS_PER_DAY) : 1,
+    wins: Array.from({ length: MAX_RUNS_PER_DAY }, (_, w) => own && s.windows[w] ? s.windows[w].map(minutesToHhmm) : ["", ""]),
     targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, s.targets[f.key] === null ? "" : String(s.targets[f.key])])),
     saveName: "",
     setupsOpen: false
@@ -1955,10 +2606,9 @@ function fillZoneForm(id) {
   if (!d || !form) return;
   form.querySelectorAll(`input[name="cfgMode${id}"]`).forEach(radio => { radio.checked = radio.value === d.mode; });
   form.querySelectorAll(`input[name="cfgSched${id}"]`).forEach(radio => { radio.checked = radio.value === d.sched; });
-  const start = document.getElementById(`cfgWinStart${id}`);
-  const end = document.getElementById(`cfgWinEnd${id}`);
-  if (start) start.value = d.ws;
-  if (end) end.value = d.we;
+  const runs = document.getElementById(`cfgRuns${id}`);
+  if (runs) runs.value = String(d.runs);
+  for (let w = 0; w < MAX_RUNS_PER_DAY; w++) fillWindowRow(id, w);
   TARGET_FIELDS.forEach(f => { const el = document.getElementById(`${f.input}${id}`); if (el) el.value = d.targets[f.key]; });
   const name = document.getElementById(`cfgSaveName${id}`);
   if (name) name.value = d.saveName;
@@ -1966,13 +2616,31 @@ function fillZoneForm(id) {
   renderZoneChanges(id);
 }
 
-// The times only mean something for "My own time", so they are greyed out otherwise.
+function fillWindowRow(id, w) {
+  const d = zoneDrafts[id];
+  const start = document.getElementById(winInputId("cfgWinStart", id, w));
+  const end = document.getElementById(winInputId("cfgWinEnd", id, w));
+  if (start) start.value = d.wins[w][0];
+  if (end) end.value = d.wins[w][1];
+}
+
+// The times only mean something for "My own time", so they are greyed out otherwise. Only as many rows as
+// "Waterings a day" asks for are shown.
 function syncZoneTimeInputs(id) {
-  const own = zoneDrafts[id]?.sched === "1";
-  ["cfgWinStart", "cfgWinEnd"].forEach(prefix => {
-    const el = document.getElementById(`${prefix}${id}`);
-    if (el) el.disabled = !own;
-  });
+  const d = zoneDrafts[id];
+  if (!d) return;
+  const own = d.sched === "1";
+  const runs = document.getElementById(`cfgRuns${id}`);
+  if (runs) runs.disabled = !own;
+  for (let w = 0; w < MAX_RUNS_PER_DAY; w++) {
+    const row = document.getElementById(`cfgWinRow${id}${w + 1}`);
+    if (row) row.hidden = w >= d.runs;
+    ["cfgWinStart", "cfgWinEnd"].forEach(prefix => {
+      const el = document.getElementById(winInputId(prefix, id, w));
+      if (el) el.disabled = !own;
+    });
+  }
+  document.getElementById(`zoneForm${id}`)?.classList.toggle("several-windows", d.runs > 1);
 }
 
 function readZoneForm(id) {
@@ -1981,20 +2649,28 @@ function readZoneForm(id) {
   if (!d || !form) return;
   d.mode = form.querySelector(`input[name="cfgMode${id}"]:checked`)?.value || d.mode;
   const sched = form.querySelector(`input[name="cfgSched${id}"]:checked`)?.value ?? d.sched;
-  const start = document.getElementById(`cfgWinStart${id}`);
-  const end = document.getElementById(`cfgWinEnd${id}`);
-  if (sched === "1" && d.sched !== "1" && !d.ws && !d.we) {
+  for (let w = 0; w < MAX_RUNS_PER_DAY; w++) {
+    const start = document.getElementById(winInputId("cfgWinStart", id, w));
+    const end = document.getElementById(winInputId("cfgWinEnd", id, w));
+    if (start) d.wins[w][0] = start.value;
+    if (end) d.wins[w][1] = end.value;
+  }
+  if (sched === "1" && d.sched !== "1" && !d.wins[0][0] && !d.wins[0][1]) {
     // Switching to own time starts from the window in use now, not from two blank boxes.
     const s = zoneSettings(id);
-    const [ws, we] = s.sched === 1 && s.ws !== null ? [s.ws, s.we] : (DEFAULT_WINDOWS[id] || [360, 480]);
-    d.ws = minutesToHhmm(ws);
-    d.we = minutesToHhmm(we);
-    if (start) start.value = d.ws;
-    if (end) end.value = d.we;
-  } else {
-    d.ws = start?.value ?? d.ws;
-    d.we = end?.value ?? d.we;
+    const [ws, we] = s.sched === 1 && s.windows ? s.windows[0] : (DEFAULT_WINDOWS[id] || [360, 480]);
+    d.wins[0] = [minutesToHhmm(ws), minutesToHhmm(we)];
+    fillWindowRow(id, 0);
   }
+  // A row added by a higher count starts from a suggestion, not blank boxes. Only rows that just appeared, so a box
+  // being cleared to retype it is left alone.
+  const runs = Number(document.getElementById(`cfgRuns${id}`)?.value || d.runs);
+  for (let w = d.runs; w < runs; w++) {
+    if (d.wins[w][0] || d.wins[w][1]) continue;
+    d.wins[w] = suggestWindow(w, hhmmToMinutes(d.wins[w - 1][1])).map(minutesToHhmm);
+    fillWindowRow(id, w);
+  }
+  d.runs = runs;
   d.sched = sched;
   TARGET_FIELDS.forEach(f => { const el = document.getElementById(`${f.input}${id}`); if (el) d.targets[f.key] = el.value.trim(); });
   d.saveName = document.getElementById(`cfgSaveName${id}`)?.value ?? d.saveName;
@@ -2015,17 +2691,28 @@ function zoneEditPlan(id) {
     words.push(`what it does, from "${s.mode ? MODE_TEXT[s.mode] : "unknown"}" to "${MODE_TEXT[d.mode]}"`);
   }
   if (d.sched === "1") {
-    const ws = hhmmToMinutes(d.ws);
-    const we = hhmmToMinutes(d.we);
-    if (ws === null || we === null) problems.push("Pick both a start and an end time for My own time.");
-    else if (ws >= we) problems.push("The watering time must start before it ends, on the same day: the rig can't water past midnight.");
-    else if (s.sched !== 1 || ws !== s.ws || we !== s.we) {
-      payload.schedMode = 1; payload.winStart = ws; payload.winEnd = we;
-      words.push(`when it runs, from ${windowText(id, s.sched, s.ws, s.we)} to ${windowText(id, 1, ws, we)}`);
+    // ESP1 that can water several times a day takes them all at once as windows[]; older firmware only knows one.
+    const multi = multiRunSupported();
+    const count = multi ? d.runs : 1;
+    const wins = d.wins.slice(0, count).map(([a, b]) => [hhmmToMinutes(a), hhmmToMinutes(b)]);
+    // The same checks as ESP1's windowsValid(): each inside the day and starting before it ends, each ending before the
+    // next starts. Times are whole minutes and both ends count, so 07:00 can't end one and start the next.
+    const late = wins.findIndex(([a], w) => w > 0 && a <= wins[w - 1][1]);
+    if (wins.some(([a, b]) => a === null || b === null)) {
+      problems.push(count > 1 ? "Pick a start and an end for each watering time." : "Pick both a start and an end time for My own time.");
+    } else if (wins.some(([a, b]) => a >= b)) {
+      problems.push(`${count > 1 ? "Each watering time" : "The watering time"} must start before it ends, on the same day: the rig can't water past midnight.`);
+    } else if (late > 0) {
+      problems.push(`The ${ORDINALS[late]} watering time must start after the ${ORDINALS[late - 1]} one ends. Put them in order through the day, without overlapping.`);
+    } else if (s.sched !== 1 || !sameWindows(wins, s.windows)) {
+      payload.schedMode = 1;
+      if (multi) payload.windows = wins;
+      else { payload.winStart = wins[0][0]; payload.winEnd = wins[0][1]; }
+      words.push(`when it runs, from ${scheduleText(id, s.sched, s.windows)} to ${scheduleText(id, 1, wins)}`);
     }
   } else if (d.sched === "0" && s.sched !== 0) {
     payload.schedMode = 0;
-    words.push(`when it runs, from ${windowText(id, s.sched, s.ws, s.we)} to ${windowText(id, 0)}`);
+    words.push(`when it runs, from ${scheduleText(id, s.sched, s.windows)} to ${scheduleText(id, 0)}`);
   }
   TARGET_FIELDS.forEach(f => {
     const raw = d.targets[f.key];
@@ -2074,12 +2761,11 @@ function saveZoneEditor(id) {
 function fillTargetsFromCrop(zone) {
   const id = zone.id;
   const show = resultLine(`cfgResult${id}`);
-  const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage];
-  if (!target || !zoneDrafts[id]) { show("That crop and stage has no stored profile. Nothing was filled in.", true); return; }
-  Object.assign(zoneDrafts[id].targets, { targetN: String(target.n), targetP: String(target.p), targetK: String(target.k), targetPH: String(target.ph) });
+  const { crop, stage } = zoneCrop(zone);
+  if (!crop || !stage || !zoneDrafts[id]) { show("That crop and stage has no stored profile. Nothing was filled in.", true); return; }
+  Object.assign(zoneDrafts[id].targets, { targetN: String(stage.n), targetP: String(stage.p), targetK: String(stage.k), targetPH: String(stage.ph) });
   fillZoneForm(id);
-  const crop = readableCropNames[zone.defaultCrop] || zone.defaultCrop;
-  show(`Filled from ${crop}, ${zone.defaultStage}. Check them, then press Save to rig.`);
+  zoneNote(id)(`Filled from ${cropLabel(crop)}, ${stage.name}. Check them, then press Save to rig.`);
 }
 
 // Saved setups: the editor's values under a name, kept with the page's own zone config (ESP1 never reads
@@ -2087,23 +2773,27 @@ function fillTargetsFromCrop(zone) {
 // turning a column on or off is the switch's job.
 function saveColumnSettings(id) {
   const show = resultLine(`cfgResult${id}`);
-  if (!isApprovedUser()) { show("Your account is awaiting operator approval before it can save settings.", true); return; }
+  if (!hasZoneEditAccess()) { show(NO_ZONE_EDIT_TITLE, true); return; }
   readZoneForm(id);
   const d = zoneDrafts[id];
   if (!d) return;
+  const own = d.sched === "1";
   const snapshot = {
     name: d.saveName.trim() || `Saved ${new Date().toLocaleString()}`,
     savedAt: firebase.database.ServerValue.TIMESTAMP,
     mode: d.mode, schedMode: d.sched,
-    winStart: d.sched === "1" ? d.ws : "", winEnd: d.sched === "1" ? d.we : "",
+    // winStart/winEnd stay the first time, as older saves have it; "windows" carries every one (5 Nov 2026).
+    winStart: own ? d.wins[0][0] : "", winEnd: own ? d.wins[0][1] : "",
     targetN: d.targets.targetN, targetP: d.targets.targetP, targetK: d.targets.targetK, targetPH: d.targets.targetPH
   };
+  if (own) snapshot.windows = d.wins.slice(0, d.runs).map(([a, b]) => ({ from: a, to: b }));
   db.ref(`irrigation/config/zones/${id}/savedSettings`).push(snapshot)
     .then(() => {
       if (zoneDrafts[id]) zoneDrafts[id].saveName = "";
       const name = document.getElementById(`cfgSaveName${id}`);
       if (name) name.value = "";
-      resultLine(`cfgResult${id}`)(`Saved as "${snapshot.name}". It isn't on the rig until you press Save to rig.`);
+      zoneNote(id)(`Saved as "${snapshot.name}". It isn't on the rig until you press Save to rig.`);
+      logActivity(`Column ${id}: saved setup "${snapshot.name}"`);
     })
     .catch(error => show(`Could not save the setup: ${error.message}`, true));
 }
@@ -2114,10 +2804,19 @@ function loadSavedSetup(zone, key) {
   if (!chosen || !d) return;
   if (chosen.mode === "AUTO" || chosen.mode === "IRRIGATION_ONLY") d.mode = chosen.mode;
   if (["0", "1"].includes(String(chosen.schedMode))) d.sched = String(chosen.schedMode);
-  if (d.sched === "1") { d.ws = rawText(chosen.winStart, ""); d.we = rawText(chosen.winEnd, ""); }
+  if (d.sched === "1") {
+    // Firebase hands a saved list back as an array, or as an object when it has gaps; older saves have one time only.
+    const saved = (Array.isArray(chosen.windows) ? chosen.windows : Object.values(chosen.windows || {}))
+      .filter(t => t && typeof t === "object").slice(0, MAX_RUNS_PER_DAY)
+      .map(t => [rawText(t.from, ""), rawText(t.to, "")]);
+    const times = saved.length ? saved : [[rawText(chosen.winStart, ""), rawText(chosen.winEnd, "")]];
+    // A save with more times than this ESP1 can take keeps only the first.
+    d.runs = multiRunSupported() ? times.length : 1;
+    times.forEach((t, w) => { d.wins[w] = t; });
+  }
   TARGET_FIELDS.forEach(f => { if (hasValue(chosen[f.key])) d.targets[f.key] = String(chosen[f.key]); });
   fillZoneForm(zone.id);
-  resultLine(`cfgResult${zone.id}`)(`Loaded "${rawText(chosen.name, "Untitled")}". Check it, then press Save to rig.`);
+  zoneNote(zone.id)(`Loaded "${rawText(chosen.name, "Untitled")}". Check it, then press Save to rig.`);
 }
 
 // Each column's latest SET_COLUMN outcome, under its own card, in words. ESP1's own reply follows in
@@ -2130,6 +2829,13 @@ function renderColumnCommandResults() {
     const latest = commandData
       .filter(c => c.type === "SET_COLUMN" && c.payload && c.payload.col === zone.id)
       .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
+    // A website-only note (a rename, a setup) stays until ESP1 says something newer about the column.
+    const note = zoneNotes[zone.id];
+    if (note && (!latest || note.at >= Math.max(Number(latest.requestedAt || 0), Number(latest.updatedAt || 0)))) {
+      result.textContent = note.text;
+      result.className = `control-result${note.error ? " error" : ""}`;
+      return;
+    }
     if (!latest) return;
     const reply = commandDetailText(latest, "");
     result.textContent = latest.status === "completed" ? `Saved on ESP1${reply ? ` (its reply: ${reply})` : ""}.`
@@ -2146,7 +2852,9 @@ function renderZonesUI() {
   container.innerHTML = "";
   // Access-control revision (2026-09-09): a pending/restricted account gets read-only text, not
   // controls that are simply expected to fail. The real boundary is still queueCommand() and the rules.
-  const canEdit = isApprovedUser();
+  const canEdit = hasZoneEditAccess();
+  const multi = multiRunSupported();
+  zoneCardsMultiRun = multi;
   activeZones.forEach(zone => {
     const id = zone.id;
     const block = document.createElement("article");
@@ -2154,8 +2862,9 @@ function renderZonesUI() {
     block.dataset.zone = id;
     // Short words here; the full explanation is in the Help entry each icon links to.
     const info = (title, text, help) => `<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${title}" data-info-title="${title}" data-info-text="${text}"${help ? ` data-help="${help}"` : ""}>i</button>`;
-    const crop = readableCropNames[zone.defaultCrop] || zone.defaultCrop || "--";
-    const stage = zone.defaultStage ? zone.defaultStage[0].toUpperCase() + zone.defaultStage.slice(1) : "--";
+    const resolved = zoneCrop(zone);
+    const crop = resolved.crop ? cropLabel(resolved.crop) : "--";
+    const stage = resolved.stage ? resolved.stage.name : "--";
     const reading = (label, valueId, noteId, infoText, help, note = "Crop profile: --") => `
         <div class="reading">
           <dt>${label}${info(label, infoText, help)}</dt>
@@ -2175,7 +2884,7 @@ function renderZonesUI() {
 
     const compare = canEdit
       ? `<div class="zone-compare">
-          <span class="label-row">Compared with${info("Crop profile", "Pick the crop and stage growing here. A reading turns red when it is below that crop's number. This stays on the website: ESP1 never sees it.", "help-crop-profile")}</span>
+          <span class="label-row">Compared with${info("Crop profile", "Pick the crop and stage growing here. A reading turns red when it is below that crop's number. This stays on the website: ESP1 never sees it. The crops and their numbers are under Crop profiles, below the columns.", "help-crop-profile")}</span>
           <select id="cropSelect${id}" aria-label="Crop growing in column ${id}"></select>
           <select id="growthStage${id}" aria-label="Growth stage in column ${id}"></select>
         </div>`
@@ -2185,13 +2894,14 @@ function renderZonesUI() {
         <dl class="zone-summary">
           <dt>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</dt>
           <dd id="zoneDoes${id}">Unavailable</dd>
-          <dt>When it runs${info("When it runs", "The part of the day this column may be watered. It is watered at most once a day, and only when its soil is dry enough.", "help-window")}</dt>
+          <dt>When it runs${info("When it runs", "The times of day this column may be watered: at most once in each, and only when its soil is dry enough.", "help-window")}</dt>
           <dd id="zoneWhen${id}">Unavailable</dd>
+          <dd class="zone-today" id="zoneToday${id}" hidden></dd>
           <dt>Targets${info("Targets", "The N, P and K levels ESP1 aims for. It adds nutrients when a reading falls short of one by the Fertigation gap. pH is recorded, not corrected.", "help-npk")}</dt>
           <dd id="zoneTargets${id}">Unavailable</dd>
         </dl>
         ${canEdit ? `<button type="button" id="zoneEdit${id}" class="secondary">Edit settings</button>`
-                  : `<p class="field-note">Read-only: changing a column's settings needs an approved account.</p>`}`;
+                  : `<p class="field-note">Read-only. Changing a column's settings needs access to edit zone profiles${isApprovedUser() && !isOperator() ? ", which you can ask for at the top of this tab" : ""}.</p>`}`;
 
     const form = `
         <form id="zoneForm${id}" class="zone-form" novalidate>
@@ -2201,14 +2911,21 @@ function renderZonesUI() {
             <label class="choice"><input type="radio" name="cfgMode${id}" value="IRRIGATION_ONLY">Water only</label>
           </fieldset>
           <fieldset>
-            <legend>When it runs${info("When it runs", "Rig default uses the window built into the firmware. My own time uses the start and end you pick, and must end the same day.", "help-set-time")}</legend>
-            <label class="choice"><input type="radio" name="cfgSched${id}" value="0">Rig default, ${minutesToHhmm(defStart)}–${minutesToHhmm(defEnd)}</label>
+            <legend>When it runs${info("When it runs", multi
+              ? "Rig default uses the one window built into the firmware. My own time uses up to 4 times you pick, in order through the day, each ending the same day."
+              : "Rig default uses the window built into the firmware. My own time uses the start and end you pick, and must end the same day.", "help-set-time")}</legend>
+            <label class="choice"><input type="radio" name="cfgSched${id}" value="0">Rig default, ${minutesToHhmm(defStart)}–${minutesToHhmm(defEnd)}, once a day</label>
             <label class="choice"><input type="radio" name="cfgSched${id}" value="1">My own time</label>
-            <div class="time-row">
-              <label>From<input id="cfgWinStart${id}" type="time"></label>
-              <label>To<input id="cfgWinEnd${id}" type="time"></label>
-            </div>
-            <p class="field-note">At most once a day, inside this time, when the soil is drier than Soil start %. Times follow the rig's clock.</p>
+            ${multi ? `<label class="runs-pick">Waterings a day<select id="cfgRuns${id}">${ORDINALS.map((_, w) => `<option value="${w + 1}">${w + 1}</option>`).join("")}</select></label>` : ""}
+            ${Array.from({ length: multi ? MAX_RUNS_PER_DAY : 1 }, (_, w) => `
+            <div class="time-row" id="cfgWinRow${id}${w + 1}" role="group" aria-label="${multi ? `${ORDINALS[w]} watering time` : "Watering time"}">
+              ${multi ? `<span class="time-row-label" aria-hidden="true">${ORDINALS[w]}</span>` : ""}
+              <label>From<input id="${winInputId("cfgWinStart", id, w)}" type="time"></label>
+              <label>To<input id="${winInputId("cfgWinEnd", id, w)}" type="time"></label>
+            </div>`).join("")}
+            <p class="field-note">${multi
+              ? "At most once in each time, and only when the soil is drier than Soil start %. Nutrients go in at most once a day: later waterings that day are plain water. Times follow the rig's clock."
+              : "At most once a day, inside this time, when the soil is drier than Soil start %. Times follow the rig's clock."}</p>
           </fieldset>
           <fieldset>
             <legend>Targets${info("Targets", "N, P and K in ppm (0 to 2000), pH from 3 to 9. A blank box leaves ESP1's value as it is.", "help-targets")}</legend>
@@ -2232,11 +2949,21 @@ function renderZonesUI() {
           </div>
         </form>`;
 
+    // Renaming (2026-11-05): the website's own name for the column, kept with its crop in config/zones. ESP1 keeps a
+    // separate name (SMS NAME / the setup portal) that this doesn't touch, as the owner chose.
+    const renaming = canEdit && zoneRenames[id] !== undefined;
+    const nameLine = renaming
+      ? `<form class="zone-rename" id="zoneRenameForm${id}" novalidate>
+            <label>Name for column ${id}<input id="zoneRenameInput${id}" maxlength="${ZONE_NAME_MAX}" autocomplete="off"></label>
+            <button type="submit">Save name</button>
+            <button type="button" class="secondary" id="zoneRenameCancel${id}">Cancel</button>
+          </form>`
+      : `<p class="zone-sub">${escapeHtml(zone.name)}${canEdit ? ` <button type="button" class="inline-link" id="zoneRename${id}">Rename</button>` : ""}</p>`;
     block.innerHTML = `
       <header class="zone-head">
         <div>
           <h3>Column ${id}</h3>
-          <p class="zone-sub">${escapeHtml(zone.name)}</p>
+          ${nameLine}
         </div>
         ${power}
       </header>
@@ -2248,7 +2975,13 @@ function renderZonesUI() {
           </div>
           <p class="zone-off-note" id="zoneOffNote${id}" hidden>This column is off. ESP1 isn't watering it, and isn't sending its readings. Its settings are kept.</p>
           <dl class="reading-grid">
-            ${reading("Soil moisture", `soil${id}`, `targetMoisture${id}`, "The column's main moisture figure. ESP1 waters it when this is below Soil start %.", "help-moisture")}
+            <div class="reading reading-gauge">
+              <dt>Soil moisture${info("Soil moisture", "The column's main moisture figure. ESP1 waters it when this is below Soil start %, the marked line on the gauge. The other mark is what the crop profile wants.", "help-moisture")}</dt>
+              <dd class="gauge-wrap">${moistureGaugeSvg(id)}</dd>
+              <dd class="reading-value" id="soil${id}">Unavailable</dd>
+              <dd class="reading-note note-crop" id="targetMoisture${id}">Crop profile: --</dd>
+              <dd class="reading-note note-start" id="soilStartNote${id}">Waters below 35 %</dd>
+            </div>
             ${reading("Nitrogen (N)", `nitrogen${id}`, `targetN${id}`, "Nitrogen in the soil, in ppm, from the 7-in-1 probe. Red: below the crop profile's number.", "help-npk")}
             ${reading("Phosphorus (P)", `phosphorus${id}`, `targetP${id}`, "Phosphorus in the soil, in ppm. Red: below the crop profile's number.", "help-npk")}
             ${reading("Potassium (K)", `potassium${id}`, `targetK${id}`, "Potassium in the soil, in ppm. Red: below the crop profile's number.", "help-npk")}
@@ -2269,6 +3002,23 @@ function renderZonesUI() {
     if (canEdit) {
       block.querySelector(`#zonePower${id}`)?.addEventListener("click", () => toggleZonePower(id));
       block.querySelector(`#zoneEdit${id}`)?.addEventListener("click", () => openZoneEditor(id));
+      block.querySelector(`#zoneRename${id}`)?.addEventListener("click", () => {
+        zoneRenames[id] = zone.name;
+        renderZonesUI();
+        document.getElementById(`zoneRenameInput${id}`)?.select();
+      });
+      const renameForm = block.querySelector(`#zoneRenameForm${id}`);
+      if (renameForm) {
+        const input = renameForm.querySelector(`#zoneRenameInput${id}`);
+        input.value = zoneRenames[id];
+        input.addEventListener("input", () => { zoneRenames[id] = input.value; });
+        renameForm.addEventListener("submit", event => { event.preventDefault(); saveZoneName(zone); });
+        block.querySelector(`#zoneRenameCancel${id}`)?.addEventListener("click", () => {
+          delete zoneRenames[id];
+          renderZonesUI();
+          document.getElementById(`zoneRename${id}`)?.focus();
+        });
+      }
       const editor = block.querySelector(`#zoneForm${id}`);
       if (editor) {
         editor.addEventListener("input", () => readZoneForm(id));
@@ -2298,19 +3048,23 @@ function renderZonesUI() {
 
       const cropSelect = block.querySelector(`#cropSelect${id}`);
       const stageSelect = block.querySelector(`#growthStage${id}`);
-      Object.keys(cropDatabase).forEach(cropKey => cropSelect.add(new Option(readableCropNames[cropKey], cropKey, false, cropKey === zone.defaultCrop)));
+      cropLibrary().forEach(c => cropSelect.add(new Option(cropLabel(c), c.key, false, c.key === resolved.crop?.key)));
       populateStageOptions(zone, stageSelect);
       cropSelect.addEventListener("change", () => {
         zone.defaultCrop = cropSelect.value;
-        zone.defaultStage = Object.keys(cropDatabase[zone.defaultCrop])[0];
+        zone.defaultStage = findCrop(zone.defaultCrop)?.stages[0]?.key || "";
         populateStageOptions(zone, stageSelect);
         updateZoneTargets(zone);
         writeZoneProfile(zone);
+        const { crop, stage } = zoneCrop(zone);
+        if (crop) logActivity(`Column ${id}: compared with ${cropLabel(crop)}${stage ? `, ${stage.name}` : ""}`);
       });
       stageSelect.addEventListener("change", () => {
         zone.defaultStage = stageSelect.value;
         updateZoneTargets(zone);
         writeZoneProfile(zone);
+        const { stage } = zoneCrop(zone);
+        if (stage) logActivity(`Column ${id}: growth stage ${stage.name}`);
       });
     }
     updateZoneTargets(zone);
@@ -2321,17 +3075,18 @@ function renderZonesUI() {
   renderColumnCommandResults();
 }
 
+// The crop's own stages, in their order. The column's saved stage isn't changed here even when it is missing (see
+// zoneCrop()): the crop list can arrive after the columns, and a stage added on another device may not be here yet.
 function populateStageOptions(zone, stageSelect) {
   stageSelect.innerHTML = "";
-  const stages = Object.keys(cropDatabase[zone.defaultCrop]);
-  if (!stages.includes(zone.defaultStage)) zone.defaultStage = stages[0];
-  stages.forEach(stage => stageSelect.add(new Option(stage[0].toUpperCase() + stage.slice(1), stage, false, stage === zone.defaultStage)));
+  const { crop, stage } = zoneCrop(zone);
+  (crop?.stages || []).forEach(s => stageSelect.add(new Option(s.name, s.key, false, s.key === stage?.key)));
 }
 
 // The crop profile's reference numbers, under each reading. Planning only: ESP1's own targets are the
 // card's Targets line.
 function updateZoneTargets(zone) {
-  const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage];
+  const target = zoneCrop(zone).stage;
   if (!target) return;
   setText(`targetN${zone.id}`, `Crop profile: ${target.n} ppm`);
   setText(`targetP${zone.id}`, `Crop profile: ${target.p} ppm`);
@@ -2351,7 +3106,7 @@ function zoneMetric(zone, metric, id, digits, unit, targetKey) {
     return;
   }
   element.textContent = numberText(value, digits, unit);
-  const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage]?.[targetKey];
+  const target = zoneCrop(zone).stage?.[targetKey];
   element.classList.toggle("lacking-nutrient", Number.isFinite(Number(target)) && Number(value) < Number(target));
 }
 
@@ -2367,7 +3122,7 @@ function updateSoilEc(zone) {
     return;
   }
   element.textContent = numberText(value, 0, "µS/cm");
-  const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage]?.ec;
+  const target = zoneCrop(zone).stage?.ec;
   element.classList.toggle("lacking-nutrient", Number.isFinite(Number(target)) && Number(value) < Number(target) * 1000);
 }
 
@@ -2384,8 +3139,764 @@ function updateZoneReadings() {
     const z = liveData.sensors?.zones?.[zone.id] || {};
     setText(`npkMoist${zone.id}`, numberText(z.npkMoisture, 1, "%"));
     setText(`soilTemp${zone.id}`, numberText(z.soilTemperature, 1, "°C"));
+    updateMoistureGauge(zone);
     renderZoneSummary(zone);
   });
+}
+
+/* Soil moisture gauge (2026-11-05): a half dial that fills to the reading, amber while the soil is drier than Soil start
+ * % (so ESP1 would water it in its watering time), with that threshold and the crop profile's moisture marked. */
+const GAUGE_CENTER = [60, 62];
+const GAUGE_RADIUS = 50;
+function moistureGaugeSvg(id) {
+  const [cx, cy] = GAUGE_CENTER;
+  const arc = `M${cx - GAUGE_RADIUS} ${cy} A${GAUGE_RADIUS} ${GAUGE_RADIUS} 0 0 1 ${cx + GAUGE_RADIUS} ${cy}`;
+  return `<svg class="moisture-gauge" viewBox="0 0 120 70" aria-hidden="true" focusable="false">
+      <path class="gauge-track" d="${arc}"/>
+      <path class="gauge-fill unknown" id="gaugeFill${id}" d="${arc}" pathLength="100"/>
+      <line class="gauge-tick gauge-start" id="gaugeStart${id}" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy}"/>
+      <line class="gauge-tick gauge-crop" id="gaugeCrop${id}" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy}"/>
+    </svg>`;
+}
+function placeGaugeTick(line, pct) {
+  if (!line) return;
+  const theta = Math.PI * (1 - Math.min(100, Math.max(0, pct)) / 100);
+  const [cx, cy] = GAUGE_CENTER;
+  const at = r => [cx + r * Math.cos(theta), cy - r * Math.sin(theta)];
+  const [x1, y1] = at(GAUGE_RADIUS - 11);
+  const [x2, y2] = at(GAUGE_RADIUS + 9);
+  line.setAttribute("x1", x1.toFixed(1));
+  line.setAttribute("y1", y1.toFixed(1));
+  line.setAttribute("x2", x2.toFixed(1));
+  line.setAttribute("y2", y2.toFixed(1));
+}
+function updateMoistureGauge(zone) {
+  const fill = document.getElementById(`gaugeFill${zone.id}`);
+  if (!fill) return;
+  const z = liveData.sensors?.zones?.[zone.id] || {};
+  const known = hasValue(z.moisture) && z.enabled !== false;
+  const pct = known ? Math.min(100, Math.max(0, Number(z.moisture))) : 0;
+  const start = soilStartPercent();
+  fill.style.strokeDashoffset = String(100 - pct);
+  fill.classList.toggle("dry", known && pct < start);
+  fill.classList.toggle("unknown", !known);
+  placeGaugeTick(document.getElementById(`gaugeStart${zone.id}`), start);
+  const target = zoneCrop(zone).stage?.moisture;
+  const crop = document.getElementById(`gaugeCrop${zone.id}`);
+  if (crop) {
+    crop.style.display = hasValue(target) ? "" : "none";
+    if (hasValue(target)) placeGaugeTick(crop, Number(target));
+  }
+  setText(`soilStartNote${zone.id}`, `Waters below ${start} %${start === 35 ? "" : " (as last sent)"}`);
+}
+
+/* ---- Crop profiles: the library panel under the columns (2026-11-05) -------------------------------------------
+ * Every crop with its stages and numbers. Operators and privileged accounts (1-hour access, Sub-operator) can add a
+ * crop, change any crop, built-in ones too, remove one, and restore a built-in one; the rules enforce that and check
+ * every value. A crop or a stage a column uses can't be removed until that column picks another (the owner's
+ * choice). One editor at a time, kept in cropDraft so a list update from another device doesn't wipe it. */
+let cropDraft = null;              // { key, isNew, originalName, name, variety, notes, stages: [...], tried }
+let cropDraftFocus = "";           // what to focus once the editor is drawn: "name", or "stage:<index>"
+let lastCropEditCapability = undefined;
+const STAGE_FIELD_WORD = { n: "N", p: "P", k: "K", ph: "pH", ec: "EC", moisture: "Moisture", days: "Days" };
+
+function canEditCrops() {
+  return canAccessPrivilegedTabs();
+}
+
+// "A", "A and B", "A, B and C"
+function columnList(ids) {
+  return ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0] || "";
+}
+function columnsUsing(cropKey, stageKey) {
+  return activeZones.filter(zone => zone.defaultCrop === cropKey && (stageKey === undefined || zone.defaultStage === stageKey)).map(zone => zone.id);
+}
+function columnWord(ids) {
+  return `${ids.length > 1 ? "Columns" : "Column"} ${columnList(ids)}`;
+}
+
+function newStageKey() {
+  return db ? db.ref().push().key : `st${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+function newDraftStage(name = "") {
+  return { key: newStageKey(), name, n: "", p: "", k: "", ph: "", ec: "", moisture: "", days: "", notes: "" };
+}
+
+function cropNumber(value) {
+  return hasValue(value) ? String(Number(value)) : "";
+}
+
+function stageTableHtml(crop) {
+  const rows = crop.stages.map(s => `
+          <tr>
+            <th scope="row">${escapeHtml(s.name)}</th>
+            <td>${escapeHtml(cropNumber(s.n))}</td><td>${escapeHtml(cropNumber(s.p))}</td><td>${escapeHtml(cropNumber(s.k))}</td>
+            <td>${escapeHtml(cropNumber(s.ph))}</td><td>${escapeHtml(cropNumber(s.ec))}</td><td>${escapeHtml(cropNumber(s.moisture))}</td>
+            <td>${escapeHtml(cropNumber(s.days))}</td>
+            <td class="stage-notes">${escapeHtml(s.notes || "")}</td>
+          </tr>`).join("");
+  return `
+      <div class="table-scroll">
+        <table class="stage-table">
+          <thead><tr><th scope="col">Stage</th><th scope="col">N (ppm)</th><th scope="col">P (ppm)</th><th scope="col">K (ppm)</th><th scope="col">pH</th><th scope="col">EC (mS/cm)</th><th scope="col">Moisture (%)</th><th scope="col">Days</th><th scope="col">Notes</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+}
+
+function cropCardHtml(crop, showActions) {
+  const users = columnsUsing(crop.key);
+  const origin = !crop.builtIn ? "Added on this website" : crop.changed ? "Built-in, changed" : "Built-in";
+  const changed = crop.updatedAt
+    ? `Last changed ${new Date(crop.updatedAt).toLocaleDateString()}${crop.updatedBy ? ` by ${crop.updatedBy}` : ""}` : "";
+  const key = escapeHtml(crop.key);
+  const actions = showActions ? `
+        <div class="crop-actions">
+          <button type="button" class="secondary" data-crop-edit="${key}">Edit</button>
+          ${crop.builtIn && crop.changed ? `<button type="button" class="secondary" data-crop-restore="${key}">Restore original</button>` : ""}
+          <button type="button" class="secondary" data-crop-remove="${key}">Remove</button>
+        </div>` : "";
+  return `
+    <article class="crop-card" data-crop="${key}">
+      <header class="crop-head">
+        <div>
+          <h3>${escapeHtml(crop.name)}${crop.variety ? ` <span class="crop-variety">${escapeHtml(crop.variety)}</span>` : ""}</h3>
+          <p class="crop-meta">
+            <span class="crop-badge${crop.builtIn ? "" : " own"}">${origin}</span>
+            <span>${users.length ? `Used by ${columnWord(users).toLowerCase().replace(/ ([a-c])(?=\b)/g, m => m.toUpperCase())}` : "Not used by a column"}</span>
+            ${changed ? `<span>${escapeHtml(changed)}</span>` : ""}
+          </p>
+        </div>${actions}
+      </header>
+      ${crop.notes ? `<p class="crop-notes">${escapeHtml(crop.notes)}</p>` : ""}
+      ${stageTableHtml(crop)}
+    </article>`;
+}
+
+function cropEditorHtml(draft) {
+  const number = (field, label, min, max, step) =>
+    `<label>${label}<input data-field="${field}" type="number" min="${min}" max="${max}" step="${step}" inputmode="decimal"></label>`;
+  const stages = draft.stages.map((s, index) => `
+          <div class="stage-edit" data-stage-index="${index}">
+            <div class="stage-edit-head">
+              <strong>Stage ${index + 1}</strong>
+              <span class="stage-edit-actions">
+                <button type="button" class="secondary small" data-stage-up="${index}"${index === 0 ? " disabled" : ""} aria-label="Move stage ${index + 1} up">Up</button>
+                <button type="button" class="secondary small" data-stage-down="${index}"${index === draft.stages.length - 1 ? " disabled" : ""} aria-label="Move stage ${index + 1} down">Down</button>
+                <button type="button" class="secondary small" data-stage-remove="${index}"${draft.stages.length === 1 ? " disabled" : ""} aria-label="Remove stage ${index + 1}">Remove</button>
+              </span>
+            </div>
+            <div class="stage-fields">
+              <label class="stage-name">Name<input data-field="name" maxlength="30" placeholder="e.g. Seedling"></label>
+              ${number("n", "N (ppm)", 0, 2000, "any")}
+              ${number("p", "P (ppm)", 0, 2000, "any")}
+              ${number("k", "K (ppm)", 0, 2000, "any")}
+              ${number("ph", "pH", 3, 9, "0.1")}
+              ${number("ec", "EC (mS/cm)", 0, 20, "0.1")}
+              ${number("moisture", "Moisture (%)", 0, 100, "1")}
+              ${number("days", "Days (optional)", 0, 365, "1")}
+            </div>
+            <label class="stage-notes-field">Notes (optional)<input data-field="notes" maxlength="200" placeholder="e.g. Transplant at 3 to 4 true leaves"></label>
+          </div>`).join("");
+  return `
+    <form class="crop-form" id="cropForm" novalidate>
+      <h3>${draft.isNew ? "Add a crop" : `Change ${escapeHtml(draft.originalName)}`}</h3>
+      <div class="crop-form-row">
+        <label>Crop name<input id="cropName" maxlength="40" placeholder="e.g. Ampalaya"></label>
+        <label>Variety or seedling type (optional)<input id="cropVariety" maxlength="40" placeholder="e.g. Galaxy F1"></label>
+      </div>
+      <label>Notes (optional)<textarea id="cropNotes" maxlength="300" rows="2" placeholder="e.g. Needs a trellis. Harvest 55 to 60 days after transplanting."></textarea></label>
+      <fieldset class="stage-editor">
+        <legend>Growth stages, in order. Each column picks one of these.</legend>
+        ${stages}
+        <button type="button" class="secondary" id="cropAddStage"${draft.stages.length >= MAX_STAGES ? " disabled" : ""}>Add a stage</button>
+      </fieldset>
+      <p class="zone-changes crop-problems" id="cropProblems" aria-live="polite" hidden></p>
+      <div class="config-actions">
+        <button type="submit" id="cropSave">Save crop</button>
+        <button type="button" class="secondary" id="cropCancel">Cancel</button>
+      </div>
+    </form>`;
+}
+
+function fillCropForm() {
+  const form = document.getElementById("cropForm");
+  if (!form || !cropDraft) return;
+  form.querySelector("#cropName").value = cropDraft.name;
+  form.querySelector("#cropVariety").value = cropDraft.variety;
+  form.querySelector("#cropNotes").value = cropDraft.notes;
+  form.querySelectorAll(".stage-edit").forEach(row => {
+    const stage = cropDraft.stages[Number(row.dataset.stageIndex)];
+    row.querySelectorAll("[data-field]").forEach(input => { input.value = stage?.[input.dataset.field] ?? ""; });
+  });
+  renderCropProblems();
+}
+
+function readCropForm() {
+  const form = document.getElementById("cropForm");
+  if (!form || !cropDraft) return;
+  cropDraft.name = form.querySelector("#cropName").value;
+  cropDraft.variety = form.querySelector("#cropVariety").value;
+  cropDraft.notes = form.querySelector("#cropNotes").value;
+  form.querySelectorAll(".stage-edit").forEach(row => {
+    const stage = cropDraft.stages[Number(row.dataset.stageIndex)];
+    if (stage) row.querySelectorAll("[data-field]").forEach(input => { stage[input.dataset.field] = input.value; });
+  });
+}
+
+// What stops the draft being saved, in words. The same limits as the rules on irrigation/config/crops.
+function cropDraftProblems() {
+  const draft = cropDraft;
+  const problems = [];
+  const name = draft.name.trim();
+  if (!name) problems.push("Give the crop a name.");
+  else if (cropLibrary().some(crop => crop.key !== draft.key && crop.name.trim().toLowerCase() === name.toLowerCase())) {
+    problems.push(`There is already a crop called ${name}.`);
+  }
+  if (!draft.stages.length) problems.push("Add at least one stage.");
+  const seen = new Set();
+  draft.stages.forEach((stage, index) => {
+    const stageName = stage.name.trim();
+    const label = stageName || `Stage ${index + 1}`;
+    if (!stageName) problems.push(`Stage ${index + 1} needs a name.`);
+    else if (seen.has(stageName.toLowerCase())) problems.push(`Two stages are called ${stageName}.`);
+    seen.add(stageName.toLowerCase());
+    Object.entries(CROP_LIMITS).forEach(([field, [min, max]]) => {
+      const raw = String(stage[field] ?? "").trim();
+      if (field === "days" && raw === "") return;
+      const value = Number(raw);
+      if (raw === "" || !Number.isFinite(value) || value < min || value > max) {
+        problems.push(`${label}: ${STAGE_FIELD_WORD[field]} must be a number from ${min} to ${max}.`);
+      } else if (field === "days" && !Number.isInteger(value)) {
+        problems.push(`${label}: Days must be a whole number.`);
+      }
+    });
+  });
+  // A stage a column uses stays until that column picks another one.
+  if (!draft.isNew) {
+    const kept = new Set(draft.stages.map(stage => stage.key));
+    (findCrop(draft.key)?.stages || []).forEach(stage => {
+      if (kept.has(stage.key)) return;
+      const users = columnsUsing(draft.key, stage.key);
+      if (users.length) problems.push(`${columnWord(users)} ${users.length > 1 ? "use" : "uses"} the ${stage.name} stage. Pick another stage for ${users.length > 1 ? "them" : "it"} on its card first, or keep the stage.`);
+    });
+  }
+  return problems;
+}
+
+function renderCropProblems() {
+  const box = document.getElementById("cropProblems");
+  if (!box || !cropDraft) return;
+  const problems = cropDraft.tried ? cropDraftProblems() : [];
+  box.hidden = !problems.length;
+  box.classList.toggle("error", problems.length > 0);
+  box.textContent = problems.join(" ");
+}
+
+function renderCropLibrary() {
+  const list = document.getElementById("cropList");
+  if (!list) return;
+  const canEdit = canEditCrops() && currentUserIsSignedIn();
+  lastCropEditCapability = canEditCrops();
+  if (!canEdit) cropDraft = null;
+  // The crop being changed was removed on another device: its editor has nothing left to save into.
+  if (cropDraft && !cropDraft.isNew && !findCrop(cropDraft.key)) {
+    cropDraft = null;
+    resultLine("cropLibraryResult")("The crop you were changing was removed on another device.", true);
+  }
+  const add = document.getElementById("cropAddBtn");
+  if (add) { add.hidden = !canEdit; add.disabled = Boolean(cropDraft); }
+  const note = document.getElementById("cropLibraryNote");
+  if (note) note.hidden = canEdit || !currentUserIsSignedIn();
+  const slot = document.getElementById("cropEditorNew");
+  if (slot) slot.innerHTML = cropDraft?.isNew ? cropEditorHtml(cropDraft) : "";
+  // A changed crop's editor takes its card's place. While any editor is open, the other cards have no buttons.
+  list.innerHTML = cropLibrary().map(crop => cropDraft && !cropDraft.isNew && cropDraft.key === crop.key
+    ? cropEditorHtml(cropDraft) : cropCardHtml(crop, canEdit && !cropDraft)).join("");
+  const removed = removedBuiltIns();
+  const box = document.getElementById("cropRemoved");
+  if (box) {
+    box.hidden = !removed.length;
+    box.innerHTML = removed.length
+      ? `<span>Removed built-in crops:</span> ${removed.map(crop => canEdit && !cropDraft
+          ? `<button type="button" class="secondary small" data-crop-unremove="${escapeHtml(crop.key)}">Restore ${escapeHtml(crop.name)}</button>`
+          : `<span class="crop-badge">${escapeHtml(crop.name)}</span>`).join(" ")}`
+      : "";
+  }
+  if (!cropDraft) return;
+  fillCropForm();
+  const focus = cropDraftFocus;
+  cropDraftFocus = "";
+  if (focus === "name") document.getElementById("cropName")?.focus();
+  else if (focus.startsWith("stage:")) document.querySelector(`.stage-edit[data-stage-index="${focus.slice(6)}"] [data-field="name"]`)?.focus();
+}
+
+function openCropEditor(key) {
+  if (!canEditCrops() || cropDraft) return;
+  const crop = key ? findCrop(key) : null;
+  if (key && !crop) return;
+  cropDraft = crop
+    ? {
+        key: crop.key, isNew: false, originalName: crop.name, name: crop.name, variety: crop.variety, notes: crop.notes, tried: false,
+        stages: crop.stages.map(stage => ({
+          key: stage.key, name: stage.name, n: cropNumber(stage.n), p: cropNumber(stage.p), k: cropNumber(stage.k), ph: cropNumber(stage.ph),
+          ec: cropNumber(stage.ec), moisture: cropNumber(stage.moisture), days: cropNumber(stage.days), notes: stage.notes || ""
+        }))
+      }
+    : { key: null, isNew: true, originalName: "", name: "", variety: "", notes: "", tried: false, stages: [newDraftStage("Seedling")] };
+  cropDraftFocus = "name";
+  resultLine("cropLibraryResult")("");
+  renderCropLibrary();
+}
+
+function closeCropEditor() {
+  const key = cropDraft?.key;
+  cropDraft = null;
+  renderCropLibrary();
+  (key ? document.querySelector(`[data-crop-edit="${CSS.escape(key)}"]`) : document.getElementById("cropAddBtn"))?.focus();
+}
+
+function saveCropDraft() {
+  readCropForm();
+  if (!cropDraft) return;
+  cropDraft.tried = true;
+  renderCropProblems();
+  if (cropDraftProblems().length) return;
+  const show = resultLine("cropLibraryResult");
+  if (!canEditCrops()) { show("Only operators, and accounts with 1-hour access or Sub-operator, can change crop profiles.", true); return; }
+  const draft = cropDraft;
+  const key = draft.isNew ? db.ref("irrigation/config/crops").push().key : draft.key;
+  const stages = {};
+  draft.stages.forEach((stage, order) => {
+    const saved = { name: stage.name.trim(), order };
+    ["n", "p", "k", "ph", "ec", "moisture"].forEach(field => { saved[field] = Number(stage[field]); });
+    if (String(stage.days).trim() !== "") saved.days = Number(stage.days);
+    if (stage.notes.trim()) saved.notes = stage.notes.trim();
+    stages[stage.key] = saved;
+  });
+  const entry = { name: draft.name.trim(), stages, updatedAt: firebase.database.ServerValue.TIMESTAMP };
+  if (draft.variety.trim()) entry.variety = draft.variety.trim();
+  if (draft.notes.trim()) entry.notes = draft.notes.trim();
+  const by = myDisplayName();
+  if (by) entry.updatedBy = by.slice(0, 80);
+  const save = document.getElementById("cropSave");
+  if (save) save.disabled = true;
+  show(`Saving ${entry.name}…`);
+  db.ref(`irrigation/config/crops/${key}`).set(entry)
+    .then(() => {
+      cropDraft = null;
+      renderCropLibrary();
+      renderZonesUI();
+      show(draft.isNew ? `${entry.name} added. It is in every column's crop list now.` : `${entry.name} saved. Columns using it compare with its new numbers.`);
+      logActivity(`${draft.isNew ? "Added" : "Changed"} crop profile ${entry.name}`);
+    })
+    .catch(error => {
+      if (save) save.disabled = false;
+      show(`Could not save ${entry.name}: ${error.code === "PERMISSION_DENIED" ? "only operators, and accounts with 1-hour access or Sub-operator, can change crop profiles, and every value must be in range" : error.message}.`, true);
+    });
+}
+
+function removeCrop(key) {
+  const crop = findCrop(key);
+  const show = resultLine("cropLibraryResult");
+  if (!crop || !canEditCrops()) return;
+  const users = columnsUsing(key);
+  if (users.length) {
+    show(`${columnWord(users)} ${users.length > 1 ? "use" : "uses"} ${crop.name}. Pick another crop for ${users.length > 1 ? "them" : "it"} on its card first, then remove it.`, true);
+    return;
+  }
+  if (cropLibrary().length <= 1) { show("The crop list needs at least one crop.", true); return; }
+  const question = crop.builtIn
+    ? `Remove ${crop.name} from the crop list? It is a built-in crop, so it can be restored later${crop.changed ? ", as it was originally: your changes to it are lost" : ""}.`
+    : `Remove ${crop.name}? This can't be undone.`;
+  if (!confirm(question)) return;
+  const ref = db.ref(`irrigation/config/crops/${key}`);
+  const by = myDisplayName();
+  const write = crop.builtIn
+    ? ref.set({ removed: true, updatedAt: firebase.database.ServerValue.TIMESTAMP, ...(by ? { updatedBy: by.slice(0, 80) } : {}) })
+    : ref.remove();
+  write.then(() => { show(`${crop.name} removed.${crop.builtIn ? " Restore it under Removed built-in crops." : ""}`); logActivity(`Removed crop profile ${crop.name}`); })
+    .catch(error => show(`Could not remove ${crop.name}: ${error.message}.`, true));
+}
+
+// Back to the website's own version of a built-in crop, whether it was changed or removed.
+function restoreCrop(key) {
+  const original = builtInCrop(key);
+  const show = resultLine("cropLibraryResult");
+  if (!original || !canEditCrops()) return;
+  if (findCrop(key)) {
+    const stranded = columnsUsing(key).filter(id => !original.stages.some(stage => stage.key === activeZones.find(zone => zone.id === id)?.defaultStage));
+    if (stranded.length) {
+      show(`${columnWord(stranded)} ${stranded.length > 1 ? "use" : "uses"} a stage the original ${original.name} doesn't have. Pick one of its original stages first: ${original.stages.map(stage => stage.name).join(", ")}.`, true);
+      return;
+    }
+    if (!confirm(`Put ${original.name} back to the website's original stages and numbers? Your changes to it are lost.`)) return;
+  } else if (cropLibrary().some(crop => crop.name.trim().toLowerCase() === original.name.toLowerCase())) {
+    show(`Another crop is already called ${original.name}. Rename or remove it first, then restore this one.`, true);
+    return;
+  }
+  db.ref(`irrigation/config/crops/${key}`).remove()
+    .then(() => { show(`${original.name} restored.`); logActivity(`Restored crop profile ${original.name}`); })
+    .catch(error => show(`Could not restore ${original.name}: ${error.message}.`, true));
+}
+
+document.getElementById("cropLibrary")?.addEventListener("click", event => {
+  const button = event.target.closest("button");
+  if (!button || button.classList.contains("info-icon")) return;
+  const data = button.dataset;
+  const moveStage = (from, to) => {
+    readCropForm();
+    const [stage] = cropDraft.stages.splice(from, 1);
+    cropDraft.stages.splice(to, 0, stage);
+    cropDraftFocus = `stage:${to}`;
+    renderCropLibrary();
+  };
+  if (button.id === "cropAddBtn") openCropEditor(null);
+  else if (data.cropEdit) openCropEditor(data.cropEdit);
+  else if (data.cropRemove) removeCrop(data.cropRemove);
+  else if (data.cropRestore) restoreCrop(data.cropRestore);
+  else if (data.cropUnremove) restoreCrop(data.cropUnremove);
+  else if (!cropDraft) return;
+  else if (button.id === "cropCancel") closeCropEditor();
+  else if (button.id === "cropAddStage") {
+    readCropForm();
+    if (cropDraft.stages.length >= MAX_STAGES) return;
+    cropDraft.stages.push(newDraftStage());
+    cropDraftFocus = `stage:${cropDraft.stages.length - 1}`;
+    renderCropLibrary();
+  }
+  else if (data.stageUp !== undefined) moveStage(Number(data.stageUp), Number(data.stageUp) - 1);
+  else if (data.stageDown !== undefined) moveStage(Number(data.stageDown), Number(data.stageDown) + 1);
+  else if (data.stageRemove !== undefined) {
+    readCropForm();
+    if (cropDraft.stages.length > 1) cropDraft.stages.splice(Number(data.stageRemove), 1);
+    renderCropLibrary();
+  }
+});
+document.getElementById("cropLibrary")?.addEventListener("input", event => {
+  if (!event.target.closest("#cropForm")) return;
+  readCropForm();
+  renderCropProblems();
+});
+document.getElementById("cropLibrary")?.addEventListener("submit", event => {
+  if (event.target.id !== "cropForm") return;
+  event.preventDefault();
+  saveCropDraft();
+});
+
+/* ---- The rig drawing (2026-11-05) --------------------------------------------------------------------------------
+ * The rig on the Live dashboard, drawn from ESP1's latest report: the reservoir and mixing tank with their water at the
+ * measured level, the pumps, the nutrient bottles, the valves, and the three columns filled to their soil moisture.
+ * The water's surface always moves a little, more while a pump fills or empties that tank and most while the mixer
+ * stirs it, and it sloshes and settles when the level changes. Water runs along a pipe only while ESP1 reports that
+ * pump running, and nothing is shown moving on a stale report. The waves are the only thing on a timer: they run only
+ * while the drawing is on screen, and not at all when the phone asks for reduced motion. Two layouts, wide and narrow,
+ * so a phone gets a drawing it can read rather than a shrunken one. */
+const RIG_LAYOUTS = {
+  wide: {
+    viewBox: [1000, 340],
+    tanks: { res: { x: 30, y: 60, w: 170, h: 230, label: [115, 320] }, mix: { x: 410, y: 90, w: 180, h: 200, label: [500, 320] } },
+    pumps: { transfer: { cx: 290, cy: 270, r: 24, label: [290, 320] }, booster: { cx: 680, cy: 270, r: 24, label: [680, 320] } },
+    pipes: {
+      resOut: [[200, 270], [266, 270]],
+      transferUp: [[314, 270], [350, 270], [350, 130], [410, 130]],
+      mixOut: [[590, 270], [656, 270]],
+      boosterOut: [[704, 270], [740, 270], [740, 60], [956, 60]]
+    },
+    bottles: { y: 22, h: 34, w: 34, xs: [438, 483, 528], tankTop: 90 },
+    columns: { y: 110, h: 180, w: 56, xs: [776, 852, 928], busY: 60, valveY: 84, labelY: 320 }
+  },
+  narrow: {
+    viewBox: [400, 446],
+    tanks: { res: { x: 16, y: 56, w: 110, h: 140, label: [71, 220] }, mix: { x: 230, y: 56, w: 150, h: 140, label: [305, 220] } },
+    pumps: { transfer: { cx: 172, cy: 176, r: 20, label: [172, 220] }, booster: { cx: 56, cy: 300, r: 20, label: [56, 344] } },
+    pipes: {
+      resOut: [[126, 176], [152, 176]],
+      transferUp: [[192, 176], [206, 176], [206, 96], [230, 96]],
+      mixOut: [[380, 186], [392, 186], [392, 248], [56, 248], [56, 280]],
+      boosterOut: [[76, 300], [96, 300], [96, 272], [324, 272]]
+    },
+    bottles: { y: 8, h: 28, w: 26, xs: [250, 292, 334], tankTop: 56 },
+    columns: { y: 310, h: 110, w: 56, xs: [120, 208, 296], busY: 272, valveY: 291, labelY: 440 }
+  }
+};
+const RIG_NARROW_PX = 640;
+const RIG_RES_LOW_PCT = 15;          // ESP1's RES_LOW_PCT: no run starts below it
+const rig = {
+  layout: "", els: null, visible: false, frame: 0, lastTime: 0,
+  tanks: {
+    res: { level: 0, target: null, vel: 0, slosh: 0, phase: 0, activity: 0, amp: 0 },
+    mix: { level: 0, target: null, vel: 0, slosh: 0, phase: 1.7, activity: 0, amp: 0 }
+  }
+};
+
+function rigPathData(points) {
+  return points.map(([x, y], i) => `${i ? "L" : "M"}${x} ${y}`).join(" ");
+}
+function rigBlades(cx, cy, r) {
+  return [0, 120, 240].map(angle => `<ellipse cx="${cx}" cy="${cy - r / 2}" rx="${(r / 4).toFixed(1)}" ry="${(r / 2).toFixed(1)}" transform="rotate(${angle} ${cx} ${cy})"/>`).join("");
+}
+
+function buildRigDrawing(name) {
+  const host = document.getElementById("rigDrawing");
+  if (!host) return;
+  const L = RIG_LAYOUTS[name];
+  const [W, H] = L.viewBox;
+  const c = L.columns;
+  const ids = ["A", "B", "C"];
+  const colCx = c.xs.map(x => x + c.w / 2);
+  const defs = Object.entries(L.tanks).map(([key, t]) => `<clipPath id="rigClip-${name}-${key}"><rect x="${t.x + 4}" y="${t.y + 4}" width="${t.w - 8}" height="${t.h - 8}" rx="11"/></clipPath>`).join("")
+    + c.xs.map((x, i) => `<clipPath id="rigClip-${name}-col${ids[i]}"><rect x="${x + 3}" y="${c.y + 3}" width="${c.w - 6}" height="${c.h - 6}" rx="8"/></clipPath>`).join("");
+  const flows = {
+    ...L.pipes,
+    ...Object.fromEntries(ids.map((id, i) => [`drop${id}`, [[colCx[i], c.busY], [colCx[i], c.y]]])),
+    ...Object.fromEntries(ids.map((id, i) => {
+      const x = L.bottles.xs[i] + L.bottles.w / 2;
+      return [`dose${id}`, [[x, L.bottles.y + L.bottles.h], [x, L.bottles.tankTop]]];
+    }))
+  };
+  const pipes = Object.entries(flows).map(([key, points]) => {
+    const thin = key.startsWith("dose") ? " thin" : "";
+    return `<path class="rig-pipe${thin}" d="${rigPathData(points)}"/><path class="rig-flow${thin}" data-flow="${key}" d="${rigPathData(points)}"/>`;
+  }).join("");
+  const tank = (key, t, label) => {
+    const low = key === "res" ? (() => {
+      const y = (t.y + 4 + (t.h - 8) * (1 - RIG_RES_LOW_PCT / 100)).toFixed(1);
+      return `<line class="rig-low" x1="${t.x + 6}" x2="${t.x + t.w - 6}" y1="${y}" y2="${y}"/><text class="rig-note" x="${t.x + t.w - 8}" y="${Number(y) - 5}" text-anchor="end">${RIG_RES_LOW_PCT} %</text>`;
+    })() : "";
+    return `<g class="rig-tank" data-tank="${key}">
+      <rect class="rig-shell" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" rx="14"/>
+      <g clip-path="url(#rigClip-${name}-${key})">
+        <path class="rig-water back" data-water="${key}-back"/>
+        <path class="rig-water" data-water="${key}"/>
+      </g>
+      ${low}
+      <text class="rig-value" data-value="${key}" x="${t.x + t.w / 2}" y="${t.y + t.h / 2 + 9}" text-anchor="middle">--</text>
+      <text class="rig-label" x="${t.label[0]}" y="${t.label[1]}" text-anchor="middle">${label}</text>
+    </g>`;
+  };
+  // The mixer stands to one side, so its shaft doesn't run through the tank's reading.
+  const mix = L.tanks.mix;
+  const mixX = mix.x + mix.w * (name === "wide" ? 0.84 : 0.9);
+  const mixer = `<g class="rig-mixer"><line class="rig-shaft" x1="${mixX}" y1="${mix.y + 4}" x2="${mixX}" y2="${mix.y + mix.h - 24}"/>
+      <g class="rig-impeller">${rigBlades(mixX, mix.y + mix.h - 24, name === "wide" ? 15 : 12)}</g></g>`;
+  const pump = (key, p, label) => `<g class="rig-pump" data-pump="${key}">
+      <circle class="rig-pump-body" cx="${p.cx}" cy="${p.cy}" r="${p.r}"/>
+      <g class="rig-impeller">${rigBlades(p.cx, p.cy, p.r * 0.62)}</g>
+      <text class="rig-label" x="${p.label[0]}" y="${p.label[1]}" text-anchor="middle">${label}</text>
+    </g>`;
+  const bottles = L.bottles.xs.map((x, i) => `<g class="rig-bottle" data-bottle="${ids[i]}">
+      <rect x="${x}" y="${L.bottles.y}" width="${L.bottles.w}" height="${L.bottles.h}" rx="7"/>
+      <text x="${x + L.bottles.w / 2}" y="${L.bottles.y + L.bottles.h / 2 + 5}" text-anchor="middle">${ids[i]}</text>
+    </g>`).join("");
+  const valves = colCx.map((cx, i) => {
+    const s = name === "wide" ? 9 : 8;
+    return `<path class="rig-valve" data-valve="${ids[i]}" d="M${cx - s} ${c.valveY - s} H${cx + s} L${cx - s} ${c.valveY + s} H${cx + s} Z"/>`;
+  }).join("");
+  const columns = c.xs.map((x, i) => `<g class="rig-col" data-col="${ids[i]}">
+      <rect class="rig-shell rig-soil" x="${x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="10"/>
+      <g clip-path="url(#rigClip-${name}-col${ids[i]})"><rect class="rig-moist" data-moist="${ids[i]}" x="${x}" y="${c.y}" width="${c.w}" height="${c.h}"/></g>
+      <line class="rig-start" data-start="${ids[i]}" x1="${x + 5}" x2="${x + c.w - 5}" y1="${c.y + c.h}" y2="${c.y + c.h}"/>
+      <text class="rig-label" x="${colCx[i]}" y="${c.labelY}" text-anchor="middle">${ids[i]} <tspan class="rig-col-value" data-colvalue="${ids[i]}">--</tspan></text>
+    </g>`).join("");
+  host.innerHTML = `<svg class="rig-svg ${name}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="rigSvgTitle">
+      <title id="rigSvgTitle">The rig</title>
+      <defs>${defs}</defs>
+      ${pipes}
+      ${tank("res", L.tanks.res, "Reservoir")}
+      ${tank("mix", L.tanks.mix, "Mixing tank")}
+      ${mixer}
+      ${bottles}
+      ${pump("transfer", L.pumps.transfer, name === "wide" ? "Transfer pump" : "Transfer")}
+      ${pump("booster", L.pumps.booster, name === "wide" ? "Booster pump" : "Booster")}
+      ${valves}
+      ${columns}
+    </svg>`;
+  const svg = host.querySelector("svg");
+  const q = selector => svg.querySelector(selector);
+  rig.layout = name;
+  rig.els = {
+    svg, title: q("#rigSvgTitle"),
+    water: { res: [q('[data-water="res-back"]'), q('[data-water="res"]')], mix: [q('[data-water="mix-back"]'), q('[data-water="mix"]')] },
+    value: { res: q('[data-value="res"]'), mix: q('[data-value="mix"]') }
+  };
+}
+
+// The water's surface across one tank: two waves on top of each other, so it never looks like a plain sine.
+function rigWaterPath(t, level, amp, phase, offset) {
+  const inner = { x: t.x + 4, y: t.y + 4, w: t.w - 8, h: t.h - 8 };
+  const surface = inner.y + inner.h * (1 - level);
+  const calm = Math.min(1, level * 8);                      // a nearly empty tank can't make waves
+  const k1 = (2 * Math.PI) / (inner.w * 0.95);
+  const k2 = (2 * Math.PI) / (inner.w * 0.42);
+  const parts = [];
+  for (let x = 0; x <= inner.w + 0.1; x += 6) {
+    const dx = Math.min(x, inner.w);
+    const y = surface + amp * calm * (0.65 * Math.sin(k1 * dx + phase + offset) + 0.35 * Math.sin(k2 * dx - phase * 1.6 + offset * 2));
+    parts.push(`${parts.length ? "L" : "M"}${(inner.x + dx).toFixed(1)} ${y.toFixed(1)}`);
+  }
+  return `${parts.join("")}L${inner.x + inner.w} ${inner.y + inner.h + 2}L${inner.x} ${inner.y + inner.h + 2}Z`;
+}
+
+function drawRigWater() {
+  if (!rig.els) return;
+  const L = RIG_LAYOUTS[rig.layout];
+  ["res", "mix"].forEach(key => {
+    const s = rig.tanks[key];
+    const [back, front] = rig.els.water[key];
+    if (s.target === null) { back.setAttribute("d", ""); front.setAttribute("d", ""); return; }
+    back.setAttribute("d", rigWaterPath(L.tanks[key], s.level, s.amp * 0.8, s.phase * 0.85, 2.1));
+    front.setAttribute("d", rigWaterPath(L.tanks[key], s.level, s.amp, s.phase, 0));
+  });
+}
+
+// A damped spring brings the drawn level to the reported one; a change sets the water sloshing, which dies away.
+function rigStep(dt) {
+  Object.values(rig.tanks).forEach(s => {
+    const target = s.target ?? 0;
+    const stiffness = 9;
+    s.vel += (stiffness * (target - s.level) - 2 * Math.sqrt(stiffness) * s.vel) * dt;
+    s.level = Math.min(1, Math.max(0, s.level + s.vel * dt));
+    s.slosh *= Math.exp(-dt / 1.4);
+    const base = s.target === null ? 0 : s.activity === 2 ? 8 : s.activity === 1 ? 5 : 2.2;
+    s.amp = base + s.slosh;
+    s.phase += dt * (s.activity === 2 ? 3.2 : s.activity === 1 ? 2.1 : 1.1);
+  });
+}
+function rigSettle() {
+  Object.values(rig.tanks).forEach(s => { s.level = s.target ?? 0; s.vel = 0; s.slosh = 0; s.amp = s.target === null ? 0 : 2.2; });
+}
+function rigShouldAnimate() {
+  return Boolean(rig.els) && rig.visible && !document.hidden && !reduceMotionQuery?.matches;
+}
+function rigLoop(time) {
+  rig.frame = 0;
+  const dt = rig.lastTime ? Math.min(0.05, (time - rig.lastTime) / 1000) : 0;
+  rig.lastTime = time;
+  rigStep(dt);
+  drawRigWater();
+  if (rigShouldAnimate()) rig.frame = requestAnimationFrame(rigLoop);
+}
+// Starts or stops the waves to match whether anyone can see them.
+function rigWake() {
+  if (rigShouldAnimate()) {
+    if (!rig.frame) { rig.lastTime = 0; rig.frame = requestAnimationFrame(rigLoop); }
+    return;
+  }
+  if (rig.frame) cancelAnimationFrame(rig.frame);
+  rig.frame = 0;
+  rigSettle();
+  drawRigWater();
+}
+
+function setRigTank(key, reading, activity) {
+  const s = rig.tanks[key];
+  const target = hasValue(reading) ? Math.min(1, Math.max(0, Number(reading) / 100)) : null;
+  if (target !== null && s.target !== null && Math.abs(target - s.target) > 0.004) s.slosh = Math.min(10, s.slosh + Math.abs(target - s.target) * 90);
+  if (target !== null && s.target === null) s.level = target;      // the first reading: no long rise from empty
+  s.target = target;
+  s.activity = target === null ? 0 : activity;
+  const value = rig.els?.value[key];
+  if (value) value.textContent = target === null ? "No reading" : `${Math.round(Number(reading))} %`;
+}
+
+// Everything but the water's surface, from the latest report. Runs with every snapshot.
+function updateRigDrawing() {
+  if (!rig.els) return;
+  const svg = rig.els.svg;
+  const sensors = liveData.sensors || {};
+  const actuators = liveData.actuators || {};
+  const run = liveData.diagnostics?.runProgress || {};
+  const fresh = deviceIsFresh();
+  const transfer = fresh && Boolean(actuators.transferRunning);
+  const booster = fresh && Boolean(actuators.boosterRunning);
+  const mixer = fresh && Boolean(actuators.mixerRunning);
+  const dosing = fresh && Boolean(run.active) && run.stage === "Pump Nutrients";
+  const doseNow = dosing ? ["A", "B", "C"].find(k => Number(run.dosesMl?.[k]?.target) > Number(run.dosesMl?.[k]?.delivered || 0)) || null : null;
+  const zone = String(run.zone || "").toUpperCase();
+  setRigTank("res", sensors.reservoirLevel, transfer ? 1 : 0);
+  setRigTank("mix", sensors.mixingLevel, mixer ? 2 : (transfer || booster || dosing) ? 1 : 0);
+  const resLow = hasValue(sensors.reservoirLevel) && Number(sensors.reservoirLevel) < RIG_RES_LOW_PCT;
+  svg.querySelector('[data-tank="res"]')?.classList.toggle("low", resLow);
+  svg.querySelector('[data-tank="mix"]')?.classList.toggle("fed", Boolean(run.active) && run.operation === "fertigation");
+  svg.querySelector('[data-pump="transfer"]')?.classList.toggle("on", transfer);
+  svg.querySelector('[data-pump="booster"]')?.classList.toggle("on", booster);
+  svg.querySelector(".rig-mixer")?.classList.toggle("on", mixer);
+  const flowing = new Set();
+  if (transfer) ["resOut", "transferUp"].forEach(key => flowing.add(key));
+  if (booster) {
+    ["mixOut", "boosterOut"].forEach(key => flowing.add(key));
+    ["A", "B", "C"].filter(id => zone.includes(id)).forEach(id => flowing.add(`drop${id}`));
+  }
+  if (doseNow) flowing.add(`dose${doseNow}`);
+  svg.querySelectorAll("[data-flow]").forEach(el => el.classList.toggle("on", flowing.has(el.dataset.flow)));
+  svg.querySelectorAll("[data-valve]").forEach(el => el.classList.toggle("open", booster && zone.includes(el.dataset.valve)));
+  svg.querySelectorAll("[data-bottle]").forEach(el => el.classList.toggle("on", el.dataset.bottle === doseNow));
+  // The columns: filled to their soil moisture, with ESP1's Soil start % marked (it waters below that line).
+  const L = RIG_LAYOUTS[rig.layout];
+  const start = soilStartPercent();
+  const words = [];
+  ["A", "B", "C"].forEach(id => {
+    const z = sensors.zones?.[id] || {};
+    const off = z.enabled === false;
+    const known = !off && hasValue(z.moisture);
+    const pct = known ? Math.min(100, Math.max(0, Number(z.moisture))) : 0;
+    const group = svg.querySelector(`[data-col="${id}"]`);
+    group?.classList.toggle("off", off);
+    group?.classList.toggle("dry", known && pct < start);
+    const moist = svg.querySelector(`[data-moist="${id}"]`);
+    if (moist) moist.style.transform = `scaleY(${(pct / 100).toFixed(3)})`;
+    const line = svg.querySelector(`[data-start="${id}"]`);
+    if (line) {
+      const y = (L.columns.y + L.columns.h * (1 - start / 100)).toFixed(1);
+      line.setAttribute("y1", y);
+      line.setAttribute("y2", y);
+    }
+    const value = svg.querySelector(`[data-colvalue="${id}"]`);
+    if (value) value.textContent = off ? "off" : known ? `${Math.round(pct)} %` : "--";
+    words.push(`column ${id} ${off ? "off" : known ? `${Math.round(pct)} % moist` : "no reading"}`);
+  });
+  const status = !liveData.sensors ? "Waiting for ESP1's report."
+    : !fresh ? "ESP1 isn't reporting, so this is its last report, and nothing is shown moving."
+    : booster ? `Watering column${zone.length > 1 ? "s" : ""} ${columnList([...zone].filter(ch => "ABC".includes(ch))) || "?"} from the mixing tank.`
+    : mixer ? "Stirring the batch in the mixing tank."
+    : doseNow ? `Adding nutrient ${doseNow} to the mixing tank.`
+    : transfer ? "Filling the mixing tank from the reservoir."
+    : run.active ? `${run.operation === "fertigation" ? "Fertigation" : "Irrigation"} for column ${zone || "?"}: ${rawText(run.stage, "starting up")}.`
+    : "Idle. No pump is running.";
+  setText("rigStatus", status);
+  const tank = key => hasValue(sensors[key]) ? `${Math.round(Number(sensors[key]))} %` : "no reading";
+  rig.els.title.textContent = `The rig: reservoir ${tank("reservoirLevel")}, mixing tank ${tank("mixingLevel")}, ${words.join(", ")}. ${status}`;
+  rigWake();
+}
+
+// ESP1 doesn't report its Soil start %, so this is the last value sent from this website (in the commands still
+// listed), or the firmware's default.
+function soilStartPercent() {
+  const sent = commandData
+    .filter(c => c.type === "SET_THRESH" && c.status === "completed" && hasValue(c.payload?.thStart))
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
+  return sent ? Number(sent.payload.thStart) : 35;
+}
+
+function initRigDrawing() {
+  const host = document.getElementById("rigDrawing");
+  if (!host) return;
+  const pick = () => {
+    const name = host.clientWidth && host.clientWidth < RIG_NARROW_PX ? "narrow" : "wide";
+    if (name === rig.layout) return;
+    buildRigDrawing(name);
+    updateRigDrawing();
+  };
+  pick();
+  if (window.ResizeObserver) new ResizeObserver(pick).observe(host);
+  if (window.IntersectionObserver) {
+    new IntersectionObserver(entries => { rig.visible = entries.some(e => e.isIntersecting); rigWake(); }).observe(host);
+  } else {
+    rig.visible = true;
+  }
+  document.addEventListener("visibilitychange", rigWake);
+  reduceMotionQuery?.addEventListener?.("change", rigWake);
 }
 
 function updateDashboard() {
@@ -2443,6 +3954,10 @@ function updateDashboard() {
   setPumpLamp("transferPumpStatus", fresh && Boolean(actuators.transferRunning));
   setPumpLamp("boosterPumpStatus", fresh && Boolean(actuators.boosterRunning));
   setPumpLamp("mixerPumpStatus", fresh && Boolean(actuators.mixerRunning));
+  updateRigDrawing();
+  // The column editor offers several watering times a day only to firmware that has them, and the first snapshot
+  // usually lands after the cards are built.
+  if (multiRunSupported() !== zoneCardsMultiRun) renderZonesUI();
   updateZoneReadings();
 
   renderDiagnostics();
@@ -2823,7 +4338,7 @@ function renderCommandHistory() {
     badge.className = `command-badge ${commandStatusTone(command.status)}`;
     badge.textContent = rawText(command.status, "unknown");
     const queued = command.status === "queued";
-    const withdrawable = queued && !NOT_WITHDRAWABLE.has(command.type) && isApprovedUser();
+    const withdrawable = queued && !NOT_WITHDRAWABLE.has(command.type) && canWithdrawType(command.type);
     const right = document.createElement("span");
     right.className = "command-actions";
     if (withdrawable) {
@@ -2848,12 +4363,17 @@ function renderCommandHistory() {
   });
 }
 
+// Who may take a queued row back (2026-11-05, as the rules): Control for any row, Edit zones for a column's settings.
+function canWithdrawType(type) {
+  return hasControlAccess() || (type === "SET_COLUMN" && hasZoneEditAccess());
+}
+
 // Only for a row still "queued": once ESP1 has picked it up the rules refuse the write, and if ESP1's
 // reply lands just after this one it overwrites it. So the row itself is the only honest result.
 function withdrawCommand(id) {
   const command = commandData.find(c => c.id === id);
   if (!command || command.status !== "queued" || NOT_WITHDRAWABLE.has(command.type)) return;
-  if (!currentUserIsSignedIn() || !isApprovedUser()) return;
+  if (!currentUserIsSignedIn() || !canWithdrawType(command.type)) return;
   const label = rawText(command.type, "Command").replaceAll("_", " ");
   db.ref(`irrigation/commands/${id}`).update({
     status: "withdrawn",
@@ -3044,12 +4564,18 @@ function updateFaultBanner() {
     }
   }
 
+  // Without Control (2026-11-05) the banner only informs: the choices are for accounts that can act on them.
+  const control = hasControlAccess();
   const rec = document.getElementById("faultRecovery");
-  if (rec) rec.hidden = !held;
+  if (rec) rec.hidden = !held || !control;
   const estopBtn = document.getElementById("estopRecoverBtn");
-  if (estopBtn) estopBtn.hidden = !stopped || held;
+  if (estopBtn) estopBtn.hidden = !stopped || held || !control;
   const enableBtn = document.getElementById("enableActBtn");
-  if (enableBtn) enableBtn.hidden = !lockedOut;
+  if (enableBtn) enableBtn.hidden = !lockedOut || !control;
+  const ackBtn = document.getElementById("ackFaultBtn");
+  if (ackBtn) ackBtn.hidden = !control;
+  const viewerNote = document.getElementById("faultViewerNote");
+  if (viewerNote) viewerNote.hidden = control;
 }
 
 /* ---- Armed forced-run countdown ---------------------------------------------------------------
@@ -3323,6 +4849,7 @@ loginForm?.addEventListener("submit", async event => {
         createdAt: firebase.database.ServerValue.TIMESTAMP
       }).catch(error => console.warn("Could not re-create account record after sign-in", error));
     }
+    logActivity("Signed in");
   } catch (error) {
     if (errorBox) errorBox.textContent = "Sign-in failed. Check your email and password.";
     console.error(error);
@@ -3672,6 +5199,7 @@ function mtHoldStart(btn) {
     .set({ seq: firebase.database.ServerValue.TIMESTAMP, bit: target, want: false })
     .catch(error => console.warn("Could not register the hold's disconnect release", error));
   writeTestHold(true, target);
+  logActivity(`Hold-to-run test: ${btn.textContent.trim() || target}`);
   mtHoldActiveBtn = btn;
   btn.classList.add("holding");
   btn.dataset.holdStartMs = String(Date.now());
@@ -3754,6 +5282,7 @@ function reportHoldResult(target, ms, stoppedAtCap) {
 
 function requestManualHold() {
   if (rigLocked()) return;                    // the rules refuse it; renderManualHold() says why
+  if (!mtHoldTimer) logActivity("Opened Manual/Test (the rig leaves automatic)");
   const answer = liveData.diagnostics?.webManual?.state;
   mtStaleAnswer = answer === "refused" || answer === "revoked" ? answer : null;
   mtAskedAt = serverNow();
@@ -3835,14 +5364,14 @@ function renderManualHold() {
   // cosmetic only (every individual button/command underneath is still independently gated by
   // canAccessPrivilegedTabs()/queueCommand()'s operatorOnly check, both client and server-side), but
   // still a real defense-in-depth miss for the one thing Proceed itself controls: revealing the panel
-  // at all. Now requires the same privileged tier as the tab itself (Main/Creator operator, an active
-  // 1h temp grant, or a persistent Sub-operator grant).
+  // at all. Now requires the same privileged tier as the tab itself (an operator, an active 1h temp grant, or a
+  // persistent Sub-operator grant).
   if (proceed) {
     const privileged = canAccessPrivilegedTabs();
     proceed.disabled = !privileged || rigLocked();
     proceed.title = !privileged ? (!isApprovedUser()
       ? "Your account is awaiting operator approval before it can use this control."
-      : "This control is limited to the main/creator operator account, or an account with an active temporary/Sub-operator grant.")
+      : "This is for operators, and accounts with 1-hour access or Sub-operator.")
       : rigLocked() ? LOCKED_TITLE : "";
   }
   // Locked while in here (by anyone, here or at the rig): the rules refuse the keep-alives, so hand the rig back to
@@ -4069,6 +5598,7 @@ document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", (
   const view = tab.dataset.view;
   if ((view === "manualtest" || view === "system") && !canAccessPrivilegedTabs()) return;
   if (view === "users" && !isOperator()) return;
+  if (view === "diagnostics" && !hasControlAccess()) return;
   // Leaving Manual/Test re-arms its gate, so you can never land back on live hardware controls
   // already unlocked from a previous visit.
   // Entering Manual/Test asks the rig for the hold; leaving gives it straight back rather than
@@ -4149,7 +5679,8 @@ function openInfoPopoverFor(icon) {
   // The icon's few words, and a way to the Help entry that explains it in full, when there is one.
   const more = pop.querySelector(".info-popover-more");
   if (more) {
-    more.hidden = !icon.dataset.help;
+    // Only to an entry this account can see (Help is split by account type).
+    more.hidden = !icon.dataset.help || !helpEntryAllowed(icon.dataset.help);
     more.dataset.help = icon.dataset.help || "";
   }
   pop.hidden = false;
@@ -4198,12 +5729,30 @@ function initInfoIcons() {
 
 /* Help tab -------------------------------------------------------------------------------------------
  * Static text in index.html: how the rig decides, how to do each task, and what every word means. Each
- * entry is a <details> with an id, so an info icon's "Read more in Help" can open the right one. */
+ * entry is a <details> with an id, so an info icon's "Read more in Help" can open the right one.
+ * Each entry also says who it is for (data-for, 2026-11-05), and an account sees only its own: "all" (every approved
+ * account), "asker" (an approved account still without some access), "zones" (Edit zones), "control" (Control),
+ * "privileged" (Sub-operator, 1-hour access, operators) and "operator". */
+function helpAudienceAllowed(audience) {
+  switch (audience) {
+    case "zones":      return hasZoneEditAccess();
+    case "control":    return hasControlAccess();
+    case "privileged": return canAccessPrivilegedTabs();
+    case "operator":   return isOperator();
+    case "asker":      return isApprovedUser() && !canAccessPrivilegedTabs() && (!myControlAccess || !myZoneEditAccess);
+    default:           return isApprovedUser();
+  }
+}
+function helpEntryAllowed(entryId) {
+  const entry = document.getElementById(entryId);
+  return Boolean(entry) && helpAudienceAllowed(entry.dataset.for);
+}
 function filterHelp(query) {
   const words = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
   let shown = 0;
   document.querySelectorAll("#help .help-item").forEach(item => {
-    const match = words.every(word => item.textContent.toLowerCase().includes(word));
+    const allowed = helpAudienceAllowed(item.dataset.for);
+    const match = allowed && words.every(word => item.textContent.toLowerCase().includes(word));
     item.hidden = !match;
     if (match) shown++;
     item.open = words.length > 0 && match;     // a search opens what it found; clearing it folds them back
@@ -4218,7 +5767,7 @@ document.getElementById("helpSearch")?.addEventListener("input", event => filter
 
 function openHelpEntry(entryId) {
   const entry = document.getElementById(entryId);
-  if (!entry) return;
+  if (!entry || !helpEntryAllowed(entryId)) return;
   const search = document.getElementById("helpSearch");
   if (search?.value) { search.value = ""; filterHelp(""); }   // a leftover search could be hiding it
   document.querySelector('.tab[data-view="help"]')?.click();
@@ -4228,7 +5777,9 @@ function openHelpEntry(entryId) {
   entry.querySelector("summary")?.focus({ preventScroll: true });
 }
 
+initRigDrawing();
 renderZonesUI();
+renderCropLibrary();
 updateDashboard();
 renderCommandHistory();
 syncControlAvailability();

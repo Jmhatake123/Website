@@ -77,27 +77,38 @@
     </div>
   </div>
 
+  <!-- New, rejected and restricted accounts (2026-11-05): nothing of the rig, only a way to ask. See
+       renderWaitingScreen() in script.js; the rules keep every rig node unreadable for them anyway. -->
+  <div id="waitingScreen" class="login-screen" hidden>
+    <div class="login-card waiting-card">
+      <p class="eyebrow">CIT-U Electrical Engineering</p>
+      <h1 id="waitingTitle">Waiting for approval</h1>
+      <p id="waitingDetail">--</p>
+      <p id="waitingAccount" class="field-note"></p>
+      <button type="button" id="waitingRequestBtn">Ask for approval</button>
+      <p id="waitingRequestState" class="request-state" aria-live="polite" hidden></p>
+      <button type="button" id="waitingRequestWithdraw" class="link-button" hidden>Take my request back</button>
+      <button type="button" id="waitingSignOutBtn" class="secondary">Sign out</button>
+    </div>
+  </div>
+
   <aside class="sidebar">
     <div>
       <p class="eyebrow">CIT-U EE</p>
       <h2>Smart<br>Irrigation</h2>
     </div>
+    <!-- The owner's order (2026-11-05). Each tab shows only for the accounts that may use it (refreshOperatorUI() in
+         script.js): Manual/Test and System for Sub-operators, 1-hour access and operators; User Management for
+         operators; Diagnostics with Control. Hidden by default, so there is no flash of a tab before JS runs. Hiding a
+         tab is a convenience; firebase-rules.json is the real boundary. -->
     <nav class="tabs" aria-label="Dashboard sections">
       <button type="button" class="tab active" data-view="dashboard">Live dashboard</button>
       <button type="button" class="tab" data-view="zones">Zone profiles</button>
       <button type="button" class="tab" data-view="manual">Controls</button>
-      <!-- Manual/Test and System are privileged-operator-only (see refreshOperatorUI() in
-           script.js) -- both hidden by default here, same pattern as usersTab below, so there is no
-           flash-of-visible-tab before JS runs. This tab being hidden is a UI convenience; the real
-           enforcement is queueCommand()'s operatorOnly check on every command these views can send
-           (see the dashboard-contract note at the top of script.js for which commands that covers). -->
       <button type="button" class="tab" data-view="manualtest" id="manualtestTab" hidden>Manual/Test</button>
-      <button type="button" class="tab" data-view="diagnostics">Diagnostics</button>
       <button type="button" class="tab" data-view="system" id="systemTab" hidden>System</button>
-      <!-- Shown only to the operator UID (see refreshOperatorUI() in script.js) -- hiding this tab
-           from everyone else is a convenience, not the security boundary; the real enforcement is
-           the operator-only write rule on /users/{uid} in firebase-rules.json. -->
       <button type="button" class="tab" data-view="users" id="usersTab" hidden>User Management</button>
+      <button type="button" class="tab" data-view="diagnostics" id="diagnosticsTab" hidden>Diagnostics</button>
       <button type="button" class="tab" data-view="help">Help</button>
     </nav>
     <div class="system-status" aria-live="polite">
@@ -165,6 +176,7 @@
         <button type="button" id="ackFaultBtn" class="secondary">Ask me again in 2 minutes</button>
       </div>
       <p id="faultLockNote" class="field-note" hidden>The rig is locked, so these choices are off. Unlock it first (operators and accounts with Manual/Test access).</p>
+      <p id="faultViewerNote" class="field-note" hidden>Someone with control access has to choose how to continue. You can ask for control access on the Controls tab.</p>
       <p id="faultAck" class="field-note" hidden></p>
     </section>
 
@@ -199,6 +211,17 @@
         </div>
         <div id="liveAge" class="snapshot-age">Waiting for first snapshot</div>
       </div>
+
+      <!-- The rig drawn from ESP1's latest report (2026-11-05): see buildRigDrawing() in script.js. -->
+      <article class="panel rig-panel" aria-labelledby="rigTitle">
+        <div class="panel-heading">
+          <div>
+            <h3 id="rigTitle">The rig now<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the rig drawing" data-info-title="The rig now" data-info-text="The tanks, pumps and columns as ESP1 last reported them. Water sits at the measured level, a pipe shows water moving only while ESP1 reports that pump running, and each column fills to its soil moisture, with Soil start % marked." data-help="help-tanks">i</button></h3>
+            <p id="rigStatus">Waiting for ESP1's report.</p>
+          </div>
+        </div>
+        <div id="rigDrawing" class="rig-drawing"></div>
+      </article>
 
       <div class="reading-panels">
         <article class="panel reading-panel">
@@ -279,10 +302,39 @@
       <div class="section-heading">
         <div>
           <h2>Zone profiles<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About zone profiles" data-info-title="Zone profiles" data-info-text="A, B and C are the rig's growing columns. Each card shows one column's soil and what ESP1 does with it." data-help="help-column">i</button></h2>
-          <p class="hint">One card per column: what its soil reads now, and what ESP1 does with it. Turn a column on or off with its switch. To change what it does, when it runs or its nutrient targets, press <strong>Edit settings</strong>; nothing reaches the rig until you press <strong>Save to rig</strong>.</p>
+          <p class="hint">One card per column: what its soil reads now, and what ESP1 does with it. Turn a column on or off with its switch, and rename it with <strong>Rename</strong>. To change what it does, when it runs or its nutrient targets, press <strong>Edit settings</strong>; nothing reaches the rig until you press <strong>Save to rig</strong>. The crops each column is compared with are under <strong>Crop profiles</strong>, below the columns.</p>
         </div>
       </div>
+      <!-- An approved account without Edit zones (2026-11-05): the cards are read-only, and this asks for it. -->
+      <article id="zoneRequestPanel" class="request-panel" hidden>
+        <div>
+          <h3>Want to change the columns?</h3>
+          <p>You can see every column. To change their settings, watering times, targets, crops or names, an operator has to give you access to edit zone profiles.</p>
+          <p id="zonesRequestState" class="request-state" aria-live="polite" hidden></p>
+        </div>
+        <div class="request-actions">
+          <button type="button" id="zonesRequestBtn">Request to edit zone profiles</button>
+          <button type="button" id="zonesRequestWithdraw" class="link-button" hidden>Take my request back</button>
+        </div>
+      </article>
       <div id="dynamic-zones-container"></div>
+
+      <!-- The crop library (2026-11-05): the built-in crops, as changed or removed, and the ones added here. Kept in
+           irrigation/config/crops; ESP1 never reads it. See renderCropLibrary() in script.js. -->
+      <section class="crop-library" id="cropLibrary" aria-labelledby="cropLibraryTitle">
+        <div class="section-heading">
+          <div>
+            <h2 id="cropLibraryTitle">Crop profiles<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About crop profiles" data-info-title="Crop profiles" data-info-text="The plants this website knows, each with its own growth stages and the soil levels it wants at each one. Columns are compared with them, and Fill from crop profile copies them into a column's settings. ESP1 never reads this list." data-help="help-crop-library">i</button></h2>
+            <p class="hint">The plants this website knows, each with its own growth stages and the soil levels it wants at each stage. Each column is compared with the crop and stage picked on its card, and <strong>Fill from crop profile</strong> copies these numbers into its settings. ESP1 never reads this list: a column's own targets only change when someone presses <strong>Save to rig</strong>.</p>
+          </div>
+          <button type="button" id="cropAddBtn" hidden>Add a crop</button>
+        </div>
+        <p id="cropLibraryNote" class="field-note" hidden>Only operators, and accounts with 1-hour access or Sub-operator, can add, change or remove crops.</p>
+        <p id="cropLibraryResult" class="control-result" aria-live="polite"></p>
+        <div id="cropEditorNew"></div>
+        <div id="cropList" class="crop-list"></div>
+        <p id="cropRemoved" class="crop-removed" hidden></p>
+      </section>
     </section>
 
     <section class="view" id="manual">
@@ -293,6 +345,20 @@
         </div>
       </div>
 
+      <!-- An approved account without Control (2026-11-05) sees only this on the tab. -->
+      <article id="controlRequestPanel" class="request-panel" hidden>
+        <div>
+          <h3>Controls need control access</h3>
+          <p>This tab stops the rig, waters a column now and restarts its boards, and Diagnostics shows how the rig is doing. An operator has to give you control access before you can use them.</p>
+          <p id="controlRequestState" class="request-state" aria-live="polite" hidden></p>
+        </div>
+        <div class="request-actions">
+          <button type="button" id="controlRequestBtn">Request control</button>
+          <button type="button" id="controlRequestWithdraw" class="link-button" hidden>Take my request back</button>
+        </div>
+      </article>
+
+      <div id="controlsBody" hidden>
       <article class="emergency-panel">
         <div>
           <h3>Emergency stop<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Emergency stop" data-info-title="Emergency stop" data-info-text="Switches every pump and valve off at once and cuts ESP2's power. Never held back by the cooldown or the rig lock." data-help="help-stop">i</button></h3>
@@ -373,6 +439,7 @@
         </ul>
         <p id="rebootResult" class="control-result" aria-live="polite"></p>
       </article>
+      </div>
     </section>
 
     <!-- Manual/Test. Everything here energises a relay THE MOMENT it is pressed: no schedule, no
@@ -642,30 +709,31 @@
 
       <div class="help-group">
         <h3>How the rig decides</h3>
-        <details class="help-item" id="help-when-water">
+        <details class="help-item" id="help-when-water" data-for="all">
           <summary>When does a column get watered?</summary>
-          <p>Each column is watered at most once a day. ESP1 looks at it only during its watering window, and starts a run when that column's soil is drier than <strong>Soil start %</strong> (35 % unless changed on the System tab). The run delivers the column's set amount of water, then stops.</p>
-          <p>Default windows: column A 06:00–08:00, column B 08:00–10:00, column C 06:00–08:00. You can give a column its own time on Zone profiles.</p>
+          <p>ESP1 looks at a column only during its watering times, and starts a run when that column's soil is drier than <strong>Soil start %</strong> (35 % unless changed on the System tab). It waters a column at most once in each watering time. The run delivers the column's set amount of water, then stops.</p>
+          <p>Default windows, one a day: column A 06:00–08:00, column B 08:00–10:00, column C 06:00–08:00. On Zone profiles you can give a column its own times instead, up to 4 a day. Several a day needs ESP1's firmware from 5 Nov 2026; older firmware has one a day.</p>
         </details>
-        <details class="help-item" id="help-when-nutrients">
+        <details class="help-item" id="help-when-nutrients" data-for="all">
           <summary>When are nutrients added?</summary>
           <p>Only for a column set to <strong>Water + nutrients</strong>. When it is due for water, ESP1 compares the soil probe's N, P and K with that column's targets. If any one is short by at least the <strong>Fertigation gap</strong> (30 mg/kg unless changed on the System tab), it mixes nutrients into the water; otherwise it waters only.</p>
           <p>It also waters only when the probe isn't answering, or reads under 15 % moisture, because dry soil gives the probe false nutrient numbers. After nutrients, a plain-water flush (20 % of the water) rinses the line.</p>
+          <p>Nutrients go in at most once a day: once a column has had them, from a scheduled run or a forced one, its other waterings that day are plain water. The column's card says so. (ESP1's firmware from 5 Nov 2026.)</p>
         </details>
-        <details class="help-item" id="help-what-blocks">
+        <details class="help-item" id="help-what-blocks" data-for="all">
           <summary>Why didn't a column water today?</summary>
-          <p>Any one of these stops a scheduled run: the column is off; it is outside its window; it was already watered today; the soil isn't drier than Soil start %; the reservoir is under 15 %; actuations are disabled; a fault is held; someone is using Manual/Test or the LCD menu; the mixing tank needs checking; ESP1 has had no recent soil readings; or the column is resting for 30 minutes after repeated faults.</p>
+          <p>Any one of these stops a scheduled run: the column is off; it is outside its watering times; it was already watered in this one (on the rig default, today); the soil isn't drier than Soil start %; the reservoir is under 15 %; actuations are disabled; a fault is held; someone is using Manual/Test or the LCD menu; the mixing tank needs checking; ESP1 has had no recent soil readings; or the column is resting for 30 minutes after repeated faults.</p>
           <p>The Diagnostics tab's recent events and ESP1's SD log say which one it was.</p>
         </details>
-        <details class="help-item" id="help-ph">
+        <details class="help-item" id="help-ph" data-for="all">
           <summary>Does the rig correct pH?</summary>
           <p>No. pH is checked, not corrected: after mixing, ESP1 checks the batch's pH and EC and reports PH_FAIL or EC_FAIL if they are outside the safe range, but nothing adds pH adjuster by itself. The pH up and down pumps only run from Manual/Test.</p>
         </details>
-        <details class="help-item" id="help-forced-vs-schedule">
+        <details class="help-item" id="help-forced-vs-schedule" data-for="control">
           <summary>What does a forced run skip?</summary>
-          <p>A forced run ignores the watering window, the soil reading and the once-a-day limit. It never skips safety: ESP1 still refuses it if actuations are disabled, a fault is held, the reservoir is too low, another run or test is going, or the mixing tank needs checking.</p>
+          <p>A forced run ignores the watering times, the soil reading and the once-in-each-time limit, though one that runs inside a column's watering time counts as that time's watering. It never skips safety: ESP1 still refuses it if actuations are disabled, a fault is held, the reservoir is too low, another run or test is going, or the mixing tank needs checking.</p>
         </details>
-        <details class="help-item" id="help-valves">
+        <details class="help-item" id="help-valves" data-for="control">
           <summary>Why is there no button for a single valve?</summary>
           <p>A valve only opens as one step of a full run that ESP1 and ESP2 sequence together, and closes again at the end of it. A button for one valve could leave it open with nothing to confirm it closed. To move water, use a forced run on Controls, or the booster tests on Manual/Test, which open the column's valve only while they run.</p>
         </details>
@@ -673,22 +741,27 @@
 
       <div class="help-group">
         <h3>How to</h3>
-        <details class="help-item" id="help-set-time">
+        <details class="help-item" id="help-set-time" data-for="zones">
           <summary>Set a column's watering time</summary>
           <ol>
             <li>Open <strong>Zone profiles</strong> and find the column's card.</li>
             <li>Press <strong>Edit settings</strong>.</li>
-            <li>Under <strong>When it runs</strong>, choose <strong>My own time</strong> and pick the start and end.</li>
+            <li>Under <strong>When it runs</strong>, choose <strong>My own time</strong>. Pick how many <strong>Waterings a day</strong> (up to 4), then the start and end of each.</li>
             <li>Check the <strong>You changed</strong> line, then press <strong>Save to rig</strong>.</li>
           </ol>
-          <p>The window must start before it ends, on the same day: it can't run past midnight. Times follow the rig's own clock; operators can check and set it on the System tab. To go back to the default, choose <strong>Rig default</strong> and save.</p>
+          <p>Each time must start before it ends, on the same day (the rig can't water past midnight), and end before the next one starts. The column is watered at most once in each, and only when its soil is drier than Soil start %. Nutrients go in at most once a day, so later waterings that day are plain water. Times follow the rig's own clock; operators can check and set it on the System tab. To go back to the default, choose <strong>Rig default</strong> and save.</p>
+          <p>Several times a day needs ESP1's firmware from 5 Nov 2026. With older firmware the card offers one time.</p>
         </details>
-        <details class="help-item" id="help-column-onoff">
+        <details class="help-item" id="help-rename" data-for="zones">
+          <summary>Rename a column</summary>
+          <p>Press <strong>Rename</strong> beside the column's name on its card, type the new name (up to 40 characters) and press <strong>Save name</strong>. Everyone who signs in sees the new name. It is kept on this website only: the LCD and SMS keep ESP1's own name for the column.</p>
+        </details>
+        <details class="help-item" id="help-column-onoff" data-for="zones">
           <summary>Turn a column on or off</summary>
           <p>Use the switch at the top of the column's card, and confirm. Off means ESP1 stops watering that column, and stops sending its readings to this page. Its settings are kept for when you turn it back on.</p>
           <p>Only turn on a column that is wired and plumbed. ESP2 has its own list of columns built into its firmware; if it doesn't include the column, ESP1 reports COL_MISMATCH and skips it for the day.</p>
         </details>
-        <details class="help-item" id="help-targets">
+        <details class="help-item" id="help-targets" data-for="zones">
           <summary>Change a column's nutrient targets</summary>
           <ol>
             <li>On the column's card, pick the crop and growth stage under <strong>Compared with</strong>. This only changes the reference numbers on this page.</li>
@@ -697,11 +770,22 @@
           </ol>
           <p>N, P and K are in ppm (the same as mg/kg), from 0 to 2000. pH is from 3 to 9, and is a record only: see <em>Does the rig correct pH?</em></p>
         </details>
-        <details class="help-item" id="help-saved-setups">
+        <details class="help-item" id="help-crop-library" data-for="privileged">
+          <summary>Add or change a crop profile</summary>
+          <ol>
+            <li>Open <strong>Zone profiles</strong> and scroll to <strong>Crop profiles</strong>, below the columns.</li>
+            <li>Press <strong>Add a crop</strong> for a new plant, or <strong>Edit</strong> on a crop to change it. Give it a name and, if you like, a variety or seedling type and notes.</li>
+            <li>List its growth stages in order (up to 10), each with the N, P and K (ppm), pH, EC (mS/cm) and soil moisture (%) it wants, and how many days it lasts if you know.</li>
+            <li>Press <strong>Save crop</strong>. It is in every column's crop list straight away.</li>
+          </ol>
+          <p>Operators, and accounts with 1-hour access or Sub-operator, can change crop profiles; everyone else can see them. A crop, or a stage, that a column uses can't be removed until that column picks another. The built-in crops can be changed or removed too, and put back as they were with <strong>Restore original</strong>, or <strong>Restore</strong> under Removed built-in crops.</p>
+          <p>Crop profiles stay on this website. ESP1 only gets their numbers when you copy them into a column with <strong>Fill from crop profile</strong> and press <strong>Save to rig</strong>.</p>
+        </details>
+        <details class="help-item" id="help-saved-setups" data-for="zones">
           <summary>Save a column setup to reuse later</summary>
           <p>In <strong>Edit settings</strong>, fill in the column the way you want it, type a name under <strong>Save these as a setup</strong>, and press <strong>Save setup</strong>. Next time, pick it from <strong>Load a saved setup</strong>: it fills the form, and nothing reaches the rig until you press Save to rig. Setups are stored on this website only.</p>
         </details>
-        <details class="help-item" id="help-water-now">
+        <details class="help-item" id="help-water-now" data-for="control">
           <summary>Water a column now (forced run)</summary>
           <ol>
             <li>Open <strong>Controls</strong> and find <strong>Water a column now</strong>.</li>
@@ -710,17 +794,17 @@
             <li>During the countdown, <strong>Cancel forced run</strong> stops it. Once it has started, only <strong>Emergency stop</strong> does.</li>
           </ol>
         </details>
-        <details class="help-item" id="help-stop">
+        <details class="help-item" id="help-stop" data-for="control">
           <summary>Stop everything now</summary>
           <p>Press <strong>Emergency stop</strong>, at the top of every tab. ESP1 switches every pump and valve off and cuts ESP2's power. Wait for ESP1's reply: if ESP1 is offline nothing has stopped yet, so use the physical cutoff, press MODE + BACK on the unit, or text STOP,ALL.</p>
           <p>When it is safe again, press <strong>Return to normal</strong> in the banner. ESP1 powers ESP2 up and checks it before anything runs.</p>
         </details>
-        <details class="help-item" id="help-pause">
+        <details class="help-item" id="help-pause" data-for="control">
           <summary>Stop the rig running anything during maintenance</summary>
           <p>On Controls, switch <strong>Pumps and valves</strong> off and confirm. Nothing runs (schedule, forced runs, exercises, tests) until someone switches it back on, even after a restart. Readings, logging and this website carry on. The banner at the top of the page offers <strong>Switch pumps and valves back on</strong> too, and at the rig it is Settings, Enable Actuations.</p>
           <p>Switching them off works even while the rig is locked, because it can only stop things.</p>
         </details>
-        <details class="help-item" id="help-lock">
+        <details class="help-item" id="help-lock" data-for="privileged">
           <summary>Lock or unlock the rig</summary>
           <p>The <strong>rig lock</strong> locks this website's controls and the buttons on the rig's screen together. Use it while nobody is looking after the rig, or so that a visitor can't change anything. Automatic watering carries on as normal.</p>
           <ol>
@@ -728,10 +812,10 @@
             <li>It shows <strong>Locking…</strong> until ESP1's report confirms it, usually within a few seconds.</li>
             <li>To unlock, use the same switch, or <strong>Unlock the rig</strong> in the banner.</li>
           </ol>
-          <p>Operators, and accounts with 1-hour access or Sub-operator, can lock and unlock. While it is locked, everyone can still press Emergency stop, switch pumps and valves off, and cancel a forced run. Nothing else can be sent until it is unlocked.</p>
+          <p>Operators, and accounts with 1-hour access or Sub-operator, can lock and unlock. While it is locked, anyone with control access can still press Emergency stop, switch pumps and valves off, and cancel a forced run. Nothing else can be sent until it is unlocked.</p>
           <p>At the rig, MODE + BACK still stops everything, BACK still cancels a forced run's countdown, and holding UP and DOWN together unlocks it, which unlocks this website too. Locking at the rig (Settings, Lock Screen) locks this website as well. ESP1 won't lock from the website while someone at the rig is in its menus, Testing or Calibration.</p>
         </details>
-        <details class="help-item" id="help-held-fault">
+        <details class="help-item" id="help-held-fault" data-for="control">
           <summary>Deal with a held fault</summary>
           <p>A held fault (for example FLOW_FAIL, no water moving) pauses the run with every pump off. ESP2 stays powered and remembers how much water is in the mixing tank. The red banner asks you to choose:</p>
           <ul>
@@ -743,7 +827,7 @@
           <p><strong>Ask me again in 2 minutes</strong> only dims the banner for now; the fault stays held until someone chooses. While the rig is locked these choices are off, so unlock it first.</p>
           <p>If a no-flow fault keeps coming back, the banner suggests Release tank, because resuming would only stop again. On the 4th hold of the same fault in a row, ESP1 cancels the run itself and rests that column for 30 minutes.</p>
         </details>
-        <details class="help-item" id="help-test-pump">
+        <details class="help-item" id="help-test-pump" data-for="privileged">
           <summary>Test a pump or valve</summary>
           <p>Open <strong>Manual/Test</strong> (operators, and accounts an operator has given access) and press <strong>Proceed</strong>. The rig leaves automatic while you are there.</p>
           <ul>
@@ -754,11 +838,27 @@
           </ul>
           <p>Leaving the tab hands the rig back to automatic. Nothing here works while the rig is locked.</p>
         </details>
-        <details class="help-item" id="help-approve">
-          <summary>Approve a new account (operators)</summary>
-          <p>Open <strong>User Management</strong>. New accounts are listed under <strong>Waiting for approval</strong>; press <strong>Approve</strong>. To give someone Manual/Test and System as well, use <strong>Give 1-hour access</strong> for a one-off job, or <strong>Make Sub-operator</strong> for ongoing access.</p>
+        <details class="help-item" id="help-approve" data-for="operator">
+          <summary>Approve a new account, and give it more</summary>
+          <p>Open <strong>User Management</strong>. New accounts are listed under <strong>Waiting for approval</strong>; press <strong>Approve</strong>. An approved account can only look at the Live dashboard, Zone profiles and Help until you give it more:</p>
+          <ul>
+            <li><strong>Give zone editing</strong>: it can change the column cards.</li>
+            <li><strong>Give control</strong>: it can use the Controls tab, Diagnostics and the Emergency stop.</li>
+            <li><strong>Give 1-hour access</strong> or <strong>Make Sub-operator</strong>: everything above, plus Manual/Test, System, the rig lock and crop profiles.</li>
+          </ul>
+          <p>Each one has a matching button to take it back. Taking back zone editing or control ends only that access: the account can still look, and can ask again.</p>
         </details>
-        <details class="help-item" id="help-clock">
+        <details class="help-item" id="help-requests" data-for="operator">
+          <summary>Answer access requests</summary>
+          <p>Accounts ask for what they need: a new account for approval, a restricted one to be unrestricted, and an approved one for zone editing or control. A request pops up as soon as it arrives while you are signed in, and the <strong>User Management</strong> tab shows how many are waiting.</p>
+          <p>They are listed at the top of User Management. <strong>Approve</strong>, <strong>Unrestrict</strong>, <strong>Give zone editing</strong> or <strong>Give control</strong> accepts one; <strong>Decline</strong> tells the account, which can ask again. Blocked accounts can't ask, and Sub-operators are only ever made by an operator.</p>
+        </details>
+        <details class="help-item" id="help-ask-access" data-for="asker">
+          <summary>Ask for more access</summary>
+          <p>An approved account starts by only looking: the Live dashboard, Zone profiles and Help. To change the columns, press <strong>Request to edit zone profiles</strong> at the top of Zone profiles. To use the controls and see Diagnostics, press <strong>Request control</strong> on the Controls tab.</p>
+          <p>An operator sees your request straight away and answers it, and the page changes by itself when they do. If they decline, you can ask again. You can take a request back while it is waiting.</p>
+        </details>
+        <details class="help-item" id="help-clock" data-for="privileged">
           <summary>Set the rig's clock</summary>
           <ol>
             <li>Open <strong>System</strong> and find <strong>Clock</strong>. <strong>Now on ESP1</strong> is the time the rig is using.</li>
@@ -767,7 +867,7 @@
           </ol>
           <p>Every watering time follows this clock, so check it after a power cut or if a column waters at the wrong time. If <strong>Clock chip</strong> says Not OK, the clock hardware needs looking at.</p>
         </details>
-        <details class="help-item" id="help-find-problem">
+        <details class="help-item" id="help-find-problem" data-for="control">
           <summary>Find out why something isn't working</summary>
           <p>Open <strong>Diagnostics</strong>. The <strong>Summary</strong> lists anything ESP1 reports as wrong, in words, or says that everything it checks looks fine. The details under it show each item ESP1 reports, and <strong>Recent events on the rig</strong> lists faults, refusals and run results.</p>
           <p>If ESP1 isn't reporting at all, the page says so and explains what the LCD's GSM + WiFi page shows.</p>
@@ -776,41 +876,41 @@
 
       <div class="help-group">
         <h3>Words used on this site</h3>
-        <details class="help-item" id="help-column"><summary>Column (zone)</summary><p>One growing column with its own soil probes and its own valve: A, B or C. Column C is off on this rig unless it has been wired and turned on.</p></details>
-        <details class="help-item" id="help-controllers"><summary>ESP1, ESP2 and the Nano</summary><p><strong>ESP1</strong> is the main controller: it decides, keeps the schedule, logs, sends texts and talks to this website. <strong>ESP2</strong> runs the pumps and valves and measures the water; ESP1 powers it up only when something needs to run. The <strong>Nano</strong> reads the soil, air, light and tank sensors. <strong>Restart a board</strong> on Controls restarts one of them; the LCD calls this Reboot.</p></details>
-        <details class="help-item" id="help-tanks"><summary>Reservoir and mixing tank</summary><p>The <strong>reservoir</strong> holds the plain water. The <strong>transfer pump</strong> moves water from it into the <strong>mixing tank</strong>, where nutrients are added and stirred by the <strong>mixer</strong>. The <strong>booster pump</strong> then sends the batch to a column.</p></details>
-        <details class="help-item" id="help-irrigation"><summary>Irrigation and fertigation</summary><p><strong>Irrigation</strong> is plain water. <strong>Fertigation</strong> is water with nutrients mixed in, followed by a plain-water flush.</p></details>
-        <details class="help-item" id="help-nutrients"><summary>Nutrients A, B and C</summary><p>The three nutrient pumps, one stock solution each: A is nitrogen (N), B is phosphorus (P), C is potassium (K). A fourth pump (D) is wired but not used.</p></details>
-        <details class="help-item" id="help-npk"><summary>N, P, K, ppm and targets</summary><p>Nitrogen, phosphorus and potassium in the soil, in ppm (parts per million, the same as mg/kg), as read by the column's 7-in-1 probe. A column's <strong>targets</strong> are the levels ESP1 aims for; it adds nutrients when a reading falls short by the Fertigation gap.</p></details>
-        <details class="help-item" id="help-moisture"><summary>Soil moisture and NPK probe moisture</summary><p><strong>Soil moisture</strong> is the column's main reading, from its two moisture probes, blended with the NPK probe's own moisture when the two agree. ESP1 compares it with Soil start % to decide when to water. <strong>NPK probe moisture</strong> is the NPK probe's reading on its own.</p></details>
-        <details class="help-item" id="help-soil-ec"><summary>Soil EC and soil pH</summary><p><strong>Soil EC</strong> is how many dissolved nutrients the soil holds, in µS/cm: higher means richer. <strong>Soil pH</strong> is how acidic (under 7) or alkaline (over 7) the soil is. Both come from the 7-in-1 probe.</p></details>
-        <details class="help-item" id="help-tank-ph-ec"><summary>Mix tank pH and EC</summary><p>The mixed batch's pH and EC (in mS/cm), measured by ESP2 during a run. Between runs they show the last batch.</p></details>
-        <details class="help-item" id="help-air"><summary>Air temperature, humidity and light</summary><p>Measured at the rig by the Nano, for monitoring only: none of them starts or stops a run. Light is in lux.</p></details>
-        <details class="help-item" id="help-power"><summary>Main battery, solar and second battery</summary><p>The <strong>main battery</strong> runs the rig; its current says charging or discharging when ESP1 knows the direction, and its charge is an estimate. <strong>Solar</strong> shows what the panel gives now, and the energy it has given since the daily reset; 0 V at night is normal. The <strong>second battery</strong> is meant to run the controllers while the inverter runs. <strong>Boards run from</strong> says which battery they use now: always the main one while battery switching is off in the firmware. If battery switching resets the controllers twice within 24 hours, ESP1 latches a <strong>battery switch fault</strong> that blocks the inverter until it is cleared on the System tab.</p></details>
-        <details class="help-item" id="help-soil-start"><summary>Soil start %</summary><p>A column is only watered when its soil moisture is below this. Set on the System tab, under Watering thresholds (35 % unless changed). 0 % would mean no column is ever dry enough, so scheduled watering would stop.</p></details>
-        <details class="help-item" id="help-fert-gap"><summary>Fertigation gap</summary><p>How far below its target (in mg/kg) a nutrient must be before ESP1 adds nutrients. Set on the System tab, under Watering thresholds (30 unless changed). Smaller means nutrients are added more often.</p></details>
-        <details class="help-item" id="help-window"><summary>Watering window (rig default or my own time)</summary><p>The part of the day a column may be watered. <strong>Rig default</strong> uses the window built into the firmware (A 06:00–08:00, B 08:00–10:00, C 06:00–08:00). <strong>My own time</strong> uses the start and end you set. Either way, the column is still watered at most once a day, and only when its soil is dry enough.</p></details>
-        <details class="help-item" id="help-what-it-does"><summary>What it does (water + nutrients, or water only)</summary><p><strong>Water + nutrients</strong> lets ESP1 add nutrients when the soil needs them. <strong>Water only</strong> never adds nutrients to that column. On the LCD these are called Auto and Irrigation only.</p></details>
-        <details class="help-item" id="help-crop-profile"><summary>Crop profile</summary><p>The crop and growth stage you pick for a column on this website. It sets the reference numbers the soil readings are compared with, and what <strong>Fill from crop profile</strong> copies. ESP1 never sees it.</p></details>
-        <details class="help-item" id="help-forced-run"><summary>Forced run and countdown</summary><p>A run you start yourself from Controls, with your own litres and nutrients. It waits for a countdown first (0–300 seconds) so you can still cancel it, and shows ESP1's own countdown on the page.</p></details>
-        <details class="help-item" id="help-estop"><summary>Emergency stop</summary><p>Stops every pump and valve at once and cuts ESP2's power. The rig stays stopped until someone presses Return to normal, here or at the LCD.</p></details>
-        <details class="help-item" id="help-lockout"><summary>Actuations disabled (pumps and valves off)</summary><p>A standing stop: nothing moves, while sensors, logging and this website keep working. Controls' <strong>Pumps and valves</strong> switch sets it, and ESP1 shows its state as SAFE_MODE. It survives a restart, and lasts until someone switches pumps and valves back on. It is a different thing from the rig lock, which only locks the controls.</p></details>
-        <details class="help-item" id="help-held"><summary>Held fault</summary><p>A serious problem during a run (no flow, power trouble, a dose that took too long) that pauses the run instead of ending it, so the water already in the mixing tank isn't lost. ESP1 waits for you to choose how to continue: see <em>Deal with a held fault</em>.</p></details>
-        <details class="help-item" id="help-manual-mode"><summary>Manual mode</summary><p>While the Manual/Test tab is open, ESP1 keeps the rig out of automatic, so no scheduled run can start under your hands. It lasts while the page keeps asking, and someone at the LCD can take it back at any time.</p></details>
-        <details class="help-item" id="help-pulse"><summary>Timed test and hold-to-run test</summary><p>Two ways to switch one pump or valve on from Manual/Test: a <strong>timed test</strong> runs for the seconds you set and then reports the flow it counted; a <strong>hold-to-run test</strong> runs only while you keep the button pressed. ESP1 calls the timed test a pulse.</p></details>
-        <details class="help-item" id="help-exercise"><summary>Pump exercise</summary><p>The rig runs each AC pump for a few seconds every 2 days, so it doesn't seize between runs. Turn it off if the tank is empty.</p></details>
-        <details class="help-item" id="help-sweep"><summary>ESP2 sweep (reading ESP2's sensors)</summary><p>Powers ESP2 up for 10–120 seconds to read its own sensors (pH, EC, current, flow meters), then powers it down. Only when the rig is idle. <strong>Read ESP2's sensors</strong> on Diagnostics and <strong>Read the flow meters</strong> on Manual/Test both start one.</p></details>
-        <details class="help-item" id="help-raw"><summary>Readings before conversion</summary><p>The sensors' own numbers, before ESP1 turns them into percentages and units: soil probe counts, tank distances in cm, and the NPK probe's registers. A sensor stuck at its limit shows here even when the converted reading looks normal. A reading older than 5 minutes is marked STALE.</p></details>
-        <details class="help-item" id="help-events"><summary>Recent events on the rig</summary><p>The last 12 notable things ESP1 logged: faults, runs starting and their results, tests from the website or the LCD, refused requests and SMS traffic. Routine housekeeping is left out. The full history is in ESP1's daily log on its SD card; this list starts again when ESP1 restarts.</p></details>
-        <details class="help-item" id="help-snapshot"><summary>Snapshot (live data)</summary><p>ESP1 sends this website a full report every minute, or every 20 seconds during a run. If none arrives for about 2 minutes, the page says ESP1 isn't reporting and turns off the controls that need it.</p></details>
-        <details class="help-item" id="help-restore"><summary>Restore factory settings (Restore Defaults)</summary><p>Puts every column's mode, targets, name and window, and the thresholds, back to the firmware's starting values. It keeps calibration, which columns are on, and the WiFi setup. Only when the rig is idle; it can't be undone.</p></details>
-        <details class="help-item" id="help-access"><summary>Accounts: pending, approved, restricted, blocked</summary><p><strong>Pending</strong>: new, waiting for an operator. <strong>Approved</strong>: can see readings and use the normal controls. <strong>Restricted</strong> and <strong>rejected</strong>: can sign in but see nothing. <strong>Blocked</strong>: can't use the site at all. Two fixed <strong>operator</strong> accounts manage everyone else.</p></details>
-        <details class="help-item" id="help-grants"><summary>1-hour access and Sub-operator</summary><p>Ways for an operator to open Manual/Test and System, and the rig lock, to an approved account: <strong>1-hour access</strong> ends by itself after an hour, and <strong>Sub-operator</strong> lasts until an operator removes it. Restricting, blocking or rejecting the account ends both at once.</p></details>
+        <details class="help-item" id="help-column" data-for="all"><summary>Column (zone)</summary><p>One growing column with its own soil probes and its own valve: A, B or C. Column C is off on this rig unless it has been wired and turned on.</p></details>
+        <details class="help-item" id="help-controllers" data-for="all"><summary>ESP1, ESP2 and the Nano</summary><p><strong>ESP1</strong> is the main controller: it decides, keeps the schedule, logs, sends texts and talks to this website. <strong>ESP2</strong> runs the pumps and valves and measures the water; ESP1 powers it up only when something needs to run. The <strong>Nano</strong> reads the soil, air, light and tank sensors. <strong>Restart a board</strong> on Controls restarts one of them; the LCD calls this Reboot.</p></details>
+        <details class="help-item" id="help-tanks" data-for="all"><summary>Reservoir and mixing tank</summary><p>The <strong>reservoir</strong> holds the plain water. The <strong>transfer pump</strong> moves water from it into the <strong>mixing tank</strong>, where nutrients are added and stirred by the <strong>mixer</strong>. The <strong>booster pump</strong> then sends the batch to a column.</p></details>
+        <details class="help-item" id="help-irrigation" data-for="all"><summary>Irrigation and fertigation</summary><p><strong>Irrigation</strong> is plain water. <strong>Fertigation</strong> is water with nutrients mixed in, followed by a plain-water flush.</p></details>
+        <details class="help-item" id="help-nutrients" data-for="all"><summary>Nutrients A, B and C</summary><p>The three nutrient pumps, one stock solution each: A is nitrogen (N), B is phosphorus (P), C is potassium (K). A fourth pump (D) is wired but not used.</p></details>
+        <details class="help-item" id="help-npk" data-for="all"><summary>N, P, K, ppm and targets</summary><p>Nitrogen, phosphorus and potassium in the soil, in ppm (parts per million, the same as mg/kg), as read by the column's 7-in-1 probe. A column's <strong>targets</strong> are the levels ESP1 aims for; it adds nutrients when a reading falls short by the Fertigation gap.</p></details>
+        <details class="help-item" id="help-moisture" data-for="all"><summary>Soil moisture and NPK probe moisture</summary><p><strong>Soil moisture</strong> is the column's main reading, from its two moisture probes, blended with the NPK probe's own moisture when the two agree. ESP1 compares it with Soil start % to decide when to water. <strong>NPK probe moisture</strong> is the NPK probe's reading on its own.</p></details>
+        <details class="help-item" id="help-soil-ec" data-for="all"><summary>Soil EC and soil pH</summary><p><strong>Soil EC</strong> is how many dissolved nutrients the soil holds, in µS/cm: higher means richer. <strong>Soil pH</strong> is how acidic (under 7) or alkaline (over 7) the soil is. Both come from the 7-in-1 probe.</p></details>
+        <details class="help-item" id="help-tank-ph-ec" data-for="all"><summary>Mix tank pH and EC</summary><p>The mixed batch's pH and EC (in mS/cm), measured by ESP2 during a run. Between runs they show the last batch.</p></details>
+        <details class="help-item" id="help-air" data-for="all"><summary>Air temperature, humidity and light</summary><p>Measured at the rig by the Nano, for monitoring only: none of them starts or stops a run. Light is in lux.</p></details>
+        <details class="help-item" id="help-power" data-for="all"><summary>Main battery, solar and second battery</summary><p>The <strong>main battery</strong> runs the rig; its current says charging or discharging when ESP1 knows the direction, and its charge is an estimate. <strong>Solar</strong> shows what the panel gives now, and the energy it has given since the daily reset; 0 V at night is normal. The <strong>second battery</strong> is meant to run the controllers while the inverter runs. <strong>Boards run from</strong> says which battery they use now: always the main one while battery switching is off in the firmware. If battery switching resets the controllers twice within 24 hours, ESP1 latches a <strong>battery switch fault</strong> that blocks the inverter until it is cleared on the System tab.</p></details>
+        <details class="help-item" id="help-soil-start" data-for="all"><summary>Soil start %</summary><p>A column is only watered when its soil moisture is below this. Set on the System tab, under Watering thresholds (35 % unless changed). 0 % would mean no column is ever dry enough, so scheduled watering would stop.</p></details>
+        <details class="help-item" id="help-fert-gap" data-for="all"><summary>Fertigation gap</summary><p>How far below its target (in mg/kg) a nutrient must be before ESP1 adds nutrients. Set on the System tab, under Watering thresholds (30 unless changed). Smaller means nutrients are added more often.</p></details>
+        <details class="help-item" id="help-window" data-for="all"><summary>Watering times (rig default or my own time)</summary><p>The times of day a column may be watered. <strong>Rig default</strong> uses the one window built into the firmware (A 06:00–08:00, B 08:00–10:00, C 06:00–08:00). <strong>My own time</strong> uses the times you set, up to 4 a day with ESP1's firmware from 5 Nov 2026. Either way the column is watered at most once in each, and only when its soil is dry enough. Under the times, the card says how many of today's are done.</p></details>
+        <details class="help-item" id="help-what-it-does" data-for="all"><summary>What it does (water + nutrients, or water only)</summary><p><strong>Water + nutrients</strong> lets ESP1 add nutrients when the soil needs them. <strong>Water only</strong> never adds nutrients to that column. On the LCD these are called Auto and Irrigation only.</p></details>
+        <details class="help-item" id="help-crop-profile" data-for="all"><summary>Crop profile</summary><p>The crop and growth stage you pick for a column on this website. It sets the reference numbers the soil readings are compared with, and what <strong>Fill from crop profile</strong> copies. The crops, their stages and their numbers are listed under <strong>Crop profiles</strong>, below the columns, where they can be changed: see <em>Add or change a crop profile</em>. ESP1 never sees it.</p></details>
+        <details class="help-item" id="help-forced-run" data-for="control"><summary>Forced run and countdown</summary><p>A run you start yourself from Controls, with your own litres and nutrients. It waits for a countdown first (0–300 seconds) so you can still cancel it, and shows ESP1's own countdown on the page.</p></details>
+        <details class="help-item" id="help-estop" data-for="control"><summary>Emergency stop</summary><p>Stops every pump and valve at once and cuts ESP2's power. The rig stays stopped until someone presses Return to normal, here or at the LCD.</p></details>
+        <details class="help-item" id="help-lockout" data-for="control"><summary>Actuations disabled (pumps and valves off)</summary><p>A standing stop: nothing moves, while sensors, logging and this website keep working. Controls' <strong>Pumps and valves</strong> switch sets it, and ESP1 shows its state as SAFE_MODE. It survives a restart, and lasts until someone switches pumps and valves back on. It is a different thing from the rig lock, which only locks the controls.</p></details>
+        <details class="help-item" id="help-held" data-for="all"><summary>Held fault</summary><p>A serious problem during a run (no flow, power trouble, a dose that took too long) that pauses the run instead of ending it, so the water already in the mixing tank isn't lost. ESP1 waits for you to choose how to continue: see <em>Deal with a held fault</em>.</p></details>
+        <details class="help-item" id="help-manual-mode" data-for="privileged"><summary>Manual mode</summary><p>While the Manual/Test tab is open, ESP1 keeps the rig out of automatic, so no scheduled run can start under your hands. It lasts while the page keeps asking, and someone at the LCD can take it back at any time.</p></details>
+        <details class="help-item" id="help-pulse" data-for="privileged"><summary>Timed test and hold-to-run test</summary><p>Two ways to switch one pump or valve on from Manual/Test: a <strong>timed test</strong> runs for the seconds you set and then reports the flow it counted; a <strong>hold-to-run test</strong> runs only while you keep the button pressed. ESP1 calls the timed test a pulse.</p></details>
+        <details class="help-item" id="help-exercise" data-for="privileged"><summary>Pump exercise</summary><p>The rig runs each AC pump for a few seconds every 2 days, so it doesn't seize between runs. Turn it off if the tank is empty.</p></details>
+        <details class="help-item" id="help-sweep" data-for="control"><summary>ESP2 sweep (reading ESP2's sensors)</summary><p>Powers ESP2 up for 10–120 seconds to read its own sensors (pH, EC, current, flow meters), then powers it down. Only when the rig is idle. <strong>Read ESP2's sensors</strong> on Diagnostics and <strong>Read the flow meters</strong> on Manual/Test both start one.</p></details>
+        <details class="help-item" id="help-raw" data-for="control"><summary>Readings before conversion</summary><p>The sensors' own numbers, before ESP1 turns them into percentages and units: soil probe counts, tank distances in cm, and the NPK probe's registers. A sensor stuck at its limit shows here even when the converted reading looks normal. A reading older than 5 minutes is marked STALE.</p></details>
+        <details class="help-item" id="help-events" data-for="control"><summary>Recent events on the rig</summary><p>The last 12 notable things ESP1 logged: faults, runs starting and their results, tests from the website or the LCD, refused requests and SMS traffic. Routine housekeeping is left out. The full history is in ESP1's daily log on its SD card; this list starts again when ESP1 restarts.</p></details>
+        <details class="help-item" id="help-snapshot" data-for="all"><summary>Snapshot (live data)</summary><p>ESP1 sends this website a full report every minute, or every 20 seconds during a run. If none arrives for about 2 minutes, the page says ESP1 isn't reporting and turns off the controls that need it.</p></details>
+        <details class="help-item" id="help-restore" data-for="privileged"><summary>Restore factory settings (Restore Defaults)</summary><p>Puts every column's mode, targets, watering times and ESP1's own name for it, and the thresholds, back to the firmware's starting values. It keeps calibration, which columns are on, and the WiFi setup, and the website's own names and crop profiles aren't touched. Only when the rig is idle; it can't be undone.</p></details>
+        <details class="help-item" id="help-access" data-for="all"><summary>Accounts and what each can do</summary><p><strong>Pending</strong> (new), <strong>rejected</strong> and <strong>restricted</strong> accounts see only a page with a button to ask for approval or to be unrestricted. <strong>Blocked</strong> accounts can't use the site at all. <strong>Approved</strong> accounts can look at the Live dashboard, Zone profiles and Help. With <strong>zone editing</strong> they can change the column cards, and with <strong>control</strong> they can use the Controls tab, Diagnostics and the Emergency stop; each is asked for and given separately. <strong>Sub-operators</strong> and <strong>1-hour access</strong> have all of that, plus Manual/Test, System, the rig lock and crop profiles. <strong>Operators</strong> manage the accounts.</p></details>
+        <details class="help-item" id="help-grants" data-for="privileged"><summary>1-hour access and Sub-operator</summary><p>Ways for an operator to open Manual/Test and System, and the rig lock, to an approved account: <strong>1-hour access</strong> ends by itself after an hour, and <strong>Sub-operator</strong> lasts until an operator removes it. Restricting, blocking or rejecting the account ends both at once.</p></details>
       </div>
 
       <div class="help-group">
         <h3>States and replies</h3>
-        <details class="help-item" id="help-esp1-states"><summary>ESP1 states</summary>
+        <details class="help-item" id="help-esp1-states" data-for="all"><summary>ESP1 states</summary>
           <ul>
             <li><strong>IDLE_STATE</strong>: waiting; ready to run.</li>
             <li><strong>ACTIVE_STATE</strong>: a run or pump exercise is in progress.</li>
@@ -821,7 +921,7 @@
             <li><strong>RECOVERY_STATE</strong>: ESP2 stopped answering and ESP1 is bringing it back.</li>
           </ul>
         </details>
-        <details class="help-item" id="help-command-status"><summary>Command replies</summary>
+        <details class="help-item" id="help-command-status" data-for="all"><summary>Command replies</summary>
           <ul>
             <li><strong>queued</strong>: sent, waiting for ESP1 to read it. ESP1 reads one every 3 seconds.</li>
             <li><strong>received</strong>: ESP1 has it and is checking it.</li>
@@ -832,7 +932,7 @@
             <li><strong>withdrawn</strong>: you took it back before ESP1 read it.</li>
           </ul>
         </details>
-        <details class="help-item" id="help-run-phases"><summary>Current run (its phases)</summary><p><strong>starting</strong>: ESP2 is powering up. <strong>running</strong>: water is being moved, in steps (fill, dose, mix, release, flush). <strong>finishing</strong>: the run is over and the LCD shows its result for up to 20 seconds. <strong>error</strong>: the LCD is listing problems from the run.</p></details>
+        <details class="help-item" id="help-run-phases" data-for="all"><summary>Current run (its phases)</summary><p><strong>starting</strong>: ESP2 is powering up. <strong>running</strong>: water is being moved, in steps (fill, dose, mix, release, flush). <strong>finishing</strong>: the run is over and the LCD shows its result for up to 20 seconds. <strong>error</strong>: the LCD is listing problems from the run.</p></details>
       </div>
     </section>
   </main>
