@@ -56,6 +56,13 @@
  *   RESTORE_DEFAULTS   {}   idle-only; runs the same reset function the LCD's Restore Defaults does
  *   CLEAR_BATT_SWITCH  {}   clears a latched battery-switch fault; privileged tier only. Dormant while
  *                        the firmware builds with SECONDARY_BATT_ENABLED 0.
+ *   LCD_LOCK           { action: "lock"|"unlock" }   the rig lock: ESP1's own Lock Screen flag, published as
+ *                        diagnostics.system.lcdLocked. Privileged tier only, and the row carries byName (the
+ *                        sender's own name, checked by the rules). Added to web v.3 on 5 Nov 2026; older firmware
+ *                        rejects it as "not a remotely safe control". ESP1 refuses to lock while someone is in its
+ *                        LCD menu. While the flag is on, the rules refuse every new row except EMERGENCY_STOP,
+ *                        DISABLE_ACTUATIONS, CANCEL_FORCE, ACK_FAULT and LCD_LOCK, and refuse starting a manual
+ *                        hold or a hold-to-run press.
  * ESP1 also accepts two legacy names this page does not send: START_PUMP and TOGGLE_MIXER, both of which
  * just run the preventive exercise.
  * Anything else is rejected by ESP1 as "not a remotely safe control", so this page does not offer
@@ -178,6 +185,12 @@ function deviceTimeText(value) {
   return valid ? text : `Invalid reading (${text}): the clock can't be trusted`;
 }
 
+// "3 minutes ago", or "Unavailable" when there is no age to give.
+function agoText(milliseconds) {
+  const age = formatAge(milliseconds);
+  return age === "Unavailable" ? age : `${age} ago`;
+}
+
 function formatAge(milliseconds) {
   const age = Number(milliseconds);
   if (!Number.isFinite(age) || age < 0 || age === 0xFFFFFFFF) return "Unavailable";
@@ -241,6 +254,7 @@ const BACKUP_OPERATOR_UID = "C8V39t4EDgUgjOt9GA6OeMukMsw2";
 // User Management defense-in-depth exclusion (renderUserManagement()), never for any gating logic.
 const ESP1_DEVICE_UID = "6hNg56ldAaSmpnodG1Xla0vn61O2";
 let myAccountStatus = undefined; // undefined = not loaded yet, null = no record, else the status string
+let myAccountName = "";          // the name on this account's own record, sent with a rig lock (see myDisplayName())
 let myAccountRef = null;
 // Deliberately NOT compared against lastSignInTime -- that raced against how fast the SDK updates
 // it on a fresh sign-in and could re-kick the same session in a loop (see attachUserStatusListener).
@@ -399,7 +413,8 @@ let forceArmedShown = false;    // the "Forced run armed" panel is up (see updat
 function rigBusyReason() {
   const d = liveData.diagnostics || {};
   const state = liveData.system?.state || "";
-  if (d.actuationsDisabled) return "actuations are disabled";
+  if (rigLocked()) return "the rig is locked";
+  if (actuationsAreOff()) return "actuations are disabled (pumps and valves are switched off)";
   if (d.fault?.held) return "a fault is held";
   if (state === "EMERGENCY_STOP") return "the emergency stop is active";
   // Not runProgress.active: that stays true while the LCD shows a finished run's receipt ("finishing"), when
@@ -437,6 +452,182 @@ function holdBlockReason(target) {
   return "";
 }
 
+// ESP1 sends no report when actuations are switched on or off, so its next one can be a minute away. Its reply to
+// the command says the same sooner, so the newer of the two counts, as for a column's settings (zoneSettings()).
+function actuationsAreOff() {
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  const reply = commandData
+    .filter(c => (c.type === "ENABLE_ACTUATIONS" || c.type === "DISABLE_ACTUATIONS") && c.status === "completed"
+                 && Number(c.updatedAt || 0) + ZONE_CONFIRM_SETTLE_MS > stamp)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
+  return reply ? reply.type === "DISABLE_ACTUATIONS" : Boolean(liveData.diagnostics?.actuationsDisabled);
+}
+
+/* ---- Rig lock (2026-11-05) ---------------------------------------------------------------------------
+ * One lock for this website and the rig's own buttons: ESP1's Lock Screen flag (lcdLocked), published in every
+ * snapshot. LCD_LOCK sets it from here; Settings > Lock Screen and the UP+DOWN unlock set it at the rig. While it
+ * is on, the rules refuse every command but the stops (and the snooze), and refuse starting manual mode or a hold,
+ * reading the same flag from the same snapshot, so the page switches those controls off and says why. Operators and
+ * privileged accounts can lock and unlock. Automatic watering is not affected: the lock only gates controls. */
+const LOCK_EXEMPT = new Set(["EMERGENCY_STOP", "DISABLE_ACTUATIONS", "CANCEL_FORCE", "ACK_FAULT", "LCD_LOCK"]);
+const LOCKED_TITLE = "The rig is locked. Unlock it first: operators, and accounts with 1-hour access or Sub-operator, can.";
+// A snapshot can carry state from a moment before its own stamp (see ZONE_CONFIRM_SETTLE_MS).
+const LOCK_SETTLE_MS = 3000;
+// ESP1 forces a report after LCD_LOCK, so the switch stops saying "Locking…" well before this.
+const LOCK_WAIT_MAX_MS = 90000;
+let lockSentKey = null;       // the LCD_LOCK row this page is waiting on
+let lockSentWant = null;      // what it asked for: true = lock
+let lockSeenOpenAt = 0;       // the newest snapshot stamp that showed the rig unlocked
+
+function rigLocked() {
+  return liveData.diagnostics?.system?.lcdLocked === true;
+}
+function lockKnown() {
+  return typeof liveData.diagnostics?.system?.lcdLocked === "boolean";
+}
+// The name the rules accept with a lock: the account's own, or "Operator" for the two operator accounts.
+function myDisplayName() {
+  return isOperator() ? "Operator" : myAccountName;
+}
+
+// "Locking…" or "Unlocking…" while a request from this page hasn't shown up in ESP1's report yet.
+function lockWaitingText() {
+  if (!lockSentKey) return "";
+  const row = commandData.find(c => c.id === lockSentKey);
+  const done = lockKnown() && rigLocked() === lockSentWant;
+  const gaveUp = row && (["rejected", "failed", "withdrawn"].includes(row.status)
+    || serverNow() - Number(row.updatedAt || row.requestedAt || 0) > LOCK_WAIT_MAX_MS);
+  if (done || gaveUp) { lockSentKey = null; return ""; }
+  return lockSentWant ? "Locking…" : "Unlocking…";
+}
+
+function lockTimeText(at) {
+  const when = new Date(at);
+  const today = when.toDateString() === new Date(serverNow()).toDateString();
+  return today ? `at ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : `on ${when.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+}
+
+// Who locked it. ESP1 doesn't say, so this goes by the newest lock sent from this website: it counts unless a report
+// since has shown the rig unlocked, in which case the lock now on was set at the rig.
+function lockSourceText() {
+  const row = commandData
+    .filter(c => c.type === "LCD_LOCK" && c.status === "completed")
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
+  const at = Number(row?.updatedAt || 0);
+  if (row?.payload?.action === "lock" && lockSeenOpenAt <= at + LOCK_SETTLE_MS) {
+    return `Locked from this website${row.byName ? ` by ${row.byName}` : ""} ${lockTimeText(at)}.`;
+  }
+  return "Locked at the rig, from its Settings menu (Lock Screen).";
+}
+
+function renderRigLock() {
+  const known = lockKnown();
+  const locked = rigLocked();
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  if (known && !locked && stamp > lockSeenOpenAt) lockSeenOpenAt = stamp;
+  const waiting = lockWaitingText();
+  const privileged = canAccessPrivilegedTabs();
+  const block = !privileged ? "Only operators, and accounts with 1-hour access or Sub-operator, can lock or unlock the rig."
+    : !known ? "ESP1 hasn't reported its lock yet."
+    : waiting ? "Waiting for ESP1's report."
+    : !firebaseConnected ? "This browser has lost its connection to Firebase."
+    : !deviceIsFresh() ? "ESP1 isn't reporting, so it can't lock or unlock right now."
+    : "";
+  const word = waiting || (!known ? "Unknown" : locked ? "Locked" : "Unlocked");
+  ["lockSwitch", "sysLockSwitch"].forEach(id => {
+    const toggle = document.getElementById(id);
+    if (!toggle) return;
+    toggle.setAttribute("aria-checked", String(known && locked));
+    toggle.disabled = Boolean(block);
+    toggle.title = block;
+  });
+  setText("lockState", word);
+  setText("sysLockStatus", known ? word : "Unavailable");
+  setDeviceStatus("sideLock", word.toUpperCase(), known && locked ? "warn" : "off");
+  const banner = document.getElementById("lockBanner");
+  if (banner) {
+    const show = known && locked && currentUserIsSignedIn() && isApprovedUser();
+    banner.hidden = !show;
+    if (show) setText("lockDetail", lockSourceText());
+  }
+  const unlock = document.getElementById("unlockBtn");
+  if (unlock) {
+    unlock.hidden = !privileged;
+    unlock.disabled = Boolean(block);
+    unlock.title = block;
+  }
+}
+
+function toggleRigLock() {
+  if (!canAccessPrivilegedTabs() || !lockKnown() || lockSentKey) return;
+  const lock = !rigLocked();
+  const question = lock
+    ? "Lock the rig? Controls on this website switch off for everyone, and the buttons on the rig's screen lock too. Automatic watering carries on, and Emergency stop still works. At the rig, UP and DOWN held together unlock it."
+    : "Unlock the rig? Controls on this website and the buttons on the rig's screen work again.";
+  if (!confirm(question)) return;
+  const name = myDisplayName();
+  sendFromPanel(resultLine("sysLockResult"), "LCD_LOCK", { action: lock ? "lock" : "unlock" }, { operatorOnly: true, byName: name || undefined })
+    .then(key => {
+      if (!key) return;
+      lockSentKey = key;
+      lockSentWant = lock;
+      renderRigLock();
+    });
+}
+
+/* ---- Pumps and valves switch (Controls) ---------------------------------------------------------------
+ * ESP1's actuation lockout as an ON/OFF switch, like a column's. "On" means allowed to run. Its position follows
+ * ESP1 (its report, or its reply, whichever is newer), never just the click. */
+let actSentKey = null;
+let actSentAt = 0;
+
+function renderActuationSwitch() {
+  const toggle = document.getElementById("actSwitch");
+  const known = Boolean(liveData.diagnostics) && typeof liveData.diagnostics.actuationsDisabled === "boolean";
+  const off = actuationsAreOff();
+  const row = actSentKey && commandData.find(c => c.id === actSentKey);
+  // The row shows up here the moment it is written, so one missing for longer has been removed: stop waiting.
+  const waiting = Boolean(actSentKey) && (row ? row.status === "queued" || row.status === "received" : Date.now() - actSentAt < 10000);
+  if (actSentKey && !waiting) actSentKey = null;
+  setText("actState", waiting ? "Sending…" : !known ? "--" : off ? "Off" : "On");
+  setText("actStateText", !known ? "Waiting for ESP1's report."
+    : off ? "Off: nothing runs, not even the schedule, until someone switches it back on. Readings and logging carry on. At the rig: Settings, Enable Actuations."
+    : "On: the schedule, forced runs, exercises and tests can run. Switch off before maintenance to stop everything at once.");
+  if (!toggle) return;
+  toggle.setAttribute("aria-checked", String(known && !off));
+  const signedIn = currentUserIsSignedIn();
+  const approved = isApprovedUser();
+  // Off is a stop: it works while the rig is locked and on a stale report. Back on is not, while locked.
+  const block = !signedIn ? "Sign in to use the system controls."
+    : !approved ? "Your account is awaiting operator approval before it can use this control."
+    : !known ? "ESP1 hasn't reported this yet."
+    : waiting ? "Waiting for ESP1."
+    : off && rigLocked() ? LOCKED_TITLE
+    : "";
+  toggle.disabled = Boolean(block);
+  toggle.title = block;
+}
+
+function toggleActuations() {
+  if (actSentKey) return;
+  const show = resultLine("actResult");
+  if (!actuationsAreOff()) {
+    if (!confirm("Switch pumps and valves off? Any run in progress stops at once, and nothing runs again until someone switches them back on. Readings and logging carry on.")) { show("Nothing was sent."); return; }
+    sendFromPanel(show, "DISABLE_ACTUATIONS", {}, { emergency: true }).then(waitForActuationReply);
+    return;
+  }
+  if (!confirm("Switch pumps and valves back on? The schedule, forced runs and exercises can start again.")) { show("Nothing was sent."); return; }
+  sendFromPanel(show, "ENABLE_ACTUATIONS", {}, { emergency: true }).then(waitForActuationReply);
+}
+
+function waitForActuationReply(key) {
+  if (!key) return;
+  actSentKey = key;
+  actSentAt = Date.now();
+  renderActuationSwitch();
+}
+
 function syncControlAvailability() {
   const signedIn = currentUserIsSignedIn();
   const approved = isApprovedUser();
@@ -444,16 +635,22 @@ function syncControlAvailability() {
   // as a signed-out one -- approval is a separate axis from freshness/cooldown, not a replacement
   // for it, so it is ANDed into every gate below rather than only checked at queueCommand() time.
   const notApprovedTitle = "Your account is awaiting operator approval before it can use this control.";
-  const normalAllowed = signedIn && approved && deviceIsFresh() && firebaseConnected;
+  // The rig lock: the rules refuse everything but the stops while it is on, so those controls are off too.
+  const locked = rigLocked();
+  const normalAllowed = signedIn && approved && deviceIsFresh() && firebaseConnected && !locked;
+  const normalTitle = (signedIn && !approved) ? notApprovedTitle : locked ? LOCKED_TITLE
+    : "Sign in and wait for a fresh ESP1 snapshot before using this control.";
+  renderRigLock();
+  renderActuationSwitch();
   // Every actuating control needs a fresh snapshot: ESP1 will refuse anything that arrives while it
   // is not idle, and without live data the page cannot tell "idle" from "device offline".
   // The pulse and the ESP2 sweep both reach the rig, so they belong with the other actuating
   // controls rather than looking alive and then failing inside queueCommand().
-  ["transferPumpBtn", "boosterPumpBtn", "mixerBtn", "pulseBtn", "mtSweepBtn", "sweepBtn", "exSaveBtn"].forEach(id => {
+  ["transferPumpBtn", "boosterPumpBtn", "mixerBtn", "pulseBtn", "mtSweepBtn", "sweepBtn", "exSaveBtn", "sysClockSendBtn", "sysThreshSendBtn"].forEach(id => {
     const button = document.getElementById(id);
     if (!button) return;
     button.disabled = !normalAllowed;
-    button.title = normalAllowed ? "" : (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before starting a normal test.";
+    button.title = normalAllowed ? "" : normalTitle;
   });
   // Hold-to-run buttons: same normalAllowed gate as every other actuating Manual/Test control above.
   // If the rig drops out of "fresh" or the account loses approval WHILE a button is physically held,
@@ -461,38 +658,45 @@ function syncControlAvailability() {
   // the Manual/Test hold itself does in renderManualHold().
   // A button ESP1 would ignore is off as well, with the reason beside the buttons (see holdBlockReason()) --
   // but never the one being held: a disabled button doesn't receive its own release.
+  const holdAllowed = normalAllowed || (locked && signedIn && approved && deviceIsFresh() && firebaseConnected);
   const holdTitle = (signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before using a hold-to-run test.";
+  // While locked, holdBlockReason() says so ("the rig is locked"), so the note below explains the buttons being off.
   document.querySelectorAll(".hold-btn").forEach(button => {
-    const reason = normalAllowed ? holdBlockReason(button.dataset.holdTarget) : "";
-    button.disabled = !normalAllowed || (Boolean(reason) && button !== mtHoldActiveBtn);
-    button.title = !normalAllowed ? holdTitle : reason ? `ESP1 would ignore this right now: ${reason}.` : "";
+    const reason = holdAllowed ? holdBlockReason(button.dataset.holdTarget) : "";
+    button.disabled = !holdAllowed || (Boolean(reason) && button !== mtHoldActiveBtn);
+    button.title = !holdAllowed ? holdTitle : reason ? `Not available right now: ${reason}.` : "";
   });
   const holdNote = document.getElementById("mtHoldBlocked");
   if (holdNote) {
-    const general = normalAllowed ? holdBlockReason("") : "";
+    const general = holdAllowed ? holdBlockReason("") : "";
     const offColumns = normalAllowed && !general ? ["A", "B", "C"].filter(id => liveData.sensors?.zones?.[id]?.enabled === false) : [];
     // A column that is simply switched off (C, on this rig) is a standing fact, not a problem, so it reads as a
     // plain note rather than an error.
-    holdNote.textContent = general ? `ESP1 won't start a hold right now: ${general}.`
+    holdNote.textContent = general ? `ESP1 won't start a hold right now: ${general}.${general === "the rig is locked" ? " Unlock it first." : ""}`
       : offColumns.length > 1 ? `ESP1 has columns ${offColumns.join(" and ")} disabled, so their hold buttons are off.`
       : offColumns.length ? `ESP1 has column ${offColumns[0]} disabled, so its hold button is off.`
       : "";
     holdNote.className = general ? "control-result error" : "field-note";
     holdNote.hidden = !holdNote.textContent;
   }
-  // ESP1 has already dropped the relay for these, and ignores every keep-alive until the button comes up.
+  // ESP1 has already dropped the relay for these, and ignores every keep-alive until the button comes up. While
+  // the rig is locked the rules refuse the keep-alives too.
   const fd = liveData.diagnostics || {};
-  if (!normalAllowed || fd.actuationsDisabled || fd.fault?.held || liveData.system?.state === "EMERGENCY_STOP") mtHoldStop(true);
+  if (!normalAllowed || actuationsAreOff() || fd.fault?.held || liveData.system?.state === "EMERGENCY_STOP") mtHoldStop(true);
+
+  // Zone profiles: each column's ON/OFF switch and Save to rig reach the rig, so they share the same gate.
+  activeZones.forEach(zone => { renderZonePower(zone.id); syncZoneSaveButton(zone.id); });
 
   const forceButton = document.querySelector("#forceRunForm button[type=submit]");
   if (forceButton) {
     // ESP1 refuses a forced run unless the rig is idle (FORCE_RUN in firebaseCommandTick()). Checked here as
     // well, from what ESP1 publishes, so a request bound to be refused isn't sent, and the reason shows beside
     // the button instead of only on hover. It can't see everything ESP1 checks (someone in the LCD menu, the
-    // mixing-tank check, a low reservoir), so ESP1's own reply still has the last word.
-    const reason = normalAllowed ? forceRunBlockReason() : "";
-    forceButton.disabled = !normalAllowed || Boolean(reason);
-    forceButton.title = !normalAllowed
+    // mixing-tank check, a low reservoir), so ESP1's own reply still has the last word. A locked rig is one of
+    // the reasons (rigBusyReason()), so it is said beside the button too.
+    const reason = holdAllowed ? forceRunBlockReason() : "";
+    forceButton.disabled = !holdAllowed || Boolean(reason);
+    forceButton.title = !holdAllowed
       ? ((signedIn && !approved) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.")
       : reason ? `ESP1 would refuse a forced run right now: ${reason}.` : "";
     const note = document.getElementById("forceRunBlocked");
@@ -518,20 +722,19 @@ function syncControlAvailability() {
   const offlineHelp = document.getElementById("esp1OfflineHelp");
   if (offlineHelp) offlineHelp.hidden = !signedIn || !approved || deviceIsFresh();
 
-  // Recovery + lockout + reboot: signed-in AND approved, deliberately NOT freshness-gated. A stale
-  // snapshot is often exactly why you are reaching for these.
-  ["disableActBtn2", "enableActBtn2", "rebootNanoBtn2", "rebootEsp2Btn2", "rebootEsp1Btn2"].forEach(id => {
+  // Recovery + reboot: signed-in AND approved, deliberately NOT freshness-gated. A stale snapshot is often
+  // exactly why you are reaching for these. None of them is a stop, so the rig lock switches them off. The
+  // pumps-and-valves switch has its own gate (renderActuationSwitch()).
+  ["rebootNanoBtn2", "rebootEsp2Btn2", "rebootEsp1Btn2", "estopRecoverBtn", "enableActBtn"].forEach(id => {
     const b = document.getElementById(id);
     if (!b) return;
-    b.disabled = !signedIn || !approved;
-    b.title = !signedIn ? "Sign in to use the system controls." : !approved ? notApprovedTitle : "";
+    b.disabled = !signedIn || !approved || locked;
+    b.title = !signedIn ? "Sign in to use the system controls." : !approved ? notApprovedTitle : locked ? LOCKED_TITLE : "";
   });
-  // Only one of disable/re-enable is meaningful at a time; show the one that applies.
-  const locked = Boolean(liveData.diagnostics?.actuationsDisabled);
-  const d2 = document.getElementById("disableActBtn2");
-  const e2 = document.getElementById("enableActBtn2");
-  if (d2) d2.hidden = locked;
-  if (e2) e2.hidden = !locked;
+  document.querySelectorAll("#faultRecovery button[data-recover]").forEach(b => {
+    b.disabled = locked;
+    b.title = locked ? LOCKED_TITLE : "";
+  });
 
   // Restore Defaults: signed-in + approved, like the reboot buttons, PLUS idle-gated -- ESP1
   // refuses this one outright unless sysState is IDLE_STATE, matching the LCD's own gate.
@@ -539,9 +742,10 @@ function syncControlAvailability() {
   if (restoreBtn) {
     // SAFE_MODE is only ESP1's label for idle while locked out, so ESP1 accepts this then too.
     const notIdle = liveData.system?.state && !["IDLE_STATE", "SAFE_MODE"].includes(liveData.system.state);
-    restoreBtn.disabled = !signedIn || !approved || Boolean(notIdle);
+    restoreBtn.disabled = !signedIn || !approved || Boolean(notIdle) || locked;
     restoreBtn.title = !signedIn ? "Sign in to use the system controls."
                       : !approved ? notApprovedTitle
+                      : locked ? LOCKED_TITLE
                       : notIdle ? "ESP1 must be idle to restore defaults, same as the LCD menu."
                       : "";
   }
@@ -551,7 +755,7 @@ function syncControlAvailability() {
   if (clearBattBtn) {
     const latched = liveData.system?.battSwitchFault === true;
     clearBattBtn.disabled = !normalAllowed || !latched;
-    clearBattBtn.title = !normalAllowed ? "Sign in and wait for a fresh ESP1 snapshot before using this control."
+    clearBattBtn.title = !normalAllowed ? normalTitle
                         : !latched ? "ESP1 reports no battery-switch fault to clear."
                         : "";
   }
@@ -588,6 +792,9 @@ function initializeFirebase() {
         lastZoneEditCapability = undefined;   // force a fresh evaluation on the next sign-in, not a stale match
         myTempAccessUntil = 0;         // a temp-access grant must never survive into a later sign-in
         mySubOperator = false;         // ditto for a persistent sub-operator grant
+        clearZoneDrafts();             // nobody else should find this person's half-made column edits
+        lockSentKey = null;            // nor a "Locking…" or "Sending…" left from their own request
+        actSentKey = null;
         detachPresence();              // mark this session offline immediately -- don't wait for onDisconnect
         // liveData is about to be wiped below -- reset this FIRST so the updateDashboard() call just
         // after doesn't see (wasHeldOrStopped=true, empty liveData) and announce a fabricated "The hold
@@ -679,6 +886,7 @@ function attachDatabaseListeners() {
     renderColumnCommandResults(); // each zone's own SET_COLUMN outcome, inline under its own button
     renderPanelCommandResults();  // the same, for the Controls, Manual/Test and System panels
     updateForceArmed();           // a FORCE_RUN row turning "accepted" is the first sign it is armed
+    syncControlAvailability();    // a reply can settle the lock switch or the pumps-and-valves switch before a report does
   }, error => {
     // The account banner already explains a denial: no need for an error toast on every sign-in as well.
     if (error.code === "PERMISSION_DENIED") { databaseAccessDenied = true; return; }
@@ -777,6 +985,7 @@ function syncLiveDataAccess() {
   liveData = {};
   commandData = [];
   activeZones = DEFAULT_ZONES.map(zone => ({ ...zone }));
+  clearZoneDrafts();
   renderZonesUI();
   updateDashboard();
   renderCommandHistory();
@@ -813,6 +1022,7 @@ function attachUserStatusListener(uid) {
     }
     const wasApproved = myAccountStatus === "approved";
     myAccountStatus = record ? record.status : null;
+    myAccountName = typeof record?.name === "string" ? record.name : "";
     myTempAccessUntil = Number(record?.tempAccessUntil) || 0;
     mySubOperator = Boolean(record?.subOperator);
     syncLiveDataAccess();
@@ -842,6 +1052,7 @@ function detachUserStatusListener() {
   if (myAccountRef) myAccountRef.off();
   myAccountRef = null;
   myAccountStatus = undefined;
+  myAccountName = "";
 }
 
 const ACCOUNT_STATUS_TEXT = {
@@ -1059,11 +1270,29 @@ function detachPresence() {
   return offline;
 }
 
-const USER_STATUS_ORDER = { pending: 0, approved: 1, restricted: 2, disabled: 3, rejected: 4 };
-// UI labels only -- the backend values are what Firebase rules actually enforce everywhere; this
-// just controls what word appears on screen, per the explicit ask not to show "disabled" to a
-// normal user when "Blocked" (or "Restricted") is what's actually meant.
+// One group per status, in this order: the accounts that need something done come first. The labels are what
+// people read; the values are what the rules enforce ("disabled" is shown as Blocked).
+const USER_GROUPS = [
+  ["pending", "Waiting for approval"],
+  ["approved", "Approved"],
+  ["restricted", "Restricted"],
+  ["disabled", "Blocked"],
+  ["rejected", "Rejected"]
+];
 const STATUS_DISPLAY_LABEL = { disabled: "BLOCKED", restricted: "RESTRICTED" };
+// Button words. The data-user-action values stay as they were, because the handler below goes by them.
+const USER_ACTION_LABEL = {
+  approve: "Approve", reject: "Reject", restrict: "Restrict", unrestrict: "Unrestrict", block: "Block", unblock: "Unblock",
+  kick: "Sign them out", delete: "Delete",
+  granttemp: "Give 1-hour access", revoketemp: "End 1-hour access",
+  grantsubop: "Make Sub-operator", withholdsubop: "Remove Sub-operator"
+};
+const USER_ACTION_INFO = {
+  granttemp: ["1-hour access", "Opens Manual/Test, System and the rig lock to this account for exactly 1 hour, then it ends by itself. Use it for a one-off job."],
+  revoketemp: ["1-hour access", "Ends this account's 1-hour access now, instead of waiting for its hour to run out."],
+  grantsubop: ["Sub-operator", "The same access as 1-hour access, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
+  withholdsubop: ["Sub-operator", "Ends this account's Sub-operator access now. Nothing else ever ends it."]
+};
 function renderUserManagement() {
   const container = document.getElementById("usersContainer");
   if (!container) return;
@@ -1075,8 +1304,7 @@ function renderUserManagement() {
   // has one, from before the page refused that login) would sit under "pending" for good.
   const rows = Object.entries(users).filter(([uid]) => uid !== BACKUP_OPERATOR_UID && uid !== ESP1_DEVICE_UID);
   if (!rows.length) { container.innerHTML = `<p class="muted">No registered accounts yet.</p>`; return; }
-  rows.sort((a, b) => (USER_STATUS_ORDER[a[1]?.status] ?? 9) - (USER_STATUS_ORDER[b[1]?.status] ?? 9));
-  container.innerHTML = rows.map(([uid, u]) => {
+  const rowHtml = ([uid, u]) => {
     const status = u?.status || "unknown";
     const created = u?.createdAt ? new Date(u.createdAt).toLocaleString() : "Unknown";
     // Either operator's own row (if a /users record happens to exist at all) gets zero actions --
@@ -1104,64 +1332,71 @@ function renderUserManagement() {
     // symptom that clicking Kick repeatedly on an offline user produced before this gate existed.
     const pres = presenceData[uid];
     const isOnline = Boolean(pres?.online);
-    const presenceLabel = isOnline ? "Online" : pres?.lastChanged ? `Offline (${formatAge(serverNow() - pres.lastChanged)} ago)` : "Offline (never seen)";
-    // Recent activity (2026-09-10): last 5 commands this account actually queued (see
+    const presenceLabel = isOnline ? "Online now" : pres?.lastChanged ? `Offline, last seen ${formatAge(serverNow() - pres.lastChanged)} ago` : "Offline, never seen online";
+    // Recent activity (2026-09-10): the last commands this account actually queued (see
     // activitySummary()/queueCommand() above), newest first. Operator-viewing-only, same as presence
     // -- enforced server-side by activity/.read, not just by this tab being hidden from everyone else.
     const recent = recentActivityFor(uid);
     const actions = [];
     if (!isAnyOperator) {
-      if (status === "pending")    actions.push(["approve", "Approve"], ["reject", "Reject"], ["restrict", "Restrict"], ["delete", "Delete"]);
+      if (status === "pending")    actions.push("approve", "reject", "restrict", "delete");
       if (status === "approved") {
-        actions.push(...(isOnline ? [["kick", "Kick"]] : []), ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
-        // Suggestion (2026-09-11): these two grants look interchangeable at a glance (both say
-        // "Manual/Test + System") -- unlike every other control on this page, neither had an info
-        // icon explaining how they actually differ (one expires on its own, one doesn't). Added here,
-        // not on the plainer actions (Kick/Restrict/Block/Delete), which don't have that ambiguity.
-        actions.push(tempActive
-          ? ["revoketemp", "Revoke temp access", "Temp access (1h)", "Ends this account's temporary Manual/Test + System access right now, instead of waiting out its own 1-hour clock."]
-          : ["granttemp", "Grant 1h Manual/Test + System", "Temp access (1h)", "Gives this account full Manual/Test + System access for exactly 1 hour, then it expires on its own -- nothing to remember to take away later. Use this for a one-off task."]);
-        actions.push(subOpActive
-          ? ["withholdsubop", "Withhold Sub-operator", "Sub-operator", "Ends this account's Sub-operator access right now. Unlike the 1h grant above, Sub-operator has no expiry of its own -- withholding it here is the only way it ever ends."]
-          : ["grantsubop", "Grant Sub-operator", "Sub-operator", "Gives this account the SAME full Manual/Test + System access as the 1h grant above, but with no expiry -- it stays in effect until an operator withholds it again. Use this for someone who needs ongoing access, not just a one-off task."]);
+        actions.push(tempActive ? "revoketemp" : "granttemp", subOpActive ? "withholdsubop" : "grantsubop");
+        actions.push(...(isOnline ? ["kick"] : []), "restrict", "block", "delete");
       }
-      if (status === "restricted") actions.push(["unrestrict", "Unrestrict"], ...(isOnline ? [["kick", "Kick"]] : []), ["block", "Block"], ["delete", "Delete"]);
-      if (status === "rejected")   actions.push(["approve", "Approve"], ["restrict", "Restrict"], ["block", "Block"], ["delete", "Delete"]);
-      if (status === "disabled")   actions.push(["unblock", "Unblock"], ["delete", "Delete"]);
+      if (status === "restricted") actions.push("unrestrict", ...(isOnline ? ["kick"] : []), "block", "delete");
+      if (status === "rejected")   actions.push("approve", "restrict", "block", "delete");
+      if (status === "disabled")   actions.push("unblock", "delete");
     }
     const tone = status === "approved" ? "active" : (status === "pending" || status === "restricted") ? "off" : "danger";
     const tones = { delete: " danger", block: " warn", revoketemp: " warn", withholdsubop: " warn" };
-    const buttons = actions.map(([action, label, infoTitle, infoText]) => {
-      const btn = `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(label)}</button>`;
-      // Same "icon as a sibling, never nested inside the actuating button" pattern used everywhere
-      // else on this page (see renderZonesUI()'s own local info() helper) -- kept together via
-      // .btn-with-info rather than sharing one info() closure across two separately-scoped render
-      // functions.
-      return infoTitle
-        ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${infoTitle}" data-info-title="${infoTitle}" data-info-text="${infoText}">i</button></span>`
+    const buttons = actions.map(action => {
+      const btn = `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(USER_ACTION_LABEL[action])}</button>`;
+      // The two grants look alike at a glance, so each says how it ends. The icon is a sibling, never inside the
+      // button, as everywhere else on this page.
+      const info = USER_ACTION_INFO[action];
+      return info
+        ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${info[0]}" data-info-title="${info[0]}" data-info-text="${info[1]}" data-help="help-grants">i</button></span>`
         : btn;
     }).join("");
+    const access = [];
+    if (tempActive) access.push(`Can use Manual/Test, System and the rig lock until ${new Date(u.tempAccessUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (1-hour access).`);
+    if (subOpActive) access.push("Sub-operator: can use Manual/Test, System and the rig lock until you remove it.");
     return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
       <div class="user-row-info">
         <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
         <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
-        <span class="muted">Registered: ${escapeHtml(created)}</span>
-        <span class="muted">${escapeHtml(presenceLabel)}</span>
-        ${tempActive ? `<span class="muted">Temp Manual/Test + System access until ${escapeHtml(new Date(u.tempAccessUntil).toLocaleTimeString())}</span>` : ""}
-        ${subOpActive ? `<span class="muted">Sub-operator — Manual/Test + System access until withheld</span>` : ""}
+        <span class="${isOnline ? "user-online" : "muted"}">${escapeHtml(presenceLabel)}</span>
+        <span class="muted">Signed up ${escapeHtml(created)}</span>
+        ${access.map(line => `<span class="user-access">${escapeHtml(line)}</span>`).join("")}
         ${recent.length
           ? `<details class="user-activity" data-uid="${escapeHtml(uid)}"${expandedActivityUids.has(uid) ? " open" : ""}>
-              <summary>Recent: ${escapeHtml(rawText(recent[0]?.what, "?"))} — ${escapeHtml(formatAge(serverNow() - Number(recent[0]?.at || 0)))} ago${recent.length > 1 ? ` (${recent.length} shown)` : ""}</summary>
+              <summary>Last action: ${escapeHtml(rawText(recent[0]?.what, "?"))}, ${escapeHtml(formatAge(serverNow() - Number(recent[0]?.at || 0)))} ago${recent.length > 1 ? ` (${recent.length} in the list)` : ""}</summary>
               <ul class="user-activity-list">${recent.map(a =>
-                `<li>${escapeHtml(rawText(a?.what, "?"))} — ${escapeHtml(formatAge(serverNow() - Number(a?.at || 0)))} ago</li>`
+                `<li>${escapeHtml(rawText(a?.what, "?"))}, ${escapeHtml(formatAge(serverNow() - Number(a?.at || 0)))} ago</li>`
               ).join("")}</ul>
             </details>`
-          : `<span class="muted">No recent activity.</span>`}
+          : `<span class="muted">Nothing sent to the rig recently.</span>`}
       </div>
-      <span class="device-status ${tone}">${escapeHtml(STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
+      <span class="device-status ${isAnyOperator ? "active" : tone}">${escapeHtml(isAnyOperator ? "OPERATOR" : STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
       <div class="user-row-actions">${buttons}</div>
     </article>`;
-  }).join("");
+  };
+  // An operator's own sign-in can leave a "pending" record (the sign-in path recreates a missing one for any
+  // account), so operator accounts get a group of their own, rather than being counted as waiting for approval.
+  const isOperatorRow = ([uid]) => OPERATOR_UIDS.includes(uid);
+  const known = new Set(USER_GROUPS.map(([status]) => status));
+  const groups = [...USER_GROUPS, ["", "Other"], ["operator", "Operator accounts"]].map(([status, title]) => {
+    const members = status === "operator" ? rows.filter(isOperatorRow)
+      : rows.filter(row => !isOperatorRow(row)).filter(([, u]) => status ? u?.status === status : !known.has(u?.status));
+    if (!members.length) return "";
+    members.sort((a, b) => Number(b[1]?.createdAt || 0) - Number(a[1]?.createdAt || 0));
+    return `<section class="user-group" aria-label="${escapeHtml(title)}">
+      <h3>${escapeHtml(title)} <span class="user-count">${members.length}</span></h3>
+      ${members.map(rowHtml).join("")}
+    </section>`;
+  });
+  container.innerHTML = groups.join("");
 }
 /* The one privileged operation this static site cannot do itself: deleting another user's
  * Firebase Auth identity. Calls the operator-only endpoint in delete-user-api/ (a separate Vercel
@@ -1247,8 +1482,8 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // Defense-in-depth re-check: renderUserManagement() already omits this button once offline,
     // but re-verify against the live presence data at click time too, in case this row was mid-
     // re-render (a stale "Kick" button briefly clickable is otherwise possible in that gap).
-    if (!presenceData[uid]?.online) { showToast(`${name} is not currently online -- nothing to kick.`, "error"); return; }
-    if (!confirm(`Force ${name} to sign in again?`)) return;
+    if (!presenceData[uid]?.online) { showToast(`${name} isn't online, so there is nobody to sign out.`, "error"); return; }
+    if (!confirm(`Sign ${name} out now? They can sign in again straight away.`)) return;
     run(() => db.ref(`users/${uid}`).update({ kickToken: firebase.database.ServerValue.TIMESTAMP }));
     return;
   }
@@ -1258,7 +1493,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // TEMP_ACCESS_DURATION_MS from the moment the write actually lands, so a slow request can't
     // grant longer than intended. grantTempAccess() anchors to Firebase's own server clock rather
     // than this browser's Date.now() -- see its own comment (bug report, 2026-09-10) for why.
-    if (!confirm(`Grant ${name} temporary access to Manual/Test and System for 1 hour?`)) return;
+    if (!confirm(`Give ${name} 1-hour access to Manual/Test, System and the rig lock? It ends by itself after an hour.`)) return;
     run(() => grantTempAccess(uid));
     return;
   }
@@ -1269,7 +1504,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   if (action === "grantsubop") {
     // Persistent elevation, not a role change -- status stays "approved" throughout, same as temp
     // access above. No expiry: stays in effect until an operator withholds it again.
-    if (!confirm(`Grant ${name} Sub-operator access to Manual/Test and System? This stays in effect until you withhold it again.`)) return;
+    if (!confirm(`Make ${name} a Sub-operator? They can use Manual/Test, System and the rig lock until you remove it.`)) return;
     run(() => db.ref(`users/${uid}`).update({ subOperator: true }));
     return;
   }
@@ -1411,6 +1646,11 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus("This control is limited to the main/creator operator account.", "error");
     return Promise.resolve(false);
   }
+  // The rules refuse everything but the stops while ESP1 reports the rig locked: say so instead of a bare refusal.
+  if (rigLocked() && !LOCK_EXEMPT.has(type)) {
+    setCommandStatus(`${type.replaceAll("_", " ")} not sent: the rig is locked. Unlock it first (operators, and accounts with 1-hour access or Sub-operator, can).`, "error");
+    return Promise.resolve(false);
+  }
   // Firebase holds a write made while this browser is offline and sends it on reconnect, perhaps much later, and
   // ESP1 runs a queued row however old it is. Only a command that can only stop something is worth that.
   if (!firebaseConnected && !NOT_WITHDRAWABLE.has(type)) {
@@ -1441,6 +1681,8 @@ function queueCommand(type, payload = {}, options = {}) {
     source: "dashboard",
     requestedAt: firebase.database.ServerValue.TIMESTAMP
   };
+  // Who sent it, for the rig lock's banner. The rules only accept the sender's own name.
+  if (options.byName) command.byName = options.byName;
   const toast = setCommandStatus(queuedStatusText(type, payload, emergency), "pending");
   const pushed = db.ref("irrigation/commands").push(command);
   sentCommands.set(pushed.key, { reply: "", toast });
@@ -1481,18 +1723,33 @@ function resultLine(id) {
 // Short, human-readable "what did they do" label for the activity trail above -- deliberately NOT
 // the full command detail (that lives in irrigation/commands itself, and needs ESP1's own reply to
 // mean anything); just enough context to recognise the action at a glance in User Management.
+// In plain words (2026-11-05); entries written before then keep the command names they were written with.
 function activitySummary(type, payload) {
   const p = payload || {};
+  const board = { nano: "the Nano", esp1: "ESP1", esp2: "ESP2" };
   switch (type) {
-    case "FORCE_RUN":     return `FORCE_RUN (${rawText(p.columns, "?")}, ${numberText(p.liters, 1, "L")})`;
-    case "SET_COLUMN":    return `SET_COLUMN (col ${rawText(p.col, "?")})`;
-    case "TEST_PULSE":    return `TEST_PULSE (${rawText(p.target, "?")}, ${rawText(p.seconds, "?")}s)`;
-    case "RUN_PUMP_TEST": return `RUN_PUMP_TEST (${rawText(p.pump, "?")})`;
-    case "RECOVER":       return `RECOVER (${rawText(p.action, "?")})`;
-    case "REBOOT":        return `REBOOT (${rawText(p.target, "?")})`;
-    case "SET_EXERCISE":  return `SET_EXERCISE (${p.exerciseEnabled ? "on" : "off"})`;
-    case "DIAG_SWEEP":    return "DIAG_SWEEP";
-    default:              return type;
+    case "FORCE_RUN":          return `Forced run: column ${rawText(p.columns, "?")}, ${numberText(p.liters, 1, "L")}`;
+    case "SET_COLUMN":         return hasValue(p.enabled) && Object.keys(p).length === 2
+                                 ? `Switched column ${rawText(p.col, "?")} ${Number(p.enabled) ? "on" : "off"}`
+                                 : `Changed column ${rawText(p.col, "?")}'s settings`;
+    case "TEST_PULSE":         return `Timed test: ${rawText(p.target, "?")} for ${rawText(p.seconds, "?")} s`;
+    case "RUN_PUMP_TEST":      return `Exercised the ${rawText(p.pump, "?")} pump`;
+    case "RECOVER":            return `Fault recovery: ${rawText(p.action, "?")}`;
+    case "REBOOT":             return `Restarted ${board[p.target] || rawText(p.target, "?")}`;
+    case "SET_EXERCISE":       return `Pump exercise ${p.exerciseEnabled ? "on" : "off"}, ${rawText(p.exerciseSeconds, "?")} s`;
+    case "DIAG_SWEEP":         return "Read ESP2's sensors";
+    case "EMERGENCY_STOP":     return "Emergency stop";
+    case "ESTOP_RECOVER":      return "Return to normal after an emergency stop";
+    case "ENABLE_ACTUATIONS":  return "Switched pumps and valves on";
+    case "DISABLE_ACTUATIONS": return "Switched pumps and valves off";
+    case "CANCEL_FORCE":       return "Cancelled a forced run";
+    case "ACK_FAULT":          return "Asked to be reminded of a fault in 2 minutes";
+    case "SET_CLOCK":          return "Set ESP1's clock";
+    case "SET_THRESH":         return `Watering thresholds: start ${rawText(p.thStart, "?")} %, gap ${rawText(p.thGap, "?")}`;
+    case "RESTORE_DEFAULTS":   return "Restored factory settings";
+    case "CLEAR_BATT_SWITCH":  return "Cleared the battery switch fault";
+    case "LCD_LOCK":           return p.action === "unlock" ? "Unlocked the rig" : "Locked the rig";
+    default:                   return type;
   }
 }
 
@@ -1512,182 +1769,536 @@ function queuedStatusText(type, payload, emergency) {
   return `${type.replaceAll("_", " ")} queued. Waiting for ESP1 validation.`;
 }
 
-// Audit fix (2026-09-08): renderZonesUI()'s full teardown runs on every irrigation/config/zones
-// change -- including a DIFFERENT zone's own crop/stage write -- and previously discarded whatever
-// the operator had typed into any zone's not-yet-sent "Firmware settings" form (targets, schedule
-// window, preset) with no warning, since those inputs have no backing data model, only DOM state.
-// Capture the current values before the teardown and restore them onto the freshly rebuilt inputs.
-function captureZoneFormState() {
-  const state = {};
-  const val = id => document.getElementById(id)?.value;
-  activeZones.forEach(zone => {
-    const id = zone.id;
-    state[id] = {
-      cfgMode: val(`cfgMode${id}`), cfgEnabled: val(`cfgEnabled${id}`), cfgSched: val(`cfgSched${id}`),
-      cfgWinStart: val(`cfgWinStart${id}`), cfgWinEnd: val(`cfgWinEnd${id}`),
-      cfgN: val(`cfgN${id}`), cfgP: val(`cfgP${id}`), cfgK: val(`cfgK${id}`), cfgPH: val(`cfgPH${id}`),
-      cfgSaveName: val(`cfgSaveName${id}`)
-    };
-  });
-  return state;
+/* ---- Zone profiles: one card per column --------------------------------------------------------
+ * Each card says what the column's soil reads now and what ESP1 does with it, in words, with an ON/OFF
+ * switch and an editor that sends ESP1 only what was changed (redesign, 2026-11-05: this replaced the
+ * Auto / Irrigation only / Off buttons, which duplicated the form, and a schedule whose times only
+ * appeared after picking "Manual window"). The values shown are ESP1's own, from its snapshot, plus any
+ * change ESP1 has confirmed since (zoneSettings()), so a save or a switch shows at once instead of at
+ * ESP1's next report, up to a minute later. */
+
+// ESP1's built-in watering windows (DEF_WIN_START / DEF_WIN_END in its main.cpp), in minutes after
+// midnight. ESP1 only publishes the window a column is using, so the page keeps the defaults to name
+// them while a column is on its own time.
+const DEFAULT_WINDOWS = { A: [360, 480], B: [480, 600], C: [360, 480] };
+const MODE_TEXT = { AUTO: "Water + nutrients when the soil needs them", IRRIGATION_ONLY: "Water only" };
+// ESP1's own limits for a target (columnTargetInRange() in its main.cpp).
+const TARGET_FIELDS = [
+  { key: "targetN",  input: "cfgN",  label: "N",  unit: "ppm", min: 0, max: 2000, step: "1" },
+  { key: "targetP",  input: "cfgP",  label: "P",  unit: "ppm", min: 0, max: 2000, step: "1" },
+  { key: "targetK",  input: "cfgK",  label: "K",  unit: "ppm", min: 0, max: 2000, step: "1" },
+  { key: "targetPH", input: "cfgPH", label: "pH", unit: "",    min: 3, max: 9,    step: "0.1" }
+];
+// A snapshot can carry state from a moment before its own stamp, so a confirmed change stays on show
+// until a snapshot this much newer than ESP1's reply.
+const ZONE_CONFIRM_SETTLE_MS = 3000;
+// column id -> the editor's values while it is open. Kept here, not in the form, because a zone config
+// change anywhere (a crop picked on another card, a setup saved) rebuilds every card.
+const zoneDrafts = {};
+// column id -> the SET_COLUMN key of a switch press still waiting for ESP1.
+const zonePowerSent = {};
+
+function clearZoneDrafts() {
+  Object.keys(zoneDrafts).forEach(id => delete zoneDrafts[id]);
+  Object.keys(zonePowerSent).forEach(id => delete zonePowerSent[id]);
 }
 
-function restoreZoneFormState(zoneId, saved) {
-  if (!saved) return;
-  const set = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
-  set(`cfgMode${zoneId}`, saved.cfgMode); set(`cfgEnabled${zoneId}`, saved.cfgEnabled); set(`cfgSched${zoneId}`, saved.cfgSched);
-  set(`cfgWinStart${zoneId}`, saved.cfgWinStart); set(`cfgWinEnd${zoneId}`, saved.cfgWinEnd);
-  set(`cfgN${zoneId}`, saved.cfgN); set(`cfgP${zoneId}`, saved.cfgP); set(`cfgK${zoneId}`, saved.cfgK); set(`cfgPH${zoneId}`, saved.cfgPH);
-  set(`cfgSaveName${zoneId}`, saved.cfgSaveName);
+function numberOrNull(value) {
+  return hasValue(value) ? Number(value) : null;
+}
+
+// What ESP1 has for a column right now.
+function zoneSettings(id) {
+  const z = liveData.sensors?.zones?.[id] || {};
+  const s = {
+    known: hasValue(z.enabled),
+    enabled: z.enabled === true || Number(z.enabled) === 1,
+    mode: z.mode === "AUTO" || z.mode === "IRRIGATION_ONLY" ? z.mode : null,
+    sched: hasValue(z.schedMode) ? Number(z.schedMode) : null,
+    ws: numberOrNull(z.winStart),
+    we: numberOrNull(z.winEnd),
+    targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, numberOrNull(z[f.key])]))
+  };
+  // ESP1 applies a SET_COLUMN all at once or not at all, so a completed one is exactly what it now has.
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  commandData
+    .filter(c => c.type === "SET_COLUMN" && c.status === "completed" && c.payload?.col === id &&
+                 Number(c.updatedAt || 0) + ZONE_CONFIRM_SETTLE_MS > stamp)
+    .sort((a, b) => Number(a.updatedAt || 0) - Number(b.updatedAt || 0))
+    .forEach(({ payload: p }) => {
+      if (hasValue(p.enabled)) { s.known = true; s.enabled = p.enabled === true || Number(p.enabled) === 1; }
+      if (p.mode === "AUTO" || p.mode === "IRRIGATION_ONLY") s.mode = p.mode;
+      if (hasValue(p.schedMode)) {
+        s.sched = Number(p.schedMode);
+        // On the default window ESP1 reports the default, whatever own time it has kept.
+        if (s.sched === 0 && DEFAULT_WINDOWS[id]) [s.ws, s.we] = DEFAULT_WINDOWS[id];
+      }
+      if (hasValue(p.winStart)) s.ws = Number(p.winStart);
+      if (hasValue(p.winEnd)) s.we = Number(p.winEnd);
+      TARGET_FIELDS.forEach(f => { if (hasValue(p[f.key])) s.targets[f.key] = Number(p[f.key]); });
+    });
+  return s;
+}
+
+function windowText(id, sched, ws, we) {
+  if (sched === 0) {
+    const [ds, de] = DEFAULT_WINDOWS[id] || [ws, we];
+    return `${minutesToHhmm(ds)}–${minutesToHhmm(de)} (rig default)`;
+  }
+  if (sched === 1) return `${minutesToHhmm(ws)}–${minutesToHhmm(we)} (my own time)`;
+  return "Unavailable";
+}
+
+function targetsText(targets) {
+  if (!TARGET_FIELDS.every(f => hasValue(targets[f.key]))) return "Unavailable";
+  const t = targets;
+  const none = Number(t.targetN) === 0 && Number(t.targetP) === 0 && Number(t.targetK) === 0;
+  return `N ${t.targetN}, P ${t.targetP}, K ${t.targetK} ppm, pH ${t.targetPH}` +
+         (none ? ". None set, so nutrients are never added" : "");
+}
+
+// The same gate as every other control that reaches the rig (normalAllowed in syncControlAvailability()), as words:
+// why a column's switch or Save to rig is off, or "" when they can be used.
+function rigControlBlock() {
+  if (!currentUserIsSignedIn() || !isApprovedUser()) return "Needs an approved account.";
+  if (!firebaseConnected) return "This browser has lost its connection to Firebase.";
+  if (!deviceIsFresh()) return "Needs a fresh ESP1 snapshot: ESP1 isn't reporting right now.";
+  if (rigLocked()) return LOCKED_TITLE;
+  return "";
+}
+
+// The card's own words for what ESP1 does with the column. Runs on every snapshot and command update.
+function renderZoneSummary(zone) {
+  const id = zone.id;
+  const s = zoneSettings(id);
+  const block = document.querySelector(`.zone-block[data-zone="${id}"]`);
+  if (block) block.classList.toggle("is-off", s.known && !s.enabled);
+  setText(`zoneDoes${id}`, s.mode ? MODE_TEXT[s.mode] : "Unavailable");
+  setText(`zoneWhen${id}`, s.sched === null ? "Unavailable"
+    : `${windowText(id, s.sched, s.ws, s.we)}, once a day, when the soil is drier than Soil start %`);
+  setText(`zoneTargets${id}`, targetsText(s.targets));
+  const offNote = document.getElementById(`zoneOffNote${id}`);
+  if (offNote) offNote.hidden = !(s.known && !s.enabled);
+  renderZonePower(id, s);
+  if (zoneDrafts[id]) renderZoneChanges(id);
+}
+
+/* ---- ON/OFF switch ---- */
+function renderZonePower(id, s = zoneSettings(id)) {
+  const button = document.getElementById(`zonePower${id}`);
+  const state = document.getElementById(`zonePowerState${id}`);
+  const sentKey = zonePowerSent[id];
+  const row = sentKey && commandData.find(c => c.id === sentKey);
+  const waiting = Boolean(sentKey) && (!row || row.status === "queued" || row.status === "received");
+  if (sentKey && !waiting) delete zonePowerSent[id];
+  if (state) state.textContent = waiting ? "Sending…" : !s.known ? "Not reported" : s.enabled ? "On" : "Off";
+  if (!button) return;
+  button.setAttribute("aria-checked", String(s.known && s.enabled));
+  button.dataset.waiting = waiting ? "1" : "";
+  const block = rigControlBlock();
+  button.disabled = waiting || Boolean(block);
+  button.title = waiting ? "Waiting for ESP1." : block;
+}
+
+function toggleZonePower(id) {
+  const s = zoneSettings(id);
+  const result = resultLine(`cfgResult${id}`);
+  if (!s.known) { result("ESP1 hasn't reported this column yet, so its switch can't be used.", true); return; }
+  if (zonePowerSent[id]) return;
+  const turnOn = !s.enabled;
+  if (turnOn && !confirmEnableColumn(id)) { result("Nothing was sent."); return; }
+  if (!turnOn && !confirm(`Turn column ${id} off? ESP1 stops watering it, and stops sending its readings here. Its settings are kept for when you turn it back on.`)) {
+    result("Nothing was sent.");
+    return;
+  }
+  sendFromPanel(result, "SET_COLUMN", { col: id, enabled: turnOn ? 1 : 0 }).then(key => {
+    if (!key) return;
+    zonePowerSent[id] = key;
+    renderZonePower(id);
+  });
+}
+
+// ESP1's column list is editable from here, but ESP2's is compiled into its firmware. Turning on a column
+// that ESP2 has off makes ESP2 refuse every run for it: ESP1 raises COL_MISMATCH (a Major alert and SMS)
+// and skips the column for the day.
+function confirmEnableColumn(id) {
+  return confirm(`Turn column ${id} on? Only do this if it is wired and plumbed, and ESP2's firmware has it enabled too: ESP2's column list is built into its firmware, and if it disagrees, ESP1 raises COL_MISMATCH and skips the column for the day.`);
+}
+
+/* ---- Edit settings ---- */
+function openZoneEditor(id) {
+  const s = zoneSettings(id);
+  const own = s.sched === 1;
+  zoneDrafts[id] = {
+    mode: s.mode || "",
+    sched: s.sched === null ? "" : String(s.sched),
+    ws: own && s.ws !== null ? minutesToHhmm(s.ws) : "",
+    we: own && s.we !== null ? minutesToHhmm(s.we) : "",
+    targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, s.targets[f.key] === null ? "" : String(s.targets[f.key])])),
+    saveName: "",
+    setupsOpen: false
+  };
+  renderZonesUI();
+  document.querySelector(`#zoneForm${id} input`)?.focus();
+}
+
+function closeZoneEditor(id) {
+  delete zoneDrafts[id];
+  renderZonesUI();
+  document.getElementById(`zoneEdit${id}`)?.focus();
+}
+
+// Copies the draft into the form. Called whenever the card is built.
+function fillZoneForm(id) {
+  const d = zoneDrafts[id];
+  const form = document.getElementById(`zoneForm${id}`);
+  if (!d || !form) return;
+  form.querySelectorAll(`input[name="cfgMode${id}"]`).forEach(radio => { radio.checked = radio.value === d.mode; });
+  form.querySelectorAll(`input[name="cfgSched${id}"]`).forEach(radio => { radio.checked = radio.value === d.sched; });
+  const start = document.getElementById(`cfgWinStart${id}`);
+  const end = document.getElementById(`cfgWinEnd${id}`);
+  if (start) start.value = d.ws;
+  if (end) end.value = d.we;
+  TARGET_FIELDS.forEach(f => { const el = document.getElementById(`${f.input}${id}`); if (el) el.value = d.targets[f.key]; });
+  const name = document.getElementById(`cfgSaveName${id}`);
+  if (name) name.value = d.saveName;
+  syncZoneTimeInputs(id);
+  renderZoneChanges(id);
+}
+
+// The times only mean something for "My own time", so they are greyed out otherwise.
+function syncZoneTimeInputs(id) {
+  const own = zoneDrafts[id]?.sched === "1";
+  ["cfgWinStart", "cfgWinEnd"].forEach(prefix => {
+    const el = document.getElementById(`${prefix}${id}`);
+    if (el) el.disabled = !own;
+  });
+}
+
+function readZoneForm(id) {
+  const d = zoneDrafts[id];
+  const form = document.getElementById(`zoneForm${id}`);
+  if (!d || !form) return;
+  d.mode = form.querySelector(`input[name="cfgMode${id}"]:checked`)?.value || d.mode;
+  const sched = form.querySelector(`input[name="cfgSched${id}"]:checked`)?.value ?? d.sched;
+  const start = document.getElementById(`cfgWinStart${id}`);
+  const end = document.getElementById(`cfgWinEnd${id}`);
+  if (sched === "1" && d.sched !== "1" && !d.ws && !d.we) {
+    // Switching to own time starts from the window in use now, not from two blank boxes.
+    const s = zoneSettings(id);
+    const [ws, we] = s.sched === 1 && s.ws !== null ? [s.ws, s.we] : (DEFAULT_WINDOWS[id] || [360, 480]);
+    d.ws = minutesToHhmm(ws);
+    d.we = minutesToHhmm(we);
+    if (start) start.value = d.ws;
+    if (end) end.value = d.we;
+  } else {
+    d.ws = start?.value ?? d.ws;
+    d.we = end?.value ?? d.we;
+  }
+  d.sched = sched;
+  TARGET_FIELDS.forEach(f => { const el = document.getElementById(`${f.input}${id}`); if (el) d.targets[f.key] = el.value.trim(); });
+  d.saveName = document.getElementById(`cfgSaveName${id}`)?.value ?? d.saveName;
+  syncZoneTimeInputs(id);
+  renderZoneChanges(id);
+}
+
+// What the editor would change, as ESP1's own fields plus words for the person. Also checks each value
+// against the firmware's limits, so a bad one is refused here rather than by ESP1.
+function zoneEditPlan(id) {
+  const d = zoneDrafts[id];
+  const s = zoneSettings(id);
+  const payload = { col: id };
+  const words = [];
+  const problems = [];
+  if (d.mode && d.mode !== s.mode) {
+    payload.mode = d.mode;
+    words.push(`what it does, from "${s.mode ? MODE_TEXT[s.mode] : "unknown"}" to "${MODE_TEXT[d.mode]}"`);
+  }
+  if (d.sched === "1") {
+    const ws = hhmmToMinutes(d.ws);
+    const we = hhmmToMinutes(d.we);
+    if (ws === null || we === null) problems.push("Pick both a start and an end time for My own time.");
+    else if (ws >= we) problems.push("The watering time must start before it ends, on the same day: the rig can't water past midnight.");
+    else if (s.sched !== 1 || ws !== s.ws || we !== s.we) {
+      payload.schedMode = 1; payload.winStart = ws; payload.winEnd = we;
+      words.push(`when it runs, from ${windowText(id, s.sched, s.ws, s.we)} to ${windowText(id, 1, ws, we)}`);
+    }
+  } else if (d.sched === "0" && s.sched !== 0) {
+    payload.schedMode = 0;
+    words.push(`when it runs, from ${windowText(id, s.sched, s.ws, s.we)} to ${windowText(id, 0)}`);
+  }
+  TARGET_FIELDS.forEach(f => {
+    const raw = d.targets[f.key];
+    if (raw === "" || raw === undefined) return;               // blank: leave ESP1's value alone
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < f.min || v > f.max) { problems.push(`${f.label} must be a number from ${f.min} to ${f.max}.`); return; }
+    if (s.targets[f.key] !== null && Math.abs(v - s.targets[f.key]) < 1e-6) return;
+    payload[f.key] = v;
+    words.push(`${f.label} target, from ${s.targets[f.key] ?? "unknown"} to ${v}${f.unit ? ` ${f.unit}` : ""}`);
+  });
+  return { payload, words, problems };
+}
+
+function renderZoneChanges(id) {
+  const box = document.getElementById(`zoneChanges${id}`);
+  if (!box || !zoneDrafts[id]) return;
+  const { words, problems } = zoneEditPlan(id);
+  box.classList.toggle("error", problems.length > 0);
+  box.textContent = problems.length ? problems.join(" ")
+    : words.length ? `You changed ${words.join("; ")}.`
+    : "Nothing changed yet. ESP1 keeps what it has until you press Save to rig.";
+  const save = document.getElementById(`cfgSave${id}`);
+  if (save) save.dataset.nothing = words.length && !problems.length ? "" : "1";
+  syncZoneSaveButton(id);
+}
+
+function syncZoneSaveButton(id) {
+  const save = document.getElementById(`cfgSave${id}`);
+  if (!save) return;
+  const block = rigControlBlock();
+  save.disabled = Boolean(block) || save.dataset.nothing === "1";
+  save.title = block || (save.dataset.nothing === "1" ? "Change something first." : "");
+}
+
+function saveZoneEditor(id) {
+  readZoneForm(id);
+  const { payload, problems } = zoneEditPlan(id);
+  const show = resultLine(`cfgResult${id}`);
+  if (problems.length) { show(`${problems.join(" ")} Nothing was sent.`, true); return; }
+  if (Object.keys(payload).length < 2) { show("Nothing changed, so nothing was sent."); return; }
+  sendFromPanel(show, "SET_COLUMN", payload).then(key => { if (key) closeZoneEditor(id); });
+}
+
+// The crop profile is the page's own planning note; the rig only learns a target through SET_COLUMN. This
+// copies the profile's numbers into the editor without sending, so they go through the same review.
+function fillTargetsFromCrop(zone) {
+  const id = zone.id;
+  const show = resultLine(`cfgResult${id}`);
+  const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage];
+  if (!target || !zoneDrafts[id]) { show("That crop and stage has no stored profile. Nothing was filled in.", true); return; }
+  Object.assign(zoneDrafts[id].targets, { targetN: String(target.n), targetP: String(target.p), targetK: String(target.k), targetPH: String(target.ph) });
+  fillZoneForm(id);
+  const crop = readableCropNames[zone.defaultCrop] || zone.defaultCrop;
+  show(`Filled from ${crop}, ${zone.defaultStage}. Check them, then press Save to rig.`);
+}
+
+// Saved setups: the editor's values under a name, kept with the page's own zone config (ESP1 never reads
+// it). Older saves, from the form this replaced, use the same fields; their "enabled" is ignored, because
+// turning a column on or off is the switch's job.
+function saveColumnSettings(id) {
+  const show = resultLine(`cfgResult${id}`);
+  if (!isApprovedUser()) { show("Your account is awaiting operator approval before it can save settings.", true); return; }
+  readZoneForm(id);
+  const d = zoneDrafts[id];
+  if (!d) return;
+  const snapshot = {
+    name: d.saveName.trim() || `Saved ${new Date().toLocaleString()}`,
+    savedAt: firebase.database.ServerValue.TIMESTAMP,
+    mode: d.mode, schedMode: d.sched,
+    winStart: d.sched === "1" ? d.ws : "", winEnd: d.sched === "1" ? d.we : "",
+    targetN: d.targets.targetN, targetP: d.targets.targetP, targetK: d.targets.targetK, targetPH: d.targets.targetPH
+  };
+  db.ref(`irrigation/config/zones/${id}/savedSettings`).push(snapshot)
+    .then(() => {
+      if (zoneDrafts[id]) zoneDrafts[id].saveName = "";
+      const name = document.getElementById(`cfgSaveName${id}`);
+      if (name) name.value = "";
+      resultLine(`cfgResult${id}`)(`Saved as "${snapshot.name}". It isn't on the rig until you press Save to rig.`);
+    })
+    .catch(error => show(`Could not save the setup: ${error.message}`, true));
+}
+
+function loadSavedSetup(zone, key) {
+  const chosen = zone.savedSettings?.[key];
+  const d = zoneDrafts[zone.id];
+  if (!chosen || !d) return;
+  if (chosen.mode === "AUTO" || chosen.mode === "IRRIGATION_ONLY") d.mode = chosen.mode;
+  if (["0", "1"].includes(String(chosen.schedMode))) d.sched = String(chosen.schedMode);
+  if (d.sched === "1") { d.ws = rawText(chosen.winStart, ""); d.we = rawText(chosen.winEnd, ""); }
+  TARGET_FIELDS.forEach(f => { if (hasValue(chosen[f.key])) d.targets[f.key] = String(chosen[f.key]); });
+  fillZoneForm(zone.id);
+  resultLine(`cfgResult${zone.id}`)(`Loaded "${rawText(chosen.name, "Untitled")}". Check it, then press Save to rig.`);
+}
+
+// Each column's latest SET_COLUMN outcome, under its own card, in words. ESP1's own reply follows in
+// brackets, and the dashboard's Command status keeps the full record.
+function renderColumnCommandResults() {
+  activeZones.forEach(zone => {
+    renderZoneSummary(zone);
+    const result = document.getElementById(`cfgResult${zone.id}`);
+    if (!result) return;
+    const latest = commandData
+      .filter(c => c.type === "SET_COLUMN" && c.payload && c.payload.col === zone.id)
+      .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
+    if (!latest) return;
+    const reply = commandDetailText(latest, "");
+    result.textContent = latest.status === "completed" ? `Saved on ESP1${reply ? ` (its reply: ${reply})` : ""}.`
+      : latest.status === "rejected" || latest.status === "failed" ? `ESP1 refused it: ${reply || "no reason given"}.`
+      : latest.status === "withdrawn" ? "Withdrawn before ESP1 read it."
+      : "Sent. Waiting for ESP1…";
+    result.className = `control-result${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
+  });
 }
 
 function renderZonesUI() {
   const container = document.getElementById("dynamic-zones-container");
   if (!container) return;
-  const savedFormState = captureZoneFormState();
   container.innerHTML = "";
-  // Access-control revision (2026-09-09): a pending/restricted account (isApprovedUser() false)
-  // previously got the exact same "Firmware settings" block as an approved one -- quick-action
-  // buttons, dropdowns, N/P/K/pH inputs, preset selector, Send to ESP1, all fully rendered and
-  // clickable -- relying entirely on queueCommand()'s isApprovedUser() check (and the Firebase
-  // rules behind it) to reject the write after the fact. That is still the REAL security boundary
-  // and is unchanged below; this only stops the UI from offering a control that is "simply expected
-  // to fail" (per the access-control spec). The sensor-reading matrix-grid and the live "Current
-  // configuration" summary are identical either way -- only the editing surface (crop/stage
-  // selects, and the whole zone-config block) is swapped for plain read-only text.
+  // Access-control revision (2026-09-09): a pending/restricted account gets read-only text, not
+  // controls that are simply expected to fail. The real boundary is still queueCommand() and the rules.
   const canEdit = isApprovedUser();
   activeZones.forEach(zone => {
+    const id = zone.id;
     const block = document.createElement("article");
     block.className = "zone-block";
-    const info = (title, text) => `<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${title}" data-info-title="${title}" data-info-text="${text}">i</button>`;
-
-    const cropStageHtml = canEdit
-      ? `<div class="zone-selectors">
-          <label><span class="label-row">Crop${info("Crop selection", "The crop growing here — a planning note only. To change how the rig runs, fill targets from it below and press Send to ESP1.")}</span><select id="cropSelect${zone.id}"></select></label>
-          <label><span class="label-row">Growth stage${info("Growth stage", "The crop's current stage. Like Crop, this only updates reference numbers here — it doesn't change the rig by itself.")}</span><select id="growthStage${zone.id}"></select></label>
-        </div>`
-      : `<div class="zone-selectors">
-          <label><span class="label-row">Crop</span><strong>${escapeHtml(readableCropNames[zone.defaultCrop] || zone.defaultCrop || "--")}</strong></label>
-          <label><span class="label-row">Growth stage</span><strong>${escapeHtml(zone.defaultStage ? zone.defaultStage[0].toUpperCase() + zone.defaultStage.slice(1) : "--")}</strong></label>
+    block.dataset.zone = id;
+    // Short words here; the full explanation is in the Help entry each icon links to.
+    const info = (title, text, help) => `<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${title}" data-info-title="${title}" data-info-text="${text}"${help ? ` data-help="${help}"` : ""}>i</button>`;
+    const crop = readableCropNames[zone.defaultCrop] || zone.defaultCrop || "--";
+    const stage = zone.defaultStage ? zone.defaultStage[0].toUpperCase() + zone.defaultStage.slice(1) : "--";
+    const reading = (label, valueId, noteId, infoText, help, note = "Crop profile: --") => `
+        <div class="reading">
+          <dt>${label}${info(label, infoText, help)}</dt>
+          <dd class="reading-value" id="${valueId}">Unavailable</dd>
+          <dd class="reading-note"${noteId ? ` id="${noteId}"` : ""}>${note}</dd>
         </div>`;
+    const draft = canEdit ? zoneDrafts[id] : null;
+    const [defStart, defEnd] = DEFAULT_WINDOWS[id] || [null, null];
 
-    const firmwareConfigHtml = canEdit
-      ? `<div class="zone-config">
-        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "The real settings ESP1 uses for this column. Blank fields are left unchanged — only what you fill in is updated.")}</h4>
-        <p class="field-note">Unlike the crop profile above, these are sent to ESP1 and change how it runs. Use "Fill targets from crop profile" to copy values in, then review and send.</p>
-        <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
-        <div class="force-row zone-quick-actions">
-          <span class="btn-with-info"><button type="button" id="zoneAuto${zone.id}" class="secondary">Auto</button>${info("Auto", "Sets this column to Auto (irrigation + fertigation) immediately — same as the LCD's Column Mode screen.")}</span>
-          <span class="btn-with-info"><button type="button" id="zoneIrrOnly${zone.id}" class="secondary">Irrigation only</button>${info("Irrigation only", "Sets this column to Irrigation only (water, no dosing) immediately — same as the LCD's Column Mode screen.")}</span>
-          <span class="btn-with-info"><button type="button" id="zoneOff${zone.id}" class="secondary">Off</button>${info("Off", "Disables this column immediately — same as the LCD's Column Mode screen. Its stored mode is kept, so switching back later needs its own click.")}</span>
-        </div>
-        <p class="field-note">The three buttons above act immediately. Everything below is the detailed form — still needs "Send to ESP1".</p>
-        <div class="force-row">
-          <label><span class="label-row">Operation${info("Operation", "Auto runs irrigation and dosing on schedule. Irrigation only keeps the schedule but skips dosing — plain water.")}</span><select id="cfgMode${zone.id}">
-            <option value="">(unchanged)</option>
-            <option value="AUTO">Auto — irrigation + fertigation</option>
-            <option value="IRRIGATION_ONLY">Irrigation only</option>
-          </select></label>
-          <label>Column enabled<select id="cfgEnabled${zone.id}">
-            <option value="">(unchanged)</option><option value="1">Enabled</option><option value="0">Disabled</option>
-          </select></label>
-          <label><span class="label-row">Schedule${info("Schedule", "Automatic lets the rig decide timing. Manual runs only within the start/end time you set below.")}</span><select id="cfgSched${zone.id}">
-            <option value="">(unchanged)</option><option value="0">Automatic window</option><option value="1">Manual window</option>
-          </select></label>
-        </div>
-        <div id="cfgWinRow${zone.id}" class="force-row" hidden>
-          <label>Window start<input id="cfgWinStart${zone.id}" type="time"></label>
-          <label>Window end<input id="cfgWinEnd${zone.id}" type="time"></label>
-        </div>
-        <p id="cfgWinNote${zone.id}" class="field-note" hidden>Window start/end only apply — and are only sent — when Schedule is set to Manual window.</p>
-        <div class="force-row">
-          <label>Target N (ppm)<input id="cfgN${zone.id}" type="number" min="0" max="2000" step="1"></label>
-          <label>Target P (ppm)<input id="cfgP${zone.id}" type="number" min="0" max="2000" step="1"></label>
-          <label>Target K (ppm)<input id="cfgK${zone.id}" type="number" min="0" max="2000" step="1"></label>
-          <label>Target pH<input id="cfgPH${zone.id}" type="number" min="3" max="9" step="0.1"></label>
-        </div>
-        <div class="force-row">
-          <label><span class="label-row">Firmware save settings${info("Firmware save settings", "Your saved settings for this column, most recent first. Selecting one fills the boxes above — review, then press Send to ESP1.")}</span><select id="cfgSavedList${zone.id}">
-            <option value="">(none -- select a recent save)</option>
-          </select></label>
-        </div>
-        <div class="force-row">
-          <label>Save name (optional)<input id="cfgSaveName${zone.id}" type="text" maxlength="40" placeholder="e.g. Vegetative high-N"></label>
-          <span class="btn-with-info"><button type="button" id="cfgSaveSettingsBtn${zone.id}" class="secondary">Save current settings</button>${info("Save current settings", "Saves what's filled in above as a named preset for this column, for the list above. Doesn't send to ESP1. Unnamed saves get a timestamp.")}</span>
-        </div>
-        <div class="config-actions">
-          <span class="btn-with-info"><button type="button" id="cfgFromCrop${zone.id}" class="secondary">Fill targets from crop profile</button>${info("Fill targets from crop profile", "Copies the selected crop and stage's reference N/P/K/pH into the boxes above to review before sending. Doesn't change the rig by itself.")}</span>
-          <span class="btn-with-info"><button type="button" id="cfgSave${zone.id}">Send to ESP1</button>${info("Send to ESP1", "Sends the settings above to ESP1. Each value is range-checked before it's accepted; blank fields are left unchanged.")}</span>
-        </div>
-        <p id="cfgResult${zone.id}" class="control-result" aria-live="polite"></p>
-      </div>`
-      : `<div class="zone-config">
-        <h4>Firmware settings for column ${zone.id}${info("Firmware settings", "The real settings ESP1 uses for this column. Editing requires an approved account.")}</h4>
-        <p class="field-note" id="cfgCurrent${zone.id}">Current configuration: Unavailable</p>
-        <p class="field-note">Read-only access — editing firmware settings requires operator approval.</p>
-      </div>`;
+    const power = canEdit
+      ? `<div class="zone-power">
+          <span class="zone-power-state" id="zonePowerState${id}">Not reported</span>
+          <button type="button" role="switch" aria-checked="false" class="switch zone-switch" id="zonePower${id}" aria-label="Column ${id} on or off"></button>
+          ${info("Column on or off", "Off: ESP1 stops watering this column and stops sending its readings here. Its settings are kept for when you turn it back on.", "help-column-onoff")}
+        </div>`
+      : `<div class="zone-power"><span class="zone-power-state" id="zonePowerState${id}">Not reported</span></div>`;
+
+    const compare = canEdit
+      ? `<div class="zone-compare">
+          <span class="label-row">Compared with${info("Crop profile", "Pick the crop and stage growing here. A reading turns red when it is below that crop's number. This stays on the website: ESP1 never sees it.", "help-crop-profile")}</span>
+          <select id="cropSelect${id}" aria-label="Crop growing in column ${id}"></select>
+          <select id="growthStage${id}" aria-label="Growth stage in column ${id}"></select>
+        </div>`
+      : `<p class="zone-compare">Compared with ${escapeHtml(crop)}, ${escapeHtml(stage)}</p>`;
+
+    const summary = `
+        <dl class="zone-summary">
+          <dt>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</dt>
+          <dd id="zoneDoes${id}">Unavailable</dd>
+          <dt>When it runs${info("When it runs", "The part of the day this column may be watered. It is watered at most once a day, and only when its soil is dry enough.", "help-window")}</dt>
+          <dd id="zoneWhen${id}">Unavailable</dd>
+          <dt>Targets${info("Targets", "The N, P and K levels ESP1 aims for. It adds nutrients when a reading falls short of one by the Fertigation gap. pH is recorded, not corrected.", "help-npk")}</dt>
+          <dd id="zoneTargets${id}">Unavailable</dd>
+        </dl>
+        ${canEdit ? `<button type="button" id="zoneEdit${id}" class="secondary">Edit settings</button>`
+                  : `<p class="field-note">Read-only: changing a column's settings needs an approved account.</p>`}`;
+
+    const form = `
+        <form id="zoneForm${id}" class="zone-form" novalidate>
+          <fieldset>
+            <legend>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</legend>
+            <label class="choice"><input type="radio" name="cfgMode${id}" value="AUTO">Water + nutrients when the soil needs them</label>
+            <label class="choice"><input type="radio" name="cfgMode${id}" value="IRRIGATION_ONLY">Water only</label>
+          </fieldset>
+          <fieldset>
+            <legend>When it runs${info("When it runs", "Rig default uses the window built into the firmware. My own time uses the start and end you pick, and must end the same day.", "help-set-time")}</legend>
+            <label class="choice"><input type="radio" name="cfgSched${id}" value="0">Rig default, ${minutesToHhmm(defStart)}–${minutesToHhmm(defEnd)}</label>
+            <label class="choice"><input type="radio" name="cfgSched${id}" value="1">My own time</label>
+            <div class="time-row">
+              <label>From<input id="cfgWinStart${id}" type="time"></label>
+              <label>To<input id="cfgWinEnd${id}" type="time"></label>
+            </div>
+            <p class="field-note">At most once a day, inside this time, when the soil is drier than Soil start %. Times follow the rig's clock.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Targets${info("Targets", "N, P and K in ppm (0 to 2000), pH from 3 to 9. A blank box leaves ESP1's value as it is.", "help-targets")}</legend>
+            <div class="target-row">
+              ${TARGET_FIELDS.map(f => `<label>${f.label}${f.unit ? ` (${f.unit})` : ""}<input id="${f.input}${id}" type="number" min="${f.min}" max="${f.max}" step="${f.step}" inputmode="decimal"></label>`).join("")}
+            </div>
+            <button type="button" id="cfgFromCrop${id}" class="secondary">Fill from crop profile (${escapeHtml(crop)}, ${escapeHtml(stage)})</button>
+          </fieldset>
+          <details class="zone-setups" id="zoneSetups${id}">
+            <summary>Saved setups${info("Saved setups", "Named copies of this form, kept on the website. Loading one fills the form; nothing reaches the rig until you press Save to rig.", "help-saved-setups")}</summary>
+            <label>Load a saved setup<select id="cfgSavedList${id}"><option value="">Choose one</option></select></label>
+            <div class="setup-save">
+              <label>Save these as a setup<input id="cfgSaveName${id}" type="text" maxlength="40" placeholder="Name, for example Vegetative high-N"></label>
+              <button type="button" id="cfgSaveSettingsBtn${id}" class="secondary">Save setup</button>
+            </div>
+          </details>
+          <p class="zone-changes" id="zoneChanges${id}" aria-live="polite"></p>
+          <div class="config-actions">
+            <button type="submit" id="cfgSave${id}">Save to rig</button>
+            <button type="button" id="cfgCancel${id}" class="secondary">Cancel</button>
+          </div>
+        </form>`;
 
     block.innerHTML = `
-      <div class="zone-header">
-        <div><p class="eyebrow">Physical zone ${zone.id}</p><h3>${escapeHtml(zone.name)}</h3></div>
-        ${cropStageHtml}
-      </div>
-      <div class="card-grid matrix-grid">
-        <article class="card matrix-card"><h3>Nitrogen${info("Nitrogen", "Nitrogen measured in this zone's soil, compared to the selected crop's target. Red means below target.")}</h3><p id="nitrogen${zone.id}">Unavailable</p><small id="targetN${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Phosphorus${info("Phosphorus", "Phosphorus measured in this zone's soil, compared to the selected crop's target.")}</h3><p id="phosphorus${zone.id}">Unavailable</p><small id="targetP${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Potassium${info("Potassium", "Potassium measured in this zone's soil, compared to the selected crop's target.")}</h3><p id="potassium${zone.id}">Unavailable</p><small id="targetK${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil pH${info("Soil pH", "How acidic or alkaline this zone's soil is, from the 7-in-1 probe.")}</h3><p id="soilPH${zone.id}">Unavailable</p><small id="targetPH${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil EC${info("Soil EC", "How concentrated this zone's soil nutrients are, from the probe.")}</h3><p id="soilEC${zone.id}">Unavailable</p><small id="targetEC${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>Soil moisture${info("Soil moisture", "How damp this zone's soil is. The schedule compares it to a threshold to decide when to run.")}</h3><p id="soil${zone.id}">Unavailable</p><small id="targetMoisture${zone.id}">Target: --</small></article>
-        <article class="card matrix-card"><h3>NPK probe moisture${info("NPK probe moisture", "A second moisture reading from the NPK probe, blended into the main figure when the two agree.")}</h3><p id="npkMoist${zone.id}">Unavailable</p><small>Blended into the figure at left when it agrees</small></article>
-        <article class="card matrix-card"><h3>Soil temperature${info("Soil temperature", "Root-zone soil temperature, from the 7-in-1 probe.")}</h3><p id="soilTemp${zone.id}">Unavailable</p><small>Root zone, from the 7-in-1 probe</small></article>
-      </div>
-      ${firmwareConfigHtml}
-      <p class="zone-note">Actuator/solenoid feedback: not reported by the current ESP1 Firebase snapshot.</p>`;
+      <header class="zone-head">
+        <div>
+          <h3>Column ${id}</h3>
+          <p class="zone-sub">${escapeHtml(zone.name)}</p>
+        </div>
+        ${power}
+      </header>
+      <div class="zone-body">
+        <section class="zone-now" aria-label="Column ${id}: soil now">
+          <div class="zone-section-head">
+            <h4>Soil now</h4>
+            ${compare}
+          </div>
+          <p class="zone-off-note" id="zoneOffNote${id}" hidden>This column is off. ESP1 isn't watering it, and isn't sending its readings. Its settings are kept.</p>
+          <dl class="reading-grid">
+            ${reading("Soil moisture", `soil${id}`, `targetMoisture${id}`, "The column's main moisture figure. ESP1 waters it when this is below Soil start %.", "help-moisture")}
+            ${reading("Nitrogen (N)", `nitrogen${id}`, `targetN${id}`, "Nitrogen in the soil, in ppm, from the 7-in-1 probe. Red: below the crop profile's number.", "help-npk")}
+            ${reading("Phosphorus (P)", `phosphorus${id}`, `targetP${id}`, "Phosphorus in the soil, in ppm. Red: below the crop profile's number.", "help-npk")}
+            ${reading("Potassium (K)", `potassium${id}`, `targetK${id}`, "Potassium in the soil, in ppm. Red: below the crop profile's number.", "help-npk")}
+            ${reading("Soil pH", `soilPH${id}`, `targetPH${id}`, "How acidic (under 7) or alkaline (over 7) the soil is.", "help-soil-ec")}
+            ${reading("Soil EC", `soilEC${id}`, `targetEC${id}`, "Dissolved nutrients in the soil, in µS/cm. Higher means richer.", "help-soil-ec")}
+            ${reading("NPK probe moisture", `npkMoist${id}`, "", "The NPK probe's own moisture reading. It counts toward Soil moisture when the two agree.", "help-moisture", "Counts toward soil moisture when it agrees")}
+            ${reading("Soil temperature", `soilTemp${id}`, "", "Root-zone temperature, from the 7-in-1 probe.", "", "Root zone")}
+          </dl>
+        </section>
+        <section class="zone-does" aria-label="Column ${id}: what ESP1 does with it">
+          <div class="zone-section-head"><h4>What ESP1 does with it</h4></div>
+          ${draft ? form : summary}
+          <p id="cfgResult${id}" class="control-result" aria-live="polite"></p>
+        </section>
+      </div>`;
     container.appendChild(block);
 
     if (canEdit) {
-      block.querySelector(`#cfgSave${zone.id}`)?.addEventListener("click", () => submitColumnConfig(zone.id));
-      block.querySelector(`#cfgFromCrop${zone.id}`)?.addEventListener("click", () => fillTargetsFromCrop(zone));
-      block.querySelector(`#zoneAuto${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "AUTO"));
-      block.querySelector(`#zoneIrrOnly${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, "IRRIGATION_ONLY"));
-      block.querySelector(`#zoneOff${zone.id}`)?.addEventListener("click", () => quickSetColumnMode(zone.id, null));
+      block.querySelector(`#zonePower${id}`)?.addEventListener("click", () => toggleZonePower(id));
+      block.querySelector(`#zoneEdit${id}`)?.addEventListener("click", () => openZoneEditor(id));
+      const editor = block.querySelector(`#zoneForm${id}`);
+      if (editor) {
+        editor.addEventListener("input", () => readZoneForm(id));
+        editor.addEventListener("change", () => readZoneForm(id));
+        editor.addEventListener("submit", event => { event.preventDefault(); saveZoneEditor(id); });
+        block.querySelector(`#cfgCancel${id}`)?.addEventListener("click", () => closeZoneEditor(id));
+        block.querySelector(`#cfgFromCrop${id}`)?.addEventListener("click", () => fillTargetsFromCrop(zone));
+        block.querySelector(`#cfgSaveSettingsBtn${id}`)?.addEventListener("click", () => saveColumnSettings(id));
+        const setups = block.querySelector(`#zoneSetups${id}`);
+        if (setups) {
+          setups.open = Boolean(draft.setupsOpen);
+          setups.addEventListener("toggle", () => { if (zoneDrafts[id]) zoneDrafts[id].setupsOpen = setups.open; });
+        }
+        // Newest first, capped at 10: a convenience list, not an archive. Every save stays in Firebase.
+        const savedSelect = block.querySelector(`#cfgSavedList${id}`);
+        Object.entries(zone.savedSettings || {})
+          .sort((a, b) => (b[1]?.savedAt || 0) - (a[1]?.savedAt || 0))
+          .slice(0, 10)
+          .forEach(([key, s]) => savedSelect?.add(new Option(`${s?.name || "Untitled"} (N ${rawText(s?.targetN, "-")}, P ${rawText(s?.targetP, "-")}, K ${rawText(s?.targetK, "-")}, pH ${rawText(s?.targetPH, "-")})`, key)));
+        savedSelect?.addEventListener("change", () => {
+          const key = savedSelect.value;
+          savedSelect.value = "";   // back to the prompt, so picking the same one again still fires "change"
+          if (key) loadSavedSetup(zone, key);
+        });
+        fillZoneForm(id);
+      }
 
-      block.querySelector(`#cfgSaveSettingsBtn${zone.id}`)?.addEventListener("click", () => saveColumnSettings(zone.id));
-
-      // Newest first, capped at 10 -- a convenience list, not a full archive; every entry ever
-      // saved stays in Firebase regardless, this just doesn't grow the dropdown unbounded.
-      const savedSelect = block.querySelector(`#cfgSavedList${zone.id}`);
-      const savedEntries = Object.entries(zone.savedSettings || {})
-        .sort((a, b) => (b[1]?.savedAt || 0) - (a[1]?.savedAt || 0))
-        .slice(0, 10);
-      savedEntries.forEach(([key, s]) => {
-        const label = `${s?.name || "Untitled"} (N${rawText(s?.targetN, "-")}/P${rawText(s?.targetP, "-")}/K${rawText(s?.targetK, "-")}/pH${rawText(s?.targetPH, "-")})`;
-        savedSelect?.add(new Option(label, key));
-      });
-      savedSelect?.addEventListener("change", () => {
-        const chosen = zone.savedSettings?.[savedSelect.value];
-        savedSelect.value = "";   // revert to the placeholder -- re-picking the same entry must still fire "change"
-        if (!chosen) return;
-        const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ""; };
-        setVal(`cfgMode${zone.id}`, chosen.mode);
-        setVal(`cfgEnabled${zone.id}`, chosen.enabled);
-        setVal(`cfgSched${zone.id}`, chosen.schedMode);
-        setVal(`cfgWinStart${zone.id}`, chosen.winStart);
-        setVal(`cfgWinEnd${zone.id}`, chosen.winEnd);
-        setVal(`cfgN${zone.id}`, chosen.targetN);
-        setVal(`cfgP${zone.id}`, chosen.targetP);
-        setVal(`cfgK${zone.id}`, chosen.targetK);
-        setVal(`cfgPH${zone.id}`, chosen.targetPH);
-        updateWindowVisibility(zone.id);
-      });
-
-      const cropSelect = block.querySelector(`#cropSelect${zone.id}`);
-      const stageSelect = block.querySelector(`#growthStage${zone.id}`);
-      Object.keys(cropDatabase).forEach(crop => {
-        const option = new Option(readableCropNames[crop], crop, false, crop === zone.defaultCrop);
-        cropSelect.add(option);
-      });
+      const cropSelect = block.querySelector(`#cropSelect${id}`);
+      const stageSelect = block.querySelector(`#growthStage${id}`);
+      Object.keys(cropDatabase).forEach(cropKey => cropSelect.add(new Option(readableCropNames[cropKey], cropKey, false, cropKey === zone.defaultCrop)));
       populateStageOptions(zone, stageSelect);
       cropSelect.addEventListener("change", () => {
         zone.defaultCrop = cropSelect.value;
@@ -1701,30 +2312,13 @@ function renderZonesUI() {
         updateZoneTargets(zone);
         writeZoneProfile(zone);
       });
-      restoreZoneFormState(zone.id, savedFormState[zone.id]);
-
-      // Window start/end only mean anything under Manual window -- hide them otherwise rather than
-      // deleting whatever value they hold, and re-check on every change so switching back to Manual
-      // later shows the value again instead of forcing it to be retyped.
-      const schedSelect = block.querySelector(`#cfgSched${zone.id}`);
-      schedSelect?.addEventListener("change", () => updateWindowVisibility(zone.id));
-      updateWindowVisibility(zone.id);
     }
     updateZoneTargets(zone);
   });
-  // The blocks just built are blank, and the next snapshot can be a minute away. This also runs when an account's
-  // approval arrives, which is usually after the first snapshot.
+  // The cards just built are blank, and the next snapshot can be a minute away. This also runs when an
+  // account's approval arrives, which is usually after the first snapshot.
   updateZoneReadings();
   renderColumnCommandResults();
-}
-
-function updateWindowVisibility(zoneId) {
-  const schedSelect = document.getElementById(`cfgSched${zoneId}`);
-  const row = document.getElementById(`cfgWinRow${zoneId}`);
-  const note = document.getElementById(`cfgWinNote${zoneId}`);
-  const manual = schedSelect?.value === "1";
-  if (row) row.hidden = !manual;
-  if (note) note.hidden = !manual;
 }
 
 function populateStageOptions(zone, stageSelect) {
@@ -1734,72 +2328,17 @@ function populateStageOptions(zone, stageSelect) {
   stages.forEach(stage => stageSelect.add(new Option(stage[0].toUpperCase() + stage.slice(1), stage, false, stage === zone.defaultStage)));
 }
 
+// The crop profile's reference numbers, under each reading. Planning only: ESP1's own targets are the
+// card's Targets line.
 function updateZoneTargets(zone) {
   const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage];
   if (!target) return;
-  setText(`targetN${zone.id}`, `Target: ${target.n} ppm`);
-  setText(`targetP${zone.id}`, `Target: ${target.p} ppm`);
-  setText(`targetK${zone.id}`, `Target: ${target.k} ppm`);
-  setText(`targetPH${zone.id}`, `Target: ${target.ph}`);
-  setText(`targetEC${zone.id}`, `Target: ${Math.round(target.ec * 1000)} µS/cm`);
-  setText(`targetMoisture${zone.id}`, `Target: ${target.moisture}%`);
-}
-
-// The crop profile above is dashboard-side bookkeeping; the rig only ever learns a target through
-// SET_COLUMN. This bridges the two by filling the firmware-settings inputs from the selected crop
-// and stage -- it deliberately does NOT send. The operator sees the numbers, can adjust them, and
-// presses "Send to ESP1", so the same validated path and the same confirmation apply as for any
-// other column edit. EC and moisture have no SET_COLUMN field and stay display-only.
-function fillTargetsFromCrop(zone) {
-  const id = zone.id;
-  const result = document.getElementById(`cfgResult${id}`);
-  const show = (text, error = true) => {
-    if (!result) return;
-    result.textContent = text;
-    result.className = `control-result${error ? " error" : ""}`;
-  };
-  const target = cropDatabase[zone.defaultCrop]?.[zone.defaultStage];
-  if (!target) { show("That crop and stage has no stored profile. Nothing was filled in."); return; }
-  const set = (elId, value) => { const el = document.getElementById(elId); if (el) el.value = String(value); };
-  set(`cfgN${id}`, target.n);
-  set(`cfgP${id}`, target.p);
-  set(`cfgK${id}`, target.k);
-  set(`cfgPH${id}`, target.ph);
-  const crop = readableCropNames[zone.defaultCrop] || zone.defaultCrop;
-  show(`Filled from ${crop} / ${zone.defaultStage}: N ${target.n}, P ${target.p}, K ${target.k} ppm, pH ${target.ph}. ` +
-       `Press "Send to ESP1" to apply them to column ${id}.`, false);
-}
-
-// "Firmware save settings" (replaces the old ESP1-preset-table dropdown): stores whatever is
-// currently filled into this column's form -- mode/enabled/schedule/window/targets -- as a named
-// snapshot under irrigation/config/zones/{id}/savedSettings, purely dashboard-side bookkeeping like
-// the crop/stage profile above it (ESP1 never reads this node). Does NOT send anything to ESP1 by
-// itself -- selecting a saved entry back in renderZonesUI() just refills the same boxes this reads
-// from, and the existing "Send to ESP1" button is what actually applies them.
-function saveColumnSettings(id) {
-  const result = document.getElementById(`cfgResult${id}`);
-  const show = (text, error = false) => {
-    if (!result) return;
-    result.textContent = text;
-    result.className = `control-result${error ? " error" : ""}`;
-  };
-  if (!isApprovedUser()) {
-    show("Your account is awaiting operator approval before it can send commands to the rig.", true);
-    return;
-  }
-  const nameInput = document.getElementById(`cfgSaveName${id}`);
-  const typedName = (nameInput?.value || "").trim();
-  const val = elId => document.getElementById(elId)?.value ?? "";
-  const snapshot = {
-    name: typedName || `Saved ${new Date().toLocaleString()}`,
-    savedAt: firebase.database.ServerValue.TIMESTAMP,
-    mode: val(`cfgMode${id}`), enabled: val(`cfgEnabled${id}`), schedMode: val(`cfgSched${id}`),
-    winStart: val(`cfgWinStart${id}`), winEnd: val(`cfgWinEnd${id}`),
-    targetN: val(`cfgN${id}`), targetP: val(`cfgP${id}`), targetK: val(`cfgK${id}`), targetPH: val(`cfgPH${id}`)
-  };
-  db.ref(`irrigation/config/zones/${id}/savedSettings`).push(snapshot)
-    .then(() => { show(`Saved as "${snapshot.name}".`); if (nameInput) nameInput.value = ""; })
-    .catch(error => show(`Could not save settings: ${error.message}`, true));
+  setText(`targetN${zone.id}`, `Crop profile: ${target.n} ppm`);
+  setText(`targetP${zone.id}`, `Crop profile: ${target.p} ppm`);
+  setText(`targetK${zone.id}`, `Crop profile: ${target.k} ppm`);
+  setText(`targetPH${zone.id}`, `Crop profile: ${target.ph}`);
+  setText(`targetEC${zone.id}`, `Crop profile: ${Math.round(target.ec * 1000)} µS/cm`);
+  setText(`targetMoisture${zone.id}`, `Crop profile: ${target.moisture} %`);
 }
 
 function zoneMetric(zone, metric, id, digits, unit, targetKey) {
@@ -1845,7 +2384,7 @@ function updateZoneReadings() {
     const z = liveData.sensors?.zones?.[zone.id] || {};
     setText(`npkMoist${zone.id}`, numberText(z.npkMoisture, 1, "%"));
     setText(`soilTemp${zone.id}`, numberText(z.soilTemperature, 1, "°C"));
-    updateZoneConfigDisplay(zone);
+    renderZoneSummary(zone);
   });
 }
 
@@ -1969,7 +2508,7 @@ function updateRunProgress(run) {
   setDeviceStatus("sideRunState", unknown ? "UNKNOWN" : active ? phase : "NO ACTIVE RUN", active && !unknown ? "active" : "off");
   setDeviceStatus("runStateBadge", unknown ? "UNKNOWN" : active ? phase : "IDLE", active && !unknown ? "active" : "off");
   if (!active) {
-    setText("runSummary", "No active irrigation or fertigation run reported by ESP1.");
+    setText("runSummary", "Nothing is running.");
     setText("runStage", "Unavailable");
     setText("runStageProgress", "Unavailable");
     setText("runWaterProgress", "Unavailable");
@@ -1977,9 +2516,10 @@ function updateRunProgress(run) {
     return;
   }
   const stageOrder = hasValue(run.stageOrdinal) && hasValue(run.stageTotal) ? `Stage ${run.stageOrdinal} of ${run.stageTotal}` : "Stage order unavailable";
+  const operation = run.operation ? run.operation[0].toUpperCase() + run.operation.slice(1) : "Run";
   setText("runSummary", unknown
-    ? `ESP1 has stopped reporting. Its last report showed ${run.operation || "a run"} for Zone ${run.zone || "?"}, and this page can't tell whether that is still going.`
-    : `${run.operation || "Run"} for Zone ${run.zone || "?"} — ${stageOrder}.`);
+    ? `ESP1 has stopped reporting. Its last report showed ${run.operation || "a run"} for column ${run.zone || "?"}, and this page can't tell whether that is still going.`
+    : `${operation} for column ${run.zone || "?"}: ${stageOrder}.`);
   setText("runStage", rawText(run.stage));
   // Stages that move no water, such as Mixing, report a target of 0.
   setText("runStageProgress", Number(run.stageTargetLiters) > 0
@@ -2032,7 +2572,64 @@ const GSM_REGISTRATION_TEXT = {
   9: "Registered, home network", 10: "Registered, roaming"
 };
 
+/* Diagnostics summary (round 2, 2026-11-05): what ESP1 reports as wrong, in words, worst first, before the item-by-item
+ * details. Only what ESP1 publishes: it can't see what ESP1 doesn't check. */
+function healthItems() {
+  const d = liveData.diagnostics || {};
+  if (!Object.keys(d).length) return [];
+  const items = [];
+  const add = (tone, text) => items.push({ tone, text });
+  const f = d.fault || {};
+  const state = liveData.system?.state || "";
+  if (!deviceIsFresh()) add("bad", `ESP1 isn't reporting: ${snapshotAgeText().toLowerCase()}. Everything below is from that report.`);
+  if (f.held) add("bad", `A fault is held and waiting for a decision: ${rawText(heldFaultCode || f.code, "see the banner")}. Use the banner at the top of the page.`);
+  else if (state === "EMERGENCY_STOP") add("bad", "The emergency stop is on. Use Return to normal in the banner when it is safe.");
+  if (actuationsAreOff()) add("warn", "Pumps and valves are switched off (actuations disabled), so nothing runs, not even the schedule.");
+  if (rigLocked()) add("warn", "The rig is locked: this website's controls and the rig's screen buttons are off. Automatic watering carries on.");
+  if (d.esp2?.communicationLost) add("bad", "ESP1 has lost contact with ESP2, the pump and valve board. It is trying to bring it back.");
+  const nanoStale = hasValue(d.nano?.lastSampleAgeMs) && ageFlag(d.nano.lastSampleAgeMs) !== "ok";
+  if (nanoStale) add("bad", `No sensor readings from the Nano for ${formatAge(d.nano.lastSampleAgeMs)}. Watering decisions need them.`);
+  else {
+    const bad = [["environmentValid", "air"], ["tankValid", "tank level"], ["lightValid", "light"]].filter(([key]) => d.nano?.[key] === false).map(([, name]) => name);
+    if (bad.length) add("warn", `The Nano's ${bad.join(", ")} reading${bad.length > 1 ? "s are" : " is"} not valid right now.`);
+  }
+  if (d.peripherals?.rtcOk === false) add("bad", "The clock (RTC) isn't working, so the watering times can't be trusted. Check it on the System tab.");
+  if (d.peripherals?.sdOk === false) add("warn", "The SD card isn't working, so ESP1 can't keep its daily log.");
+  if (d.peripherals?.batterySensorOk === false) add("warn", "The battery sensor isn't answering, so the battery readings are missing.");
+  if (d.power?.batteryCritical) add("bad", "The battery is critically low.");
+  else if (d.power?.batteryLow) add("warn", "The battery is low.");
+  if (liveData.system?.battSwitchFault === true) add("warn", "A battery switch fault is latched, so the inverter can't be used. Clear it on the System tab after checking the hold-up.");
+  if (d.gsm?.simReady === false) add("warn", "The SIM card isn't ready, so SMS alerts can't be sent.");
+  else if (d.gsm?.networkRegistered === false) add("warn", "The SMS modem isn't on the mobile network, so SMS alerts can't be sent right now.");
+  if (Number(d.firebase?.attempts || 0) > 0 && d.firebase?.lastUploadOk === false) add("warn", "ESP1's last upload to this website failed. It retries by itself.");
+  if (d.thingspeak?.configured && d.thingspeak?.attempted && d.thingspeak?.lastUploadOk === false) add("warn", "ESP1's last upload to the ThingSpeak graphs failed.");
+  if (!items.length) add("ok", "Everything ESP1 checks looks fine.");
+  const lastFault = d.system?.lastFault;
+  if (lastFault && lastFault !== "none" && !f.held) {
+    add("", `The last fault ESP1 recorded was ${lastFault}${d.system?.lastFaultTime ? ` at ${d.system.lastFaultTime}` : ""}. It is over; it stays here as a record.`);
+  }
+  return items;
+}
+
+function renderHealthSummary() {
+  const list = document.getElementById("healthSummary");
+  if (!list) return;
+  const items = healthItems();
+  list.innerHTML = "";
+  if (!items.length) {
+    list.innerHTML = '<li class="muted">Waiting for ESP1\'s report.</li>';
+    return;
+  }
+  items.forEach(({ tone, text }) => {
+    const li = document.createElement("li");
+    if (tone) li.className = tone;
+    li.textContent = text;
+    list.appendChild(li);
+  });
+}
+
 function renderDiagnostics() {
+  renderHealthSummary();
   const container = document.getElementById("diagnosticsGrid");
   if (!container) return;
   const d = liveData.diagnostics || {};
@@ -2040,19 +2637,19 @@ function renderDiagnostics() {
   const current = deviceIsFresh();
   const diagnosticsAvailable = Object.keys(d).length > 0;
   const groups = [
-    ["Live snapshot", [["Snapshot", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : isV3Firmware() ? "web v.3" : "Older than web v.3"], ["Payload used", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"]]],
-    ["Network", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Wi-Fi RSSI", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm` : "Unavailable"]]],
-    ["Firebase", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
-    ["ThingSpeak", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
-    ["Supabase logs", [["Configured", booleanText(d.supabase?.configured, "Configured", "Not configured")], ["Upload", booleanText(d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.supabase?.lastUploadedDay) : "No completed upload"]]],
-    ["System", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Pending run", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")]]],
-    ["ESP2", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last response age", formatAge(d.esp2?.lastResponseAgeMs)]]],
-    ["Nano & sensors", [["Last sample age", formatAge(d.nano?.lastSampleAgeMs)], ["Environment", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
-    ["RTC / SD / power sensors", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")], ["Main battery INA226", v3Only(booleanText(d.peripherals?.mainInaOk, "In use", "Not in use"))], ["ACS758 fallback", v3Only(booleanText(d.peripherals?.batteryAdsOk, "OK", "Not OK"))], ["Solar INA226", v3Only(booleanText(d.peripherals?.solarSensorOk, "OK", "Not answering"))], ["Secondary INA226", v3Only(booleanText(d.peripherals?.secondaryBatterySensorOk, "OK", "Not answering"))]]],
+    ["ESP1's report", [["Report", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : isV3Firmware() ? "web v.3" : "Older than web v.3"], ["Report size", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"]]],
+    ["Wi-Fi", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Signal strength", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm` : "Unavailable"]]],
+    ["Link to this website (Firebase)", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
+    ["ThingSpeak graphs", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
+    ["Log upload (Supabase)", [["Configured", booleanText(d.supabase?.configured, "Configured", "Not configured")], ["Upload", booleanText(d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.supabase?.lastUploadedDay) : "No completed upload"]]],
+    ["Runs and faults", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Run waiting to start", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")], ["Rig lock", booleanText(d.system?.lcdLocked, "Locked", "Unlocked")]]],
+    ["ESP2 (pumps and valves)", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last reply", agoText(d.esp2?.lastResponseAgeMs)]]],
+    ["Nano (sensors)", [["Last reading", agoText(d.nano?.lastSampleAgeMs)], ["Air", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
+    ["Clock, SD card and power sensors", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")], ["Main battery INA226", v3Only(booleanText(d.peripherals?.mainInaOk, "In use", "Not in use"))], ["ACS758 fallback", v3Only(booleanText(d.peripherals?.batteryAdsOk, "OK", "Not OK"))], ["Solar INA226", v3Only(booleanText(d.peripherals?.solarSensorOk, "OK", "Not answering"))], ["Secondary INA226", v3Only(booleanText(d.peripherals?.secondaryBatterySensorOk, "OK", "Not answering"))]]],
     ["Battery switching", [["Boards powered from", v3Only(boardSupplyText())], ["Switching", v3Only(booleanText(liveData.system?.secondaryBattSwitching, "On", "Off in this firmware"))], ["Switch fault", v3Only(booleanText(liveData.system?.battSwitchFault, "Latched: inverter use blocked", "None"))], ["Reset strikes", v3Only(rawText(liveData.system?.battSwitchStrikes))], ["Backup mode", v3Only(booleanText(liveData.system?.backupEnabled, "On", "Off in this firmware"))], ["Backup state", v3Only(rawText(liveData.system?.backupState))]]],
-    ["GSM", [["SIM", booleanText(d.gsm?.simReady, "Ready", "Not ready")], ["Network", booleanText(d.gsm?.networkRegistered, "Registered", "Not registered")], ["Signal", gsmSignalText(d.gsm?.rssi)], ["Registration", GSM_REGISTRATION_TEXT[d.gsm?.creg] ?? rawText(d.gsm?.creg)], ["Last health age", formatAge(d.gsm?.lastHealthAgeMs)]]],
-    ["Power", [["Battery low", booleanText(d.power?.batteryLow, "Yes", "No")], ["Battery critical", booleanText(d.power?.batteryCritical, "Yes", "No")], ["Current", numberText(d.power?.batteryCurrent, 2, "A")], ["Power", numberText(d.power?.batteryPower, 1, "W")]]],
-    ["Actuator status", [["Relay feedback", d.actuator?.relayFeedback === "notReported" ? "Not reported by ESP1" : rawText(d.actuator?.relayFeedback)], ["Work order", booleanText(d.actuator?.workOrderActive, "Active", "Inactive")], ["Pump test", booleanText(d.actuator?.pumpTestActive, "Active", "Inactive")], ["Pump under test", rawText(d.actuator?.pumpUnderTest)]]]
+    ["SMS modem (GSM)", [["SIM", booleanText(d.gsm?.simReady, "Ready", "Not ready")], ["Network", booleanText(d.gsm?.networkRegistered, "Registered", "Not registered")], ["Signal", gsmSignalText(d.gsm?.rssi)], ["Registration", GSM_REGISTRATION_TEXT[d.gsm?.creg] ?? rawText(d.gsm?.creg)], ["Last checked", agoText(d.gsm?.lastHealthAgeMs)]]],
+    ["Battery", [["Battery low", booleanText(d.power?.batteryLow, "Yes", "No")], ["Battery critical", booleanText(d.power?.batteryCritical, "Yes", "No")], ["Current", numberText(d.power?.batteryCurrent, 2, "A")], ["Power", numberText(d.power?.batteryPower, 1, "W")]]],
+    ["Pumps and tests", [["Relay feedback", d.actuator?.relayFeedback === "notReported" ? "Not reported by ESP1" : rawText(d.actuator?.relayFeedback)], ["Work order", booleanText(d.actuator?.workOrderActive, "Active", "Inactive")], ["Pump test", booleanText(d.actuator?.pumpTestActive, "Active", "Inactive")], ["Pump under test", rawText(d.actuator?.pumpUnderTest)]]]
   ];
   if (!diagnosticsAvailable) {
     const message = document.createElement("p");
@@ -2109,7 +2706,7 @@ function explainNotSafelyIdle() {
   const state = liveData.system?.state || "";
   if (Boolean(d.fault?.held) || state === "EMERGENCY_STOP") return "a fault is currently held — see the fault banner above and choose a recovery";
   if (Boolean(d.system?.workOrderActive) || Boolean(d.system?.pendingRun)) return "a run is already in progress";
-  if (d.actuationsDisabled) return "actuations are currently disabled";
+  if (actuationsAreOff()) return "actuations are currently disabled";
   if (state && state !== "IDLE_STATE") return `the controller is not idle (reported state: ${state})`;
   return "a condition this dashboard cannot see directly (possibly a pump test running, the LCD menu open, or another session's Manual/Test hold) — check the Diagnostics tab or the LCD";
 }
@@ -2168,6 +2765,13 @@ function explainCommandDetail(detail) {
 // One place for turning ESP1's reply into words, for every panel that shows a command's outcome.
 function commandDetailText(command, fallback) {
   let text = explainCommandDetail(rawText(command.detail, fallback));
+  // ESP1 from before 5 Nov 2026 has no LCD_LOCK, so it gives every unknown command the same refusal.
+  if (command.type === "LCD_LOCK" && /^not a remotely safe control/.test(text)) {
+    return "this ESP1 firmware can't lock the rig from the website yet: it needs the update from 5 Nov 2026. Settings > Lock Screen on the LCD still works";
+  }
+  if (command.type === "LCD_LOCK" && /^someone is using the LCD menu/.test(text)) {
+    return "someone at the rig is using the LCD's menus, so ESP1 won't lock it now. Try again once they have finished";
+  }
   // New-F1 (audit): DIAG_SWEEP shares the same generic "not safely idle" wording as FORCE_RUN used
   // to (diagRemoteStart() has since been given specific reasons in the dev-tree firmware, but the
   // OLD flashed firmware's DIAG_SWEEP path -- and any other command that ever reuses this literal
@@ -2377,7 +2981,7 @@ function updateFaultBanner() {
   const state = String(f.state || liveData.system?.state || "");
   const held = Boolean(f.held);
   const stopped = state === "EMERGENCY_STOP";
-  const lockedOut = Boolean(d.actuationsDisabled);
+  const lockedOut = actuationsAreOff();
 
   // Nothing wrong -> no banner. A lockout is not a fault, but it must still be visible and
   // reversible, so it raises the banner in a calmer form.
@@ -2408,6 +3012,9 @@ function updateFaultBanner() {
   setText("faultKind", held ? "Held fault — awaiting your decision"
                      : stopped ? "Emergency stop active"
                      : "Actuations disabled");
+  // Kept with the banner's own update, which runs every second, rather than only with the controls.
+  const lockNote = document.getElementById("faultLockNote");
+  if (lockNote) lockNote.hidden = !rigLocked() || (!held && !stopped && !lockedOut);
   const latestText = String(f.code || "");
   if (!held) heldFaultCode = "";
   else if (HELD_FAULT_CODE.test(latestText)) heldFaultCode = latestText;
@@ -2421,7 +3028,7 @@ function updateFaultBanner() {
     ? `Reported ${rawText(f.at, "at an unknown time")}. ESP2 is paused with the actuator bank de-energised; pick how to continue.` + (faultExplain ? ` ${faultExplain}` : "") + faultNews
     : stopped
       ? "All actuators are off and ESP2 is unpowered. Returning to normal re-powers and re-validates ESP2 before anything runs."
-      : "Sensors, logging and telemetry are still running. Scheduled runs, pump exercises and forced runs are all blocked until actuations are re-enabled.");
+      : "Pumps and valves are switched off. Sensors, logging and this website keep running, but scheduled runs, pump exercises and forced runs are all blocked until they are switched back on.");
   setDeviceStatus("faultState", state || "UNKNOWN", held || stopped ? "danger" : "off");
 
   // The re-hold guard, surfaced rather than hidden: after repeated identical holds ESP1 steers
@@ -2443,8 +3050,6 @@ function updateFaultBanner() {
   if (estopBtn) estopBtn.hidden = !stopped || held;
   const enableBtn = document.getElementById("enableActBtn");
   if (enableBtn) enableBtn.hidden = !lockedOut;
-  const disableBtn = document.getElementById("disableActBtn");
-  if (disableBtn) disableBtn.hidden = lockedOut;
 }
 
 /* ---- Armed forced-run countdown ---------------------------------------------------------------
@@ -2606,123 +3211,6 @@ function minutesToHhmm(mins) {
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
 
-// Column Mode website parity: a read-only summary of what ESP1 ACTUALLY has stored for this column
-// right now, from live telemetry -- distinct from the edit form below it, which is write-only and
-// always defaults to "(unchanged)"/blank. Never invents a value: shows "Unavailable" field-by-field
-// exactly like every other live reading on this page when the snapshot hasn't reported it yet.
-function updateZoneConfigDisplay(zone) {
-  const el = document.getElementById(`cfgCurrent${zone.id}`);
-  if (!el) return;
-  const z = liveData.sensors?.zones?.[zone.id];
-  if (!z || !hasValue(z.enabled)) { el.textContent = "Current configuration: Unavailable"; return; }
-  const enabled = Boolean(z.enabled);
-  const mode = rawText(z.mode, "Unavailable");
-  const sched = z.schedMode === 1 ? `Manual ${minutesToHhmm(z.winStart)}-${minutesToHhmm(z.winEnd)}`
-              : z.schedMode === 0 ? `Auto ${minutesToHhmm(z.winStart)}-${minutesToHhmm(z.winEnd)}`
-              : "Unavailable";
-  const targets = ["targetN", "targetP", "targetK", "targetPH"].every(k => hasValue(z[k]))
-    ? `N ${z.targetN} / P ${z.targetP} / K ${z.targetK} ppm, pH ${z.targetPH}`
-    : "Unavailable";
-  el.textContent = `Current configuration: ${enabled ? "Enabled" : "Disabled"} — ${enabled ? mode : "n/a"} — ` +
-                    `Schedule: ${enabled ? sched : "n/a"} — Targets: ${enabled ? targets : "n/a"}`;
-}
-
-// One-click Auto / Irrigation-only / Off, mirroring the LCD's Column Mode screen exactly: mode is
-// null only for "Off", which -- like the LCD -- disables the column WITHOUT touching its stored
-// mode (COLUMN_ENABLED and col[c].mode are independent on ESP1; re-enabling later needs its own
-// click, same as the physical unit). Sends immediately through the exact same validated SET_COLUMN
-// command and approval gate every other control on this page already uses -- not a new command,
-// not a parallel path, just a one-step shortcut for the two dropdowns below it.
-function quickSetColumnMode(id, mode) {
-  const result = document.getElementById(`cfgResult${id}`);
-  const show = (text, error = false) => {
-    if (!result) return;
-    result.textContent = text;
-    result.className = `control-result${error ? " error" : ""}`;
-  };
-  if (mode && !confirmEnableColumn(id)) { show("Nothing was sent."); return; }
-  const payload = { col: id, enabled: mode ? 1 : 0 };
-  if (mode) payload.mode = mode;
-  sendFromPanel(show, "SET_COLUMN", payload);
-}
-
-// ESP1's column list is editable from here, but ESP2's is compiled into its firmware. Turning on a column that
-// ESP2 has off makes ESP2 refuse every run for it: ESP1 raises COL_MISMATCH (a Major alert and SMS) and skips
-// the column for the day. Only asked when ESP1 reports the column as off, so re-sending an enabled one is quiet.
-function confirmEnableColumn(id) {
-  if (liveData.sensors?.zones?.[id]?.enabled !== false) return true;
-  return confirm(`ESP1 reports column ${id} as disabled. Turn it on only if it is wired and plumbed, and ESP2's firmware has it enabled too: ESP2's column list is compiled in, and if it disagrees, ESP1 raises COL_MISMATCH and skips the column for the day. Enable column ${id}?`);
-}
-
-function submitColumnConfig(id) {
-  const result = document.getElementById(`cfgResult${id}`);
-  const show = (text, error = true) => {
-    if (!result) return;
-    result.textContent = text;
-    result.className = `control-result${error ? " error" : ""}`;
-  };
-  // Only send what was actually filled in: the firmware treats absent fields as "leave unchanged",
-  // so a partial edit cannot clobber the rest of the column's configuration.
-  const payload = { col: id };
-  const mode = document.getElementById(`cfgMode${id}`)?.value;
-  if (mode) payload.mode = mode;
-  const en = document.getElementById(`cfgEnabled${id}`)?.value;
-  if (en !== "") payload.enabled = en === "1";
-  const sm = document.getElementById(`cfgSched${id}`)?.value;
-  if (sm !== "") payload.schedMode = Number(sm);
-  // Window fields only apply -- and are only sent -- while Manual window is the value about to be
-  // submitted; a leftover value from an earlier edit must not sneak in once switched back to
-  // Automatic (or left at "(unchanged)"), matching updateWindowVisibility()'s identical "1" check.
-  if (sm === "1") {
-    const ws = hhmmToMinutes(document.getElementById(`cfgWinStart${id}`)?.value);
-    const we = hhmmToMinutes(document.getElementById(`cfgWinEnd${id}`)?.value);
-    if (ws !== null) payload.winStart = ws;
-    if (we !== null) payload.winEnd = we;
-    // ESP1 refuses both: the window can't be empty, and it has no support for running past midnight.
-    if (ws !== null && we !== null && ws >= we) { show("Window start must be earlier than window end, within the same day. Nothing was sent."); return; }
-  }
-  // Bounds mirror the firmware's own applyColumnTarget() (0-2000 ppm, pH 3-9) -- checked here too so
-  // a mistyped value is refused before it round-trips to ESP1 and back, matching the pattern
-  // submitForceRun() already uses for its own fields. The HTML min/max attributes alone never fire
-  // here (this is a plain button, not a form submit), so this is the only real client-side check.
-  const nums = {
-    targetN:  { el: `cfgN${id}`,  label: "N",  min: 0, max: 2000 },
-    targetP:  { el: `cfgP${id}`,  label: "P",  min: 0, max: 2000 },
-    targetK:  { el: `cfgK${id}`,  label: "K",  min: 0, max: 2000 },
-    targetPH: { el: `cfgPH${id}`, label: "pH", min: 3, max: 9 }
-  };
-  for (const [key, { el, label, min, max }] of Object.entries(nums)) {
-    const raw = document.getElementById(el)?.value;
-    if (raw === "" || raw === undefined) continue;
-    const v = Number(raw);
-    if (!Number.isFinite(v)) { show(`${label} is not a number. Nothing was sent.`); return; }
-    if (v < min || v > max) { show(`${label} must be ${min}-${max}. Nothing was sent.`); return; }
-    payload[key] = v;
-  }
-  if (Object.keys(payload).length < 2) { show("Nothing to change — fill in at least one field."); return; }
-  if (payload.enabled === true && !confirmEnableColumn(id)) { show("Nothing was sent.", false); return; }
-  sendFromPanel(show, "SET_COLUMN", payload);
-}
-
-// Reflects each zone's own most recent SET_COLUMN outcome inline, under its own "Send to ESP1"
-// button -- previously that message froze at "Sending to ESP1..." forever, so the real outcome
-// (accepted/completed/rejected, and why) only ever showed up in the separate, shared Command History
-// panel below. Mirrors renderPulseResult()'s pattern: re-scan commandData for the newest match each
-// time the commands listener fires, keyed on both type and the column letter so three zones' results
-// don't collide.
-function renderColumnCommandResults() {
-  activeZones.forEach(zone => {
-    const result = document.getElementById(`cfgResult${zone.id}`);
-    if (!result) return;
-    const latest = commandData
-      .filter(c => c.type === "SET_COLUMN" && c.payload && c.payload.col === zone.id)
-      .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
-    if (!latest) return;
-    result.textContent = `${rawText(latest.status, "pending")} — ${commandDetailText(latest, "waiting for ESP1")}`;
-    result.className = `control-result${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
-  });
-}
-
 // The same for the panels that send one command type. Without this they froze at "Sending to ESP1…",
 // and the real outcome only appeared in Command status on another tab.
 const PANEL_COMMAND_RESULTS = [
@@ -2734,12 +3222,16 @@ const PANEL_COMMAND_RESULTS = [
   ["SET_CLOCK", "sysClockResult"],
   ["SET_THRESH", "sysThreshResult"],
   ["RESTORE_DEFAULTS", "sysRestoreResult"],
-  ["CLEAR_BATT_SWITCH", "sysBattSwitchResult"]
+  ["CLEAR_BATT_SWITCH", "sysBattSwitchResult"],
+  ["REBOOT", "rebootResult"],
+  ["LCD_LOCK", "sysLockResult"],
+  [["ENABLE_ACTUATIONS", "DISABLE_ACTUATIONS"], "actResult"]
 ];
 function renderPanelCommandResults() {
-  PANEL_COMMAND_RESULTS.forEach(([type, id]) => {
+  PANEL_COMMAND_RESULTS.forEach(([types, id]) => {
     const result = document.getElementById(id);
-    const latest = latestCommandOfType(type);
+    const latest = [types].flat().map(latestCommandOfType).filter(Boolean)
+      .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
     if (!result || !latest) return;
     result.textContent = `${rawText(latest.status, "pending")} — ${commandDetailText(latest, "waiting for ESP1")}`;
     result.className = `control-result${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
@@ -2955,24 +3447,24 @@ document.querySelectorAll("#faultRecovery button[data-recover]").forEach(btn =>
   btn.addEventListener("click", () => queueCommand("RECOVER", { action: btn.dataset.recover }, { emergency: true })));
 document.getElementById("estopRecoverBtn")?.addEventListener("click", () => queueCommand("ESTOP_RECOVER", {}, { emergency: true }));
 
-// These controls exist twice -- in the fault banner and in the Controls tab -- because the banner is
-// hidden while the system is healthy, which is exactly when you might want to disable actuations or
-// reboot a module. One handler each, bound to both ids, so the two copies cannot drift.
+// One handler for every copy of a control, so the copies cannot drift.
 function bindAll(ids, handler) {
   ids.forEach(id => document.getElementById(id)?.addEventListener("click", handler));
 }
-bindAll(["enableActBtn", "enableActBtn2"],  () => queueCommand("ENABLE_ACTUATIONS", {}, { emergency: true }));
-bindAll(["disableActBtn", "disableActBtn2"], () => {
-  if (!confirm("Disable actuations? Any run in progress is stopped immediately, and nothing will run again until you re-enable. Monitoring continues.")) return;
-  queueCommand("DISABLE_ACTUATIONS", {}, { emergency: true });
-});
-bindAll(["rebootNanoBtn", "rebootNanoBtn2"], () => queueCommand("REBOOT", { target: "nano" }, { emergency: true }));
-bindAll(["rebootEsp2Btn", "rebootEsp2Btn2"], () => queueCommand("REBOOT", { target: "esp2" }, { emergency: true }));
-bindAll(["rebootEsp1Btn", "rebootEsp1Btn2"], () => {
+// Pumps and valves: the switch on Controls, and the banner's way back on during a lockout. Both send the same
+// commands. (Round 2, 2026-11-05: the banner's copies of Disable and the three restarts were dropped. They aren't
+// ways out of what the banner reports, and Controls and the always-visible Emergency stop cover them.)
+document.getElementById("actSwitch")?.addEventListener("click", toggleActuations);
+document.getElementById("enableActBtn")?.addEventListener("click", () => queueCommand("ENABLE_ACTUATIONS", {}, { emergency: true }));
+// Restarts are not freshness-gated (emergency: true): a board that stopped answering is why they're used.
+document.getElementById("rebootNanoBtn2")?.addEventListener("click", () => sendFromPanel(resultLine("rebootResult"), "REBOOT", { target: "nano" }, { emergency: true }));
+document.getElementById("rebootEsp2Btn2")?.addEventListener("click", () => sendFromPanel(resultLine("rebootResult"), "REBOOT", { target: "esp2" }, { emergency: true }));
+document.getElementById("rebootEsp1Btn2")?.addEventListener("click", () => {
   // ESP1 owns the Firebase link, so this one goes quiet for ~15 s before it comes back.
-  if (!confirm("Reboot ESP1? The dashboard will lose contact for about 15 seconds while it restarts.")) return;
-  queueCommand("REBOOT", { target: "esp1" }, { emergency: true });
+  if (!confirm("Restart ESP1? This website loses contact for about 15 seconds while it restarts.")) return;
+  sendFromPanel(resultLine("rebootResult"), "REBOOT", { target: "esp1" }, { emergency: true });
 });
+["lockSwitch", "sysLockSwitch", "unlockBtn"].forEach(id => document.getElementById(id)?.addEventListener("click", toggleRigLock));
 document.getElementById("ackFaultBtn")?.addEventListener("click", () => {
   faultAckLocalUntil = Date.now() + 120000;
   queueCommand("ACK_FAULT", {}, { emergency: true });
@@ -2997,6 +3489,18 @@ document.getElementById("sysClockSendBtn")?.addEventListener("click", () => {
   if (y < RTC_YEAR_MIN || y > RTC_YEAR_MAX) { show(`ESP1 only accepts a year from ${RTC_YEAR_MIN} to ${RTC_YEAR_MAX}. Nothing was sent.`); return; }
   if (!confirm(`Set ESP1's clock to ${dateVal} ${timeVal}? This affects every column's irrigation schedule.`)) return;
   sendFromPanel(show, "SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi }, { operatorOnly: true });
+});
+
+// Fills the date and time with the current time, from Firebase's clock rather than this device's (a PC clock 18 hours
+// out has happened on this project), shown in this device's time zone, which is the rig's.
+document.getElementById("sysClockNowBtn")?.addEventListener("click", () => {
+  const now = new Date(serverNow());
+  const pad = value => String(value).padStart(2, "0");
+  const date = document.getElementById("sysClockDate");
+  const time = document.getElementById("sysClockTime");
+  if (date) date.value = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  if (time) time.value = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  resultLine("sysClockResult")("Filled in the time now. Check it, then press Set ESP1's clock.");
 });
 
 document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
@@ -3038,12 +3542,10 @@ document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () =
   sendFromPanel(show, "RESTORE_DEFAULTS", {}, { operatorOnly: true });
 });
 
-// Read-only: current device time/RTC health (for Set Clock) and LCD Lock status. No write path is
-// offered for the lock -- see the info tooltip on that panel for why.
+// ESP1's own time and clock health, for Set Clock. The rig lock panel is drawn by renderRigLock().
 function updateSystemTab() {
   setText("sysClockCurrent", deviceTimeText(liveData.system?.deviceTime));
   setText("sysClockRtcOk", booleanText(liveData.system?.rtcOk, "OK", "Not OK"));
-  setText("sysLockStatus", booleanText(liveData.diagnostics?.system?.lcdLocked, "Locked", "Unlocked"));
   const system = liveData.system || {};
   setText("sysBattSwitching", v3Only(booleanText(system.secondaryBattSwitching, "On", "Off in this firmware")));
   setText("sysBattSwitchFault", v3Only(booleanText(system.battSwitchFault, "Latched: all inverter use is blocked", "None")));
@@ -3089,6 +3591,8 @@ function writeManualHold(want) {
   // of role: it only ever hands control back to automation, which must never be blocked by a
   // permission check.
   if (want && (!isApprovedUser() || !canAccessPrivilegedTabs())) return Promise.resolve(false);
+  // The rules refuse asking for the hold while the rig is locked; releasing it is always allowed.
+  if (want && rigLocked()) return Promise.resolve(false);
   // C-H4/R workaround (audit): the CURRENTLY-FLASHED ESP1 firmware parses this into a 32-bit `long`
   // (`long seq = doc["seq"] | -1`). A raw Date.now() (~1.7e12) doesn't fit a 32-bit long, so
   // ArduinoJson's `|` silently falls back to -1 on EVERY poll -- seq != webManualSeq then never
@@ -3117,7 +3621,7 @@ function writeTestHold(want, bit) {
   // Same acquire-only gate as writeManualHold(): only privileged-tier accounts may START a hold;
   // releasing always goes through regardless of tier, so a lost grant (e.g. an expiring temp-access
   // window) can never leave a relay stuck energised because the release write itself got refused.
-  if (want && (!isApprovedUser() || !canAccessPrivilegedTabs())) return Promise.resolve(false);
+  if (want && (!isApprovedUser() || !canAccessPrivilegedTabs() || rigLocked())) return Promise.resolve(false);
   const seq = Date.now();
   return db.ref("irrigation/testHold").set({ seq, bit, want })
     .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
@@ -3249,6 +3753,7 @@ function reportHoldResult(target, ms, stoppedAtCap) {
 }
 
 function requestManualHold() {
+  if (rigLocked()) return;                    // the rules refuse it; renderManualHold() says why
   const answer = liveData.diagnostics?.webManual?.state;
   mtStaleAnswer = answer === "refused" || answer === "revoked" ? answer : null;
   mtAskedAt = serverNow();
@@ -3303,6 +3808,7 @@ function renderManualHold() {
     // request is silently never granted (writeManualHold() no-ops), so without this it was
     // indistinguishable from "the page is broken" or "ESP1 is offline."
     else if (!isApprovedUser()) note.textContent = "Your account is awaiting operator approval before it can use this control.";
+    else if (rigLocked()) note.textContent = "The rig is locked, so nothing on this tab can be used. Unlock it first: operators, and accounts with 1-hour access or Sub-operator, can.";
     // Checked ahead of every state branch, including "held" -- a stale snapshot can't be trusted to
     // mean the rig is still there, and telling the operator "Manual mode active" from stale data would
     // be actively misleading.
@@ -3312,7 +3818,7 @@ function renderManualHold() {
     else if (state === "revoked") note.textContent = "The rig operator took control at the LCD.";
     else note.textContent = "Requesting manual control from the rig…";
     // Asking is the normal first step, not an error.
-    const refusedOrUnavailable = !isApprovedUser() || !deviceIsFresh() || state === "refused" || state === "revoked";
+    const refusedOrUnavailable = !isApprovedUser() || rigLocked() || !deviceIsFresh() || state === "refused" || state === "revoked";
     note.className = refusedOrUnavailable ? "control-result error" : state === "held" ? "field-note" : "control-result";
   }
   // Proceed reveals the screen regardless of hold state (2026-09-10 revision) -- previously this
@@ -3333,10 +3839,20 @@ function renderManualHold() {
   // 1h temp grant, or a persistent Sub-operator grant).
   if (proceed) {
     const privileged = canAccessPrivilegedTabs();
-    proceed.disabled = !privileged;
-    proceed.title = privileged ? "" : !isApprovedUser()
+    proceed.disabled = !privileged || rigLocked();
+    proceed.title = !privileged ? (!isApprovedUser()
       ? "Your account is awaiting operator approval before it can use this control."
-      : "This control is limited to the main/creator operator account, or an account with an active temporary/Sub-operator grant.";
+      : "This control is limited to the main/creator operator account, or an account with an active temporary/Sub-operator grant.")
+      : rigLocked() ? LOCKED_TITLE : "";
+  }
+  // Locked while in here (by anyone, here or at the rig): the rules refuse the keep-alives, so hand the rig back to
+  // automatic now rather than when the lease runs out, and go back to the gate, which says why.
+  if (rigLocked() && (mtArmed || mtHoldTimer)) {
+    if (mtArmed) {
+      setManualTestArmed(false);
+      if (onTab) setCommandStatus("The rig was locked, so Manual/Test closed and the rig went back to automatic.", "error");
+    }
+    releaseManualHold();
   }
   // Revoked or refused while already inside: drop the controls and stop re-requesting. Deliberately
   // NOT "state !== held" any more (2026-09-10) -- Proceed can now reveal #mtControls with state still
@@ -3389,7 +3905,7 @@ function setManualTestArmed(on) {
   // operatorOnly, writeTestHold()'s own check -- independently re-verifies privilege client- AND
   // server-side regardless), but closing it here matches the same "a function invoked manually must
   // still be rejected" standard already applied to Proceed and the tab-click handler.
-  if (on && !canAccessPrivilegedTabs()) return;
+  if (on && (!canAccessPrivilegedTabs() || rigLocked())) return;
   mtArmed = on;
   const gate = document.getElementById("mtGate");
   const body = document.getElementById("mtControls");
@@ -3498,6 +4014,7 @@ document.getElementById("mtProceed")?.addEventListener("click", () => {
   const state = manualHoldState();
   if (!mtHoldTimer || state === "refused" || state === "revoked") requestManualHold();
   setManualTestArmed(true);
+  renderManualHold();        // say what is happening now, not at ESP1's next report
 });
 document.getElementById("mtBack")?.addEventListener("click", () => {
   setManualTestArmed(false);
@@ -3629,6 +4146,12 @@ function openInfoPopoverFor(icon) {
   if (infoOpenerEl && infoOpenerEl !== icon) infoOpenerEl.setAttribute("aria-expanded", "false");
   pop.querySelector(".info-popover-title").textContent = icon.dataset.infoTitle || "";
   pop.querySelector(".info-popover-text").textContent = icon.dataset.infoText || "";
+  // The icon's few words, and a way to the Help entry that explains it in full, when there is one.
+  const more = pop.querySelector(".info-popover-more");
+  if (more) {
+    more.hidden = !icon.dataset.help;
+    more.dataset.help = icon.dataset.help || "";
+  }
   pop.hidden = false;
   icon.setAttribute("aria-expanded", "true");
   infoOpenerEl = icon;
@@ -3666,6 +4189,43 @@ function initInfoIcons() {
   document.addEventListener("keydown", event => { if (event.key === "Escape") closeInfoPopover(); });
   window.addEventListener("resize", closeInfoPopover);
   document.querySelector("#infoPopover .info-popover-close")?.addEventListener("click", closeInfoPopover);
+  document.querySelector("#infoPopover .info-popover-more")?.addEventListener("click", event => {
+    const entry = event.currentTarget.dataset.help;
+    closeInfoPopover();
+    if (entry) openHelpEntry(entry);
+  });
+}
+
+/* Help tab -------------------------------------------------------------------------------------------
+ * Static text in index.html: how the rig decides, how to do each task, and what every word means. Each
+ * entry is a <details> with an id, so an info icon's "Read more in Help" can open the right one. */
+function filterHelp(query) {
+  const words = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let shown = 0;
+  document.querySelectorAll("#help .help-item").forEach(item => {
+    const match = words.every(word => item.textContent.toLowerCase().includes(word));
+    item.hidden = !match;
+    if (match) shown++;
+    item.open = words.length > 0 && match;     // a search opens what it found; clearing it folds them back
+  });
+  document.querySelectorAll("#help .help-group").forEach(group => {
+    group.hidden = !group.querySelector(".help-item:not([hidden])");
+  });
+  const none = document.getElementById("helpNoMatch");
+  if (none) none.hidden = !words.length || shown > 0;
+}
+document.getElementById("helpSearch")?.addEventListener("input", event => filterHelp(event.target.value));
+
+function openHelpEntry(entryId) {
+  const entry = document.getElementById(entryId);
+  if (!entry) return;
+  const search = document.getElementById("helpSearch");
+  if (search?.value) { search.value = ""; filterHelp(""); }   // a leftover search could be hiding it
+  document.querySelector('.tab[data-view="help"]')?.click();
+  entry.open = true;
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  entry.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
+  entry.querySelector("summary")?.focus({ preventScroll: true });
 }
 
 renderZonesUI();
