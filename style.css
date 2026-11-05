@@ -148,6 +148,25 @@ body.takeover > .sidebar, body.takeover > .main-content { display: none; }
 .progress-layout > div { display: grid; gap: 7px; padding: 14px; border-radius: 9px; background: var(--surface-muted); }
 .progress-layout strong { line-height: 1.35; }
 
+/* Current run with Up next beside it (6 Nov 2026), one above the other on narrower screens. The run panel is a size
+   container so its four boxes go two by two when it is narrow; the phone rules further down still win below 600 px. */
+.run-row { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap: 0 22px; align-items: start; }
+.run-panel { container-type: inline-size; }
+@container (max-width: 700px) { .progress-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.next-panel .hint { margin-bottom: 12px; }
+.next-status { margin: 0 0 14px; padding: 9px 12px; border-left: 3px solid var(--warning); border-radius: 6px; background: var(--surface-muted); font-size: .86rem; line-height: 1.45; }
+.next-status[hidden] { display: none; }
+.next-list { display: grid; gap: 16px; }
+.next-day h4 { margin: 0 0 4px; color: var(--muted); font-size: .8rem; font-weight: 600; }
+.next-day ul { margin: 0; padding: 0; list-style: none; }
+.next-day li { display: grid; grid-template-columns: 7.2rem minmax(0, 1fr); gap: 2px 12px; padding: 9px 0; border-top: 1px solid var(--border); }
+.next-day li:first-child { border-top: 0; }
+.next-time { font-variant-numeric: tabular-nums; font-weight: 600; }
+.next-day li.is-open .next-time, .next-day li.is-forced .next-time { color: var(--accent); }
+.next-what { display: grid; gap: 2px; min-width: 0; }
+.next-note { color: var(--muted); font-size: .84rem; line-height: 1.4; }
+.next-none, .next-foot { margin: 0; color: var(--muted); font-size: .86rem; }
+
 .command-status { margin: 17px 0 12px; padding: 11px 13px; border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 8px; line-height: 1.45; }
 .command-status.pending { border-left-color: var(--warning); }
 .command-status.error { border-left-color: var(--danger); color: var(--danger); }
@@ -326,6 +345,10 @@ button.danger { min-width: 200px; border-color: var(--danger); background: var(-
 .estop-bar { position: sticky; z-index: 5; top: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin: -10px 0 14px; padding: 10px 0; background: var(--bg); }
 .estop-bar[hidden] { display: none; }
 button.estop-top { min-width: 0; width: auto; }
+/* While ESP1 isn't reporting the stop button is off (6 Nov 2026), and this says how else to stop the rig. */
+.estop-top-wrap { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 12px; }
+.estop-bar-note { max-width: 44ch; color: var(--danger); font-size: .86rem; line-height: 1.35; text-align: right; }
+.estop-bar-note[hidden] { display: none; }
 
 /* The rig lock (2026-11-05): ESP1's own Lock Screen flag, so this switch and the LCD always agree. Locked is
    the "on" position, drawn in the warning colour rather than the column switches' green: a lock is a
@@ -475,6 +498,10 @@ dialog ul { padding-left: 22px; line-height: 1.65; }
 dialog a { color: var(--accent); }
 .closeDialog { float: right; min-height: 34px; padding: 5px 10px; }
 
+@media (max-width: 1260px) {
+  .run-row { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 900px) {
   .sidebar { position: static; width: auto; min-height: auto; padding: 18px; border-right: 0; border-bottom: 1px solid var(--border); }
   .sidebar > div:first-child { display: none; }
@@ -488,6 +515,8 @@ dialog a { color: var(--accent); }
 @media (max-width: 600px) {
   .topbar, .section-heading, .panel-heading, .zone-header, .emergency-panel { flex-direction: column; }
   .estop-bar { justify-content: flex-start; }
+  .estop-top-wrap { width: 100%; justify-content: flex-start; }
+  .estop-bar-note { text-align: left; }
   .lock-banner button, .action-list button { width: 100%; }
   .topbar-actions { justify-content: flex-start; }
   .snapshot-age { white-space: normal; }

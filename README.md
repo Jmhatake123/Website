@@ -27,14 +27,20 @@ Firmware source: https://github.com/JKyle-N/Smart-Irrigation
   and the buttons on the rig's LCD together. It is ESP1's own Lock Screen flag, so locking or unlocking at
   the rig does the same to the website. Automatic watering carries on; Emergency stop, switching pumps and
   valves off and cancelling a forced run still work. Operators and privileged accounts can lock and unlock.
-- **Live Dashboard** — readings grouped by what they're about (water, air and light, main battery, solar
-  and the second battery), the current run with its pumps, and the recent commands with ESP1's replies,
-  read straight from ESP1's telemetry snapshot.
+- **Live Dashboard** — a drawing of the rig with its tanks, pumps and columns as ESP1 reports them,
+  readings grouped by what they're about (water, air and light, main battery, solar and the second
+  battery), the current run with its pumps, **Up next** beside it (each column's watering times today and
+  tomorrow with dates, a forced run counting down, each pump's next exercise), and the recent commands with
+  ESP1's replies, read straight from ESP1's telemetry snapshot.
 - **Zone Profiles** — one card per column: its soil readings (compared with a crop profile you pick),
-  what ESP1 does with it in plain words (what it does, when it runs, its nutrient targets), an ON/OFF
-  switch, and **Edit settings**, which sends ESP1 only what you changed and shows the change first.
+  what ESP1 does with it in plain words (what it does, when it runs, its nutrient targets), what it got
+  today, an ON/OFF switch, a website-only name, and **Edit settings** (up to 4 watering times a day), which
+  sends ESP1 only what you changed and shows the change first. Below them, **Crop profiles**: the built-in
+  crops and your own, each with its growth stages.
 - **Controls** — emergency stop, a Pumps and valves ON/OFF switch (ESP1's actuation lockout), a forced
-  run ("Water a column now") with its countdown and Cancel, and restarting one of the three boards.
+  run ("Water a column now") with its countdown and Cancel, and restarting one of the three boards. The
+  stops are only sent while ESP1 is reporting: a stop is never left waiting in the queue to fire later,
+  so while ESP1 is silent the page says to use the physical cutoff, MODE + BACK on the unit, or SMS STOP,ALL.
 - **Manual/Test** *(privileged accounts)* — direct hardware control: a timed test, a hold-to-run test,
   the pump exercise (setting and run-now), and a flow meter check, all under ESP1/ESP2's own dead-man
   timers and safety limits.
@@ -42,18 +48,20 @@ Firmware source: https://github.com/JKyle-N/Smart-Irrigation
   item by item, sensor readings before conversion, an on-demand ESP2 sensor sweep, and recent events.
 - **System** *(privileged accounts)* — remote versions of the LCD's Settings menu: the rig lock, clock,
   watering thresholds, battery-switch fault, restore factory settings.
-- **User Management** *(operators only)* — accounts grouped by status, waiting-for-approval first;
-  approve, reject, restrict, or block them; give 1-hour access or make a Sub-operator; see each
-  account's online/offline state and recent activity in plain words.
+- **User Management** *(operators only)* — the requests waiting for an answer, then accounts grouped by
+  status, waiting-for-approval first; approve, reject, restrict, or block them; give or take back control
+  and zone editing; give 1-hour access or make a Sub-operator; see each account's online/offline state and
+  recent activity in plain words.
 - **Help** — how the rig decides when to water and add nutrients, step-by-step guides for each task,
   and a definition of every word the site uses, searchable. The small "i" icons across the site give
   the short version and link to the matching Help entry.
 
-Access is tiered — pending / approved / restricted / rejected / blocked, plus two fixed operator
-accounts and an optional temporary or Sub-operator elevation on top of "approved" — and enforced
-server-side by `firebase-rules.json`, not just by what the page shows or hides. Only approved accounts
-and operators can see readings: pending, restricted, rejected and blocked accounts can't, and an
-account restricted while its page is open loses them immediately.
+Access is tiered — pending / approved / restricted / rejected / blocked, plus the operator accounts, two
+separate grants an approved account can ask for (control, and zone editing), and an optional temporary or
+Sub-operator elevation on top of "approved" — and enforced server-side by `firebase-rules.json`, not just
+by what the page shows or hides. Only approved accounts and operators can see readings: pending,
+restricted, rejected and blocked accounts see only a page to ask for access, and an account restricted
+while its page is open loses them immediately.
 
 ## Tech stack
 
@@ -80,7 +88,7 @@ CIT-U EE Smart Irrigation / Pinamungahan Automated Farm
 | Node | Written by | Purpose |
 |---|---|---|
 | `irrigation/live` | ESP1 only | Telemetry snapshot, faults, event log, `diagnostics.webManual` |
-| `irrigation/commands/$id` | page (queued) → ESP1 (status) | One-shot commands; ESP1 validates every payload. The page may also change a row from `queued` to `withdrawn` (not `EMERGENCY_STOP`, `DISABLE_ACTUATIONS` or `CANCEL_FORCE`), because ESP1 runs a queued row however old it is. While `irrigation/live/diagnostics/system/lcdLocked` is true (the rig lock), a new row must be `EMERGENCY_STOP`, `DISABLE_ACTUATIONS`, `CANCEL_FORCE`, `ACK_FAULT` or `LCD_LOCK`. `LCD_LOCK` needs the privileged tier, and an optional `byName` must be the sender's own name (or `Operator` for an operator account). Since 2026-11-05 a new row needs `controlAccess` (every type but `SET_COLUMN`, the stops included) or `zoneEditAccess` (`SET_COLUMN`), or the privileged tier; withdrawing follows the same split. `SET_COLUMN` may carry `windows` (2026-11-05): every own watering time of the column as `[[start, end], ...]`, 1 to 4 pairs of minutes 0–1439 (the rule checks the shape and range; ESP1 checks the order). The page sends it only to firmware whose snapshot reports each zone's `runs`, and `winStart`/`winEnd` to older firmware |
+| `irrigation/commands/$id` | page (queued) → ESP1 (status) | One-shot commands; ESP1 validates every payload. The page may also change a row from `queued` to `withdrawn` (not `EMERGENCY_STOP`, `DISABLE_ACTUATIONS` or `CANCEL_FORCE`), because ESP1 runs a queued row however old it is. While `irrigation/live/diagnostics/system/lcdLocked` is true (the rig lock), a new row must be `EMERGENCY_STOP`, `DISABLE_ACTUATIONS`, `CANCEL_FORCE`, `ACK_FAULT` or `LCD_LOCK`. `LCD_LOCK` needs the privileged tier, and an optional `byName` must be the sender's own name (or `Operator` for an operator account). Since 2026-11-05 a new row needs `controlAccess` (every type but `SET_COLUMN`, the stops included) or `zoneEditAccess` (`SET_COLUMN`), or the privileged tier; withdrawing follows the same split. `SET_COLUMN` may carry `windows` (2026-11-05): every own watering time of the column as `[[start, end], ...]`, 1 to 4 pairs of minutes 0–1439 (the rule checks the shape and range; ESP1 checks the order). The page sends it only to firmware whose snapshot reports each zone's `runs`, and `winStart`/`winEnd` to older firmware. Since 2026-11-06 a new `EMERGENCY_STOP`, `DISABLE_ACTUATIONS` or `CANCEL_FORCE` row is refused when `irrigation/live/meta/updatedAt` is more than 3 minutes old (ESP1 isn't reporting), so a stop never waits in the queue to fire hours later |
 | `irrigation/config/zones` | page only | Each column's website name (`name`, 1 to 60 characters, checked by the rule; the page allows 40), the crop and stage it is growing, and its saved setups (`savedSettings`, whose `windows` hold every watering time as `{from, to}`). Written by accounts with zone editing (or Sub-operator, 1-hour access, operators) since 2026-11-05; every approved account reads it. Dashboard-side notes — the numeric targets reach the rig through `SET_COLUMN`, not from here, and ESP1 keeps its own column names (LCD, SMS) |
 | `irrigation/config/crops/$crop` | page only, privileged tier | The crop library's changes (2026-11-05): `{name, variety?, notes?, stages: {$stage: {name, order, n, p, k, ph, ec, moisture, days?, notes?}}, updatedAt, updatedBy}` replaces the built-in crop of the same key or adds a new one; `{removed: true}` hides a built-in until it is restored (deleting the key restores it). Written by operators and the privileged tier (1-hour access, Sub-operator), read by every approved account. The rule checks every value (N/P/K 0–2000 ppm, pH 3–9, EC 0–20 mS/cm, moisture 0–100 %, days 0–365, `order` 0–19; the page keeps a crop to 10 stages) and refuses any other field. ESP1 never reads it |
 | `irrigation/manual` | page only | `{seq, want}` — the Manual/Test mutual-exclusion hold. ESP1 reads it and answers in `live` under `diagnostics.webManual`. Acquiring (`want:true`) requires the privileged tier (operator/temp-access/sub-operator, see `users/$uid` below) and an unlocked rig; releasing (`want:false`) is open to anyone signed in |

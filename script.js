@@ -332,6 +332,19 @@ function deviceIsFresh() {
   return Boolean(stamp) && serverNow() - stamp < Math.max(refreshMs * 2 + 15000, 90000);
 }
 
+// The stops (2026-11-06, the owner's choice): Emergency stop, switching pumps and valves off, and Cancel forced run
+// are never queued while ESP1 isn't reading the queue. A stop waiting there fires whenever ESP1 next reads it, which
+// can be hours later and into a different situation, while the page looks as if the rig has been told. So while ESP1
+// isn't reporting, or this browser has lost Firebase, those buttons are off and say how else to stop the rig. The
+// rules refuse a stop once ESP1's last report is over 3 minutes old; deviceIsFresh() gives up within 2.25 minutes
+// (ESP1 reports at least once a minute), so the page always says so first.
+const STOP_ELSEWHERE = "Use the physical cutoff, MODE + BACK on the unit, or SMS STOP,ALL.";
+function stopOfflineReason() {
+  if (!firebaseConnected) return `This browser is offline, so a stop can't be sent from here. ${STOP_ELSEWHERE}`;
+  if (!deviceIsFresh()) return `ESP1 isn't reporting, so a stop can't be sent from here. ${STOP_ELSEWHERE}`;
+  return "";
+}
+
 // The firmware publishes no version number, so its generation is inferred from a field that only
 // web v.3 sends, and sends unconditionally (system.boardSupply in firebaseUploadLive).
 function isV3Firmware() {
@@ -720,17 +733,19 @@ function renderActuationSwitch() {
   if (actSentKey && !waiting) actSentKey = null;
   setText("actState", waiting ? "Sending…" : !known ? "--" : off ? "Off" : "On");
   setText("actStateText", !known ? "Waiting for ESP1's report."
-    : off ? "Off: nothing runs, not even the schedule, until someone switches it back on. Readings and logging carry on. At the rig: Settings, Enable Actuations."
-    : "On: the schedule, forced runs, exercises and tests can run. Switch off before maintenance to stop everything at once.");
+    : off ? "Off: nothing runs until someone switches it back on."
+    : "On: the schedule, forced runs and tests can run.");
   if (!toggle) return;
   toggle.setAttribute("aria-checked", String(known && !off));
   const signedIn = currentUserIsSignedIn();
-  // Off is a stop: it works while the rig is locked and on a stale report. Back on is not, while locked.
+  // Off is a stop: it works while the rig is locked, but like every stop it is never queued while ESP1 isn't
+  // reporting (stopOfflineReason()). Back on is not a stop, so the rig lock holds it.
   const block = !signedIn ? "Sign in to use the system controls."
     : !hasControlAccess() ? (isApprovedUser() ? NO_CONTROL_TITLE : "Your account is awaiting operator approval before it can use this control.")
     : !known ? "ESP1 hasn't reported this yet."
     : waiting ? "Waiting for ESP1."
-    : off && rigLocked() ? LOCKED_TITLE
+    : !off ? stopOfflineReason()
+    : rigLocked() ? LOCKED_TITLE
     : "";
   toggle.disabled = Boolean(block);
   toggle.title = block;
@@ -832,18 +847,29 @@ function syncControlAvailability() {
     }
   }
 
-  // Emergency stop is intentionally independent of live-data freshness and the normal cooldown -- but not of
-  // Control access: an account without it gets no stop button at all (the owner's choice, 5 Nov 2026), and the
-  // rules refuse its EMERGENCY_STOP too. There are two copies: the Controls panel, and the bar on every tab.
+  // Emergency stop ignores the rig lock and the normal cooldown, but not Control access: an account without it gets
+  // no stop button at all (the owner's choice, 5 Nov 2026), and the rules refuse its EMERGENCY_STOP too. Nor is it
+  // queued while ESP1 isn't reporting (6 Nov 2026, see stopOfflineReason()): the buttons are off then, and the notes
+  // say how else to stop the rig. There are two copies: the Controls panel, and the bar on every tab.
+  const stopBlocked = stopOfflineReason();
   document.querySelectorAll(".estop-btn").forEach(emergency => {
-    emergency.disabled = !signedIn || !control;
-    emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !control ? notApprovedTitle : "";
+    emergency.disabled = !signedIn || !control || Boolean(stopBlocked);
+    emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !control ? notApprovedTitle : stopBlocked;
   });
   const estopBar = document.getElementById("estopBar");
   if (estopBar) estopBar.hidden = !signedIn || !control;
-  // A remote stop silently does nothing while ESP1 is offline, so say so before it is relied on.
   const estopNote = document.getElementById("emergencyOfflineNote");
-  if (estopNote) estopNote.hidden = !signedIn || !control || deviceIsFresh();
+  if (estopNote) {
+    estopNote.hidden = !signedIn || !control || !stopBlocked;
+    if (stopBlocked) estopNote.textContent = stopBlocked;
+  }
+  // The bar is on every tab, so it carries a short form of the same note.
+  const barNote = document.getElementById("estopBarNote");
+  if (barNote) {
+    barNote.hidden = !signedIn || !control || !stopBlocked;
+    barNote.textContent = !firebaseConnected ? "Offline: stop it at the unit (MODE + BACK) or by SMS STOP,ALL."
+      : "ESP1 isn't reporting: stop it at the unit (MODE + BACK) or by SMS STOP,ALL.";
+  }
   // This page can't see why ESP1 stopped reporting, but the LCD can, so say where to look.
   const offlineHelp = document.getElementById("esp1OfflineHelp");
   if (offlineHelp) offlineHelp.hidden = !signedIn || !control || deviceIsFresh();
@@ -1017,6 +1043,7 @@ function attachDatabaseListeners() {
     renderColumnCommandResults(); // each zone's own SET_COLUMN outcome, inline under its own button
     renderPanelCommandResults();  // the same, for the Controls, Manual/Test and System panels
     updateForceArmed();           // a FORCE_RUN row turning "accepted" is the first sign it is armed
+    renderUpNext();               // ...and Up next lists it, and a completed SET_COLUMN or SET_THRESH changes the times
     syncControlAvailability();    // a reply can settle the lock switch or the pumps-and-valves switch before a report does
   }, error => {
     // The account banner already explains a denial: no need for an error toast on every sign-in as well.
@@ -1851,11 +1878,9 @@ function renderUserManagement() {
         ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${info[0]}" data-info-title="${info[0]}" data-info-text="${info[1]}" data-help="${/zones$|control$/.test(action) ? "help-access" : "help-grants"}">i</button></span>`
         : btn;
     }).join("");
+    // Zone editing and Control aren't spelled out here (the owner's choice, 6 Nov 2026): the Give / Take back buttons
+    // beside the row already say which the account has.
     const access = [];
-    if (status === "approved" && !isAnyOperator && !subOpActive) {
-      access.push(zonesActive ? "Can edit zone profiles." : "Can't edit zone profiles.");
-      access.push(controlActive ? "Has control: Controls, Diagnostics and the Emergency stop." : "No control access: can only look.");
-    }
     if (tempActive) access.push(`Can use Manual/Test, System and the rig lock until ${new Date(u.tempAccessUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (1-hour access).`);
     if (subOpActive) access.push("Sub-operator: can use Manual/Test, System and the rig lock until you remove it.");
     return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
@@ -2108,7 +2133,7 @@ function logActivity(what) {
 // These skip the freshness gate on purpose, because a stale snapshot is often why someone reaches for
 // them. But the firmware runs any queued row whenever it next reads it, with no age limit, so sent while
 // ESP1 is offline they would fire when it reconnects, possibly days later and into a changed situation.
-// Stops are not listed: firing late is the safe direction.
+// Stops are not listed: they aren't sent at all while ESP1 is offline (stopOfflineReason(), 6 Nov 2026).
 const OFFLINE_CONFIRM_TYPES = new Set(["ENABLE_ACTUATIONS", "RECOVER", "ESTOP_RECOVER", "REBOOT"]);
 
 // What this session has sent: id -> the reply last announced, and the toast showing the latest news. Only
@@ -2202,9 +2227,16 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus(`${type.replaceAll("_", " ")} not sent: the rig is locked. Unlock it first (operators, and accounts with 1-hour access or Sub-operator, can).`, "error");
     return Promise.resolve(false);
   }
+  // A stop is never queued while ESP1 isn't reading the queue (2026-11-06, stopOfflineReason()); the rules refuse it
+  // too once ESP1's last report is over 3 minutes old.
+  if (NOT_WITHDRAWABLE.has(type) && stopOfflineReason()) {
+    const name = { EMERGENCY_STOP: "Emergency stop", DISABLE_ACTUATIONS: "Pumps and valves off", CANCEL_FORCE: "Cancel forced run" }[type];
+    setCommandStatus(`${name} not sent. ${stopOfflineReason()}`, "error");
+    return Promise.resolve(false);
+  }
   // Firebase holds a write made while this browser is offline and sends it on reconnect, perhaps much later, and
-  // ESP1 runs a queued row however old it is. Only a command that can only stop something is worth that.
-  if (!firebaseConnected && !NOT_WITHDRAWABLE.has(type)) {
+  // ESP1 runs a queued row however old it is. So nothing is sent while the link is down, stops included.
+  if (!firebaseConnected) {
     setCommandStatus(`${type.replaceAll("_", " ")} not sent: this browser has lost its connection to Firebase. Try again once it's back.`, "error");
     return Promise.resolve(false);
   }
@@ -2311,8 +2343,7 @@ function activitySummary(type, payload) {
 // regardless of which recovery button (Hold/Release/Only irrigate/Resume normal/Return to normal) was
 // actually pressed.
 function queuedStatusText(type, payload, emergency) {
-  if (type === "EMERGENCY_STOP" && !firebaseConnected) return "Emergency stop NOT delivered yet: this browser has lost its connection, so nothing has stopped. Use the physical cutoff, MODE + BACK at the unit, or SMS STOP,ALL. The stop goes out when the connection returns.";
-  if (type === "EMERGENCY_STOP" && !deviceIsFresh()) return "Emergency stop queued, but ESP1 appears offline, so nothing has stopped. Use the physical cutoff, MODE + BACK at the unit, or SMS STOP,ALL.";
+  // A stop only gets this far while ESP1 is reporting (stopOfflineReason() in queueCommand()).
   if (type === "EMERGENCY_STOP") return "Emergency stop queued. This is not physical-stop confirmation; wait for ESP1 status.";
   if (type === "RECOVER") return `Recovery (${rawText(payload.action, "?")}) queued. This is not confirmation the rig has resumed; wait for ESP1 status.`;
   if (type === "ESTOP_RECOVER") return "Return to normal queued. This is not confirmation ESP1 has recovered; wait for ESP1 status.";
@@ -2483,6 +2514,18 @@ function rigControlBlock() {
   return "";
 }
 
+// "Today: watered twice (10.0 L), nutrients once (12 mL)." from a column's zones.today, or "" when ESP1 doesn't send it.
+function dayTallyText(t) {
+  if (!t || !hasValue(t.waterings)) return "";
+  const times = n => n === 1 ? "once" : n === 2 ? "twice" : `${n} times`;
+  const n = Number(t.waterings) || 0;
+  const f = Number(t.feedings) || 0;
+  const ml = Number(t.ml) || 0;
+  const water = n ? `watered ${times(n)} (${numberText(t.liters, 1, "L")})` : "not watered yet";
+  const feed = f ? `, nutrients ${times(f)} (${numberText(ml, ml >= 10 ? 0 : 1, "mL")})` : "";
+  return `Today: ${water}${feed}.`;
+}
+
 // The card's own words for what ESP1 does with the column. Runs on every snapshot and command update.
 function renderZoneSummary(zone) {
   const id = zone.id;
@@ -2501,8 +2544,13 @@ function renderZoneSummary(zone) {
     const shown = done !== null && s.sched !== null && !(s.known && !s.enabled);
     today.hidden = !shown;
     if (shown) {
-      today.textContent = (runs === 1 ? (done ? "Done for today." : "Not watered so far today.")
-                                      : `Today: ${done} of ${runs} watering times done.`) +
+      // What reached the column today, scheduled and forced, from ESP1 from 6 Nov 2026 (zones.today). Older firmware
+      // only says how many of the watering times are done.
+      const tally = dayTallyText(liveData.sensors?.zones?.[id]?.today);
+      const progress = tally
+        ? (runs > 1 ? ` ${done} of ${runs} watering times done.` : done ? " Done for today." : "")
+        : (runs === 1 ? (done ? "Done for today." : "Not watered so far today.") : `Today: ${done} of ${runs} watering times done.`);
+      today.textContent = tally + progress +
         (s.fedToday && s.mode === "AUTO" && done < runs ? " Nutrients already went in today, so the rest of today's waterings are plain water." : "");
     }
   }
@@ -3463,7 +3511,7 @@ function saveCropDraft() {
   renderCropProblems();
   if (cropDraftProblems().length) return;
   const show = resultLine("cropLibraryResult");
-  if (!canEditCrops()) { show("Only operators, and accounts with 1-hour access or Sub-operator, can change crop profiles.", true); return; }
+  if (!canEditCrops()) { show("Only operators and Sub-operators can add, change or remove crops.", true); return; }
   const draft = cropDraft;
   const key = draft.isNew ? db.ref("irrigation/config/crops").push().key : draft.key;
   const stages = {};
@@ -3492,7 +3540,7 @@ function saveCropDraft() {
     })
     .catch(error => {
       if (save) save.disabled = false;
-      show(`Could not save ${entry.name}: ${error.code === "PERMISSION_DENIED" ? "only operators, and accounts with 1-hour access or Sub-operator, can change crop profiles, and every value must be in range" : error.message}.`, true);
+      show(`Could not save ${entry.name}: ${error.code === "PERMISSION_DENIED" ? "only operators and Sub-operators can add, change or remove crops, and every value must be in range" : error.message}.`, true);
     });
 }
 
@@ -3967,6 +4015,7 @@ function updateDashboard() {
   renderManualHold();
   updateFaultBanner();
   updateForceArmed();
+  renderUpNext();
   updateSystemTab();
   syncControlAvailability();
 }
@@ -4590,6 +4639,7 @@ function updateFaultBanner() {
  * be seen long after it was written, by a page loaded later. Runs every second, and from each snapshot
  * and command update. */
 let armedSeed = null;                // { stamp, at: epoch ms, left: seconds } from the last armed snapshot
+let forceArmedInfo = null;           // the armed run as the panel last showed it, for Up next (renderUpNext())
 // A snapshot can carry data from several seconds before its own stamp (one second of telemetry age, plus
 // a slow upload). One this much newer than the arming reply has definitely seen the countdown.
 const ARMED_SNAPSHOT_SETTLE_MS = 8000;
@@ -4637,7 +4687,7 @@ function updateForceArmed() {
     forceArmedShown = shown;
     syncControlAvailability();
   }
-  if (!shown) { panel.hidden = true; return; }
+  if (!shown) { panel.hidden = true; forceArmedInfo = null; return; }
   panel.hidden = false;
   const run = snapshotArmed ? a : row.payload;
   const source = snapshotArmed ? a.source : "web";
@@ -4648,13 +4698,154 @@ function updateForceArmed() {
     + (fert ? ` · A/B/C ${Number(doses.A || 0)}/${Number(doses.B || 0)}/${Number(doses.C || 0)} mL` : "")
     + ` · armed from the ${source === "web" ? "dashboard" : "LCD"}`);
   const left = row ? row.left : Math.max(0, armedSeed.left - Math.floor((Date.now() - armedSeed.at) / 1000));
+  forceArmedInfo = { left, columns: run.columns, liters: run.liters, fert };
   setDeviceStatus("forceArmedCountdown", left > 0 ? `STARTS IN ${left}s` : "STARTING…", "active");
-  // Past this point Cancel can't stop anything, though ESP1 would still reply "cancelled".
+  // Past this point Cancel can't stop anything, though ESP1 would still reply "cancelled". Like every stop, it isn't
+  // queued while ESP1 isn't reporting (stopOfflineReason()); BACK on the LCD still cancels the countdown.
+  const offline = stopOfflineReason();
   const cancel = document.getElementById("cancelForceBtn");
   if (cancel) {
-    cancel.disabled = left <= 0;
-    cancel.title = left > 0 ? "" : "Too late to cancel. Use Emergency stop to stop the run.";
+    cancel.disabled = left <= 0 || Boolean(offline);
+    cancel.title = left <= 0 ? "Too late to cancel. Use Emergency stop to stop the run." : offline;
   }
+  const cancelNote = document.getElementById("cancelForceOffline");
+  if (cancelNote) {
+    cancelNote.hidden = !offline || left <= 0;
+    if (offline) cancelNote.textContent = `${!firebaseConnected ? "This browser is offline" : "ESP1 isn't reporting"}, so Cancel can't be sent from here. Press BACK on the LCD before the countdown ends, or send SMS STOP,ALL.`;
+  }
+}
+
+/* ---- Up next (2026-11-06) ----------------------------------------------------------------------
+ * Beside Current run: what ESP1 will do next, by its own clock. Each switched-on column's watering times still to come
+ * today and all of tomorrow's, a forced run counting down, and when each pump's exercise is due. Worked out from ESP1's
+ * clock at its last report (system.deviceTime, moved on by the report's age), each column's windows and how many of
+ * today's it has done (runsToday), and pumpExercise.nextDueMin (ESP1 from 6 Nov 2026). A watering time only waters if
+ * the soil is drier than Soil start % then, so each says so. ESP1 doesn't say WHICH of today's times are done, only how
+ * many: a time open now counts as done once as many are done as have started. Redrawn only when its text changes. */
+const EXERCISE_PUMPS = ["Transfer pump", "Booster pump", "Tank mixer"];   // the order ESP1 publishes them in (EX_NAME)
+let upNextKey = "";
+
+// ESP1's own time now: its clock at its last report plus the report's age. Null when its clock can't be trusted.
+function rigNow() {
+  const parts = /^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(liveData.system?.deviceTime || ""));
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  if (!parts || !stamp || liveData.system?.rtcOk === false) return null;
+  const [y, mo, d, h, mi, s] = parts.slice(1).map(v => Number(v || 0));
+  if (y < 2020 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) return null;
+  return new Date(new Date(y, mo - 1, d, h, mi, s).getTime() + Math.max(0, serverNow() - stamp));
+}
+
+function dayStart(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function clockText(date) {
+  return minutesToHhmm(date.getHours() * 60 + date.getMinutes());
+}
+
+function upNextItems(now) {
+  const items = [];
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const today = dayStart(now);
+  const tomorrow = dayStart(new Date(today.getTime() + 36 * 3600000));
+  const ifDry = `Waters if drier than ${soilStartPercent()} %`;   // kept together: a lone "%." wrapped onto its own line
+  ["A", "B", "C"].forEach(id => {
+    const s = zoneSettings(id);
+    if (!s.known || !s.enabled || s.sched === null || !s.windows?.length) return;
+    const span = ([a, b]) => `${minutesToHhmm(a)}–${minutesToHhmm(b)}`;
+    const started = s.windows.filter(([a]) => a <= nowMin).length;
+    const done = s.runsToday === null ? 0 : s.runsToday;
+    s.windows.forEach(w => {
+      const [a, b] = w;
+      if (done >= s.windows.length || b <= nowMin) return;          // the day is done, or this time is over
+      const open = a <= nowMin;
+      if (open && done >= started) return;                          // it has watered in this one already
+      items.push({ day: today, at: open ? nowMin : a, time: span(w), what: `Column ${id}`, note: open ? `Open now. ${ifDry}.` : `${ifDry}.`, open });
+    });
+    s.windows.forEach(w => items.push({ day: tomorrow, at: w[0], time: span(w), what: `Column ${id}`, note: `${ifDry}.` }));
+  });
+  if (forceArmedInfo) {
+    const start = new Date(now.getTime() + Math.max(0, forceArmedInfo.left) * 1000);
+    items.push({
+      day: dayStart(start), at: start.getHours() * 60 + start.getMinutes(), time: clockText(start), forced: true,
+      what: `Forced run, column ${rawText(forceArmedInfo.columns, "?")}`,
+      note: `${numberText(forceArmedInfo.liters, 1, "L")}, ${forceArmedInfo.fert ? "with nutrients" : "plain water"}. Counting down.`
+    });
+  }
+  const ex = liveData.diagnostics?.pumpExercise;
+  if (ex?.enabled && Array.isArray(ex.nextDueMin)) {
+    const ageMin = Math.max(0, serverNow() - Number(liveData.meta?.updatedAt || 0)) / 60000;
+    ex.nextDueMin.slice(0, EXERCISE_PUMPS.length).forEach((minutes, k) => {
+      if (!hasValue(minutes)) return;
+      const left = Number(minutes) - ageMin;
+      const due = new Date(Math.round((now.getTime() + Math.max(0, left) * 60000) / 60000) * 60000);
+      const seconds = hasValue(ex.seconds) ? `${Number(ex.seconds)} s` : "A few seconds";
+      items.push({
+        day: dayStart(due), at: left <= 0 ? nowMin : due.getHours() * 60 + due.getMinutes(),
+        time: left <= 0 ? "Due now" : `About ${clockText(due)}`, what: `${EXERCISE_PUMPS[k]} exercise`,
+        note: `${seconds}, ${left <= 0 ? "once the rig is idle" : "if the rig is idle then"}.`
+      });
+    });
+  }
+  return items.sort((x, y) => x.day - y.day || x.at - y.at);
+}
+
+// Why nothing on the list may happen, in words: the standing reasons ESP1 publishes.
+function upNextBlockText() {
+  const d = liveData.diagnostics || {};
+  const state = liveData.system?.state;
+  const reasons = [];
+  if (!deviceIsFresh()) reasons.push("ESP1 isn't reporting, so this is from its last report.");
+  if (state === "EMERGENCY_STOP" && !d.fault?.held) reasons.push("The emergency stop is on: none of this runs until Return to normal.");
+  else if (d.fault?.held) reasons.push("A fault is held: none of this runs until someone chooses how to continue.");
+  if (actuationsAreOff()) reasons.push("Pumps and valves are off: none of this runs until they are switched back on.");
+  if (d.webManual?.held === true) reasons.push("Manual/Test is open: nothing starts by itself until it is closed.");
+  const reservoir = Number(liveData.sensors?.reservoirLevel);
+  if (hasValue(liveData.sensors?.reservoirLevel) && reservoir < 15) reasons.push("The reservoir is under 15 %: no column is watered until it is refilled.");
+  return reasons.join(" ");
+}
+
+function renderUpNext() {
+  const list = document.getElementById("upNextList");
+  const status = document.getElementById("upNextStatus");
+  if (!list || !status) return;
+  let note = "";
+  let html;
+  const now = liveData.system ? rigNow() : null;
+  if (!liveData.system) {
+    html = `<p class="muted">Waiting for ESP1's report.</p>`;
+  } else if (!now) {
+    note = "ESP1's clock can't be read, so it isn't keeping its watering times. Operators can set the clock on the System tab.";
+    html = "";
+  } else {
+    note = upNextBlockText();
+    const items = upNextItems(now);
+    const today = dayStart(now).getTime();
+    const days = [...new Set([today, ...items.map(item => item.day.getTime())])].sort((x, y) => x - y);
+    html = days.map(day => {
+      const rows = items.filter(item => item.day.getTime() === day);
+      const date = new Date(day);
+      // "Fri 6 Nov" in any locale: some write it "Fri, Nov 6", which reads badly after "Today, ".
+      const when = `${date.toLocaleDateString([], { weekday: "short" })} ${date.getDate()} ${date.toLocaleDateString([], { month: "short" })}`;
+      const offset = Math.round((day - today) / 86400000);
+      const title = offset === 0 ? `Today, ${when}` : offset === 1 ? `Tomorrow, ${when}` : when;
+      return `<section class="next-day"><h4>${escapeHtml(title)}</h4>${rows.length
+        ? `<ul>${rows.map(item => `<li class="${item.open ? "is-open" : item.forced ? "is-forced" : ""}"><span class="next-time">${escapeHtml(item.time)}</span><span class="next-what">${escapeHtml(item.what)}<span class="next-note">${escapeHtml(item.note)}</span></span></li>`).join("")}</ul>`
+        : `<p class="next-none">${offset === 0 ? "Nothing more today." : "Nothing planned."}</p>`}</section>`;
+    }).join("");
+    const ex = liveData.diagnostics?.pumpExercise;
+    if (ex && !ex.enabled) html += `<p class="next-foot">Pump exercise is switched off.</p>`;
+    else if (ex?.enabled && !Array.isArray(ex.nextDueMin)) html += `<p class="next-foot">Each pump is exercised every 2 days. This firmware doesn't say when each is due.</p>`;
+    const on = ["A", "B", "C"].map(zoneSettings).filter(s => s.known && s.enabled);
+    if (!on.length) html += `<p class="next-foot">No column is switched on, so ESP1 has nothing to water.</p>`;
+    else if (!on.some(s => s.sched !== null && s.windows?.length)) html += `<p class="next-foot">ESP1 hasn't reported the columns' watering times yet.</p>`;
+  }
+  const key = `${note}\u0000${html}`;
+  if (key === upNextKey) return;
+  upNextKey = key;
+  status.hidden = !note;
+  status.textContent = note;
+  list.innerHTML = html;
 }
 
 /* ---- Raw sensor diagnostics -------------------------------------------------------------------- */
@@ -5645,6 +5836,7 @@ setInterval(() => {
 setInterval(() => {
   syncFreshness();
   updateForceArmed();
+  renderUpNext();             // the clock moves on: a watering time opens or closes, the day turns over
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;
   updateFaultBanner();
 }, 1000);
