@@ -30,16 +30,19 @@
  *   FORCE_RUN          { columns: "A"|"B"|"C"|"AB", liters: <=20, doseMl: {A,B,C} (each <=500),
  *                        delaySeconds: 0-300 }   no pH field exists -- see note below. Any dose needs at
  *                        least 6.25 L, and mixing time is fixed by the firmware.
- *   EMERGENCY_STOP     {}   no gating, no confirmation dialog, always actionable
+ *   EMERGENCY_STOP     {}   no confirmation dialog, never held back by the rig lock or the cooldown. Since 6 Nov
+ *                        2026 it, DISABLE_ACTUATIONS and CANCEL_FORCE are not sent while ESP1 isn't reporting (see
+ *                        stopOfflineReason()), and the rules refuse them when ESP1's last report is over 3 minutes old
  *   RECOVER            { action: "hold"|"release"|"irrigate"|"normal" }   only while a fault is held
  *   ESTOP_RECOVER      {}   only while stopped (EMERGENCY_STOP) and no fault is held
  *   ENABLE_ACTUATIONS  {}   the one escape hatch checked first, gated on nothing
  *   DISABLE_ACTUATIONS {}   monitoring keeps running
  *   CANCEL_FORCE       {}   only while a forced run is armed/counting down
  *   ACK_FAULT          {}   dashboard-only snooze; no effect on the rig
- *   SET_COLUMN         { col: "A"|"B"|"C", mode?, enabled?, schedMode?, winStart?, winEnd?,
+ *   SET_COLUMN         { col: "A"|"B"|"C", mode?, enabled?, schedMode?, winStart?, winEnd?, windows?,
  *                        targetN?, targetP?, targetK?, targetPH?, preset? }   every field but col
- *                        is optional; an absent field is left unchanged, never treated as zero.
+ *                        is optional; an absent field is left unchanged, never treated as zero. windows
+ *                        ([[start, end], ...], 1 to 4 pairs, ESP1 from 5 Nov 2026) replaces winStart/winEnd.
  *                        ESP1 still accepts preset (one of its own CROP_PRESETS names, resolved
  *                        server-side) via the LCD/SMS, but this page no longer offers it -- see
  *                        "Firmware save settings" below, which replaced it with the operator's own
@@ -4362,8 +4365,8 @@ function latestCommandOfType(type) {
 
 // ESP1 picks up one queued row every 3 s, so one still sitting here after this long isn't being read.
 const QUEUED_WARNING_MS = 30000;
-// Safe-direction commands stay in the queue: firing late can only stop something. The rules refuse
-// these too, so one approved user cannot quietly withdraw another's emergency stop.
+// The stops can't be withdrawn, and the rules refuse it too, so one approved user cannot quietly withdraw
+// another's emergency stop. They are only sent while ESP1 is reporting (stopOfflineReason(), 6 Nov 2026).
 const NOT_WITHDRAWABLE = new Set(["EMERGENCY_STOP", "DISABLE_ACTUATIONS", "CANCEL_FORCE"]);
 
 function renderCommandHistory() {
@@ -4723,6 +4726,9 @@ function updateForceArmed() {
  * the soil is drier than Soil start % then, so each says so. ESP1 doesn't say WHICH of today's times are done, only how
  * many: a time open now counts as done once as many are done as have started. Redrawn only when its text changes. */
 const EXERCISE_PUMPS = ["Transfer pump", "Booster pump", "Tank mixer"];   // the order ESP1 publishes them in (EX_NAME)
+const EXERCISE_IDS = ["TRANSFER", "BOOSTER", "MIXER"];                    // ESP1's EX_NAME, as in actuator.pumpUnderTest
+// A no-break space, made from its code so the source stays plain ASCII (the linter refuses the character itself).
+const NBSP = String.fromCharCode(160);
 let upNextKey = "";
 
 // ESP1's own time now: its clock at its last report plus the report's age. Null when its clock can't be trusted.
@@ -4748,7 +4754,7 @@ function upNextItems(now) {
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const today = dayStart(now);
   const tomorrow = dayStart(new Date(today.getTime() + 36 * 3600000));
-  const ifDry = `Waters if drier than ${soilStartPercent()} %`;   // kept together: a lone "%." wrapped onto its own line
+  const ifDry = `Waters if drier than ${soilStartPercent()}${NBSP}%`;   // kept together: a lone "%." wrapped onto its own line
   ["A", "B", "C"].forEach(id => {
     const s = zoneSettings(id);
     if (!s.known || !s.enabled || s.sched === null || !s.windows?.length) return;
@@ -4757,7 +4763,8 @@ function upNextItems(now) {
     const done = s.runsToday === null ? 0 : s.runsToday;
     s.windows.forEach(w => {
       const [a, b] = w;
-      if (done >= s.windows.length || b <= nowMin) return;          // the day is done, or this time is over
+      // ESP1 counts both ends as inside a window (windowAt() in its main.cpp), so 12:00–13:00 is still open at 13:00.
+      if (done >= s.windows.length || b < nowMin) return;           // the day is done, or this time is over
       const open = a <= nowMin;
       if (open && done >= started) return;                          // it has watered in this one already
       items.push({ day: today, at: open ? nowMin : a, time: span(w), what: `Column ${id}`, note: open ? `Open now. ${ifDry}.` : `${ifDry}.`, open });
@@ -4775,11 +4782,18 @@ function upNextItems(now) {
   const ex = liveData.diagnostics?.pumpExercise;
   if (ex?.enabled && Array.isArray(ex.nextDueMin)) {
     const ageMin = Math.max(0, serverNow() - Number(liveData.meta?.updatedAt || 0)) / 60000;
+    // The pump ESP1 is exercising (or warming ESP2 up for) right now: its clock only restarts once that finishes.
+    const actuator = liveData.diagnostics?.actuator || {};
+    const busy = deviceIsFresh() && actuator.pumpTestActive ? String(actuator.pumpUnderTest || "") : "";
     ex.nextDueMin.slice(0, EXERCISE_PUMPS.length).forEach((minutes, k) => {
       if (!hasValue(minutes)) return;
+      const seconds = hasValue(ex.seconds) ? `${Number(ex.seconds)} s` : "A few seconds";
+      if (busy === EXERCISE_IDS[k]) {
+        items.push({ day: dayStart(now), at: nowMin, time: "Now", what: `${EXERCISE_PUMPS[k]} exercise`, note: `${seconds}, under way now.`, open: true });
+        return;
+      }
       const left = Number(minutes) - ageMin;
       const due = new Date(Math.round((now.getTime() + Math.max(0, left) * 60000) / 60000) * 60000);
-      const seconds = hasValue(ex.seconds) ? `${Number(ex.seconds)} s` : "A few seconds";
       items.push({
         day: dayStart(due), at: left <= 0 ? nowMin : due.getHours() * 60 + due.getMinutes(),
         time: left <= 0 ? "Due now" : `About ${clockText(due)}`, what: `${EXERCISE_PUMPS[k]} exercise`,
