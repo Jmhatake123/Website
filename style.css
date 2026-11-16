@@ -731,3 +731,17 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
   .rig-flow.on, .rig-pump.on .rig-impeller, .rig-mixer.on .rig-impeller { animation: none; }
   .rig-moist, .gauge-fill, .rig-flow { transition: none; }
 }
+
+/* Pump selector switch (Manual/Test, 2026-11-16): a two-way switch, Transfer | Booster. The pressed side is where
+   ESP1 last saw the Nano put the servo (system.servoSide); the side being moved to shows in amber until ESP1 answers. */
+.servo-switch { display: inline-grid; grid-template-columns: 1fr 1fr; margin: 0 0 12px; border: 1px solid var(--border); border-radius: 11px; overflow: hidden; background: var(--surface-muted); }
+.servo-switch .servo-option { min-width: 150px; border: 0; border-radius: 0; background: transparent; color: var(--muted); }
+.servo-switch .servo-option + .servo-option { border-left: 1px solid var(--border); }
+.servo-switch .servo-option[aria-pressed="true"] { background: rgb(40 199 142 / .16); color: var(--success); }
+.servo-switch .servo-option.is-moving { background: rgb(242 174 73 / .16); color: var(--warning); }
+.servo-switch .servo-option:hover:not(:disabled) { color: var(--text); transform: none; }
+.servo-switch .servo-option:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 600px) {
+  .servo-switch { display: grid; width: 100%; }
+  .servo-switch .servo-option { min-width: 0; }
+}

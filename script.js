@@ -51,11 +51,29 @@
  *   SET_EXERCISE       { exerciseEnabled?, exerciseSeconds? }
  *   REBOOT             { target: "nano"|"esp2"|"esp1" }
  *   TEST_PULSE         { target, seconds: 1-15 }   Manual/Test only, dead-man timed on ESP2. Whole
- *                        seconds only: ESP1 reads a decimal as 0, then runs its default 5 s.
+ *                        seconds only: ESP1 reads a decimal as 0, then runs its default 5 s. target servoL /
+ *                        servoR only moves the pump selector (the Pump selector switch sends 15 s); ESP1 from
+ *                        16 Nov 2026 ends it as soon as the move is settled and answers "SERVO OK: selector on
+ *                        the TRANSFER side" (completed) or "SERVO FAIL: <why>" / "SERVO NOT CONFIRMED: ..."
+ *                        (failed), and publishes the side the Nano last confirmed as system.servoSide
+ *                        ("TRANSFER"|"BOOSTER", absent = never) with servoSideAgeMs (absent = before ESP1's
+ *                        last restart).
  *   DIAG_SWEEP         { seconds? }
  *   SET_CLOCK          { clkY, clkMo, clkD, clkH, clkMi }   all required together; sets ESP1's RTC
  *   SET_THRESH         { thStart, thGap }   both required; same clamps as the LCD. Older firmware
  *                        also requires thStop, and web v.3 ignores it.
+ *   SET_AC_VOLT        { vMin, vMax }   both required, whole volts, 80-260 with vMin at least 5 under vMax:
+ *                        the AC supply window ESP2's PZEM check stops an inverter pump outside of. Operators
+ *                        and Sub-operators only (not 1-hour access), in the rules too. ESP1 from 14 Nov 2026
+ *                        publishes the window as system.acVoltMin/acVoltMax, plus system.acVoltLast and
+ *                        acVoltLastAgeMs once a pump has run; older firmware rejects it as "not a remotely
+ *                        safe control". Refused while someone has Settings > AC Voltage open on the LCD.
+ *   SET_AC_AMP         { aMin10, aMax10 }   both required, whole TENTHS of an amp (5 = 0.5 A), 1-100 with aMin10
+ *                        at least 2 under aMax10: the no-current and overcurrent limits ESP2's PZEM check stops an
+ *                        inverter pump outside of. Same people as SET_AC_VOLT, in the rules too. ESP1 from 16 Nov
+ *                        2026 publishes them as system.acAmpMin10/acAmpMax10, plus system.acAmpLast (amps) and
+ *                        acAmpLastAgeMs once a pump has run; older firmware rejects it as "not a remotely safe
+ *                        control". Refused while someone has Settings > AC Current open on the LCD.
  *   RESTORE_DEFAULTS   {}   idle-only; runs the same reset function the LCD's Restore Defaults does
  *   CLEAR_BATT_SWITCH  {}   clears a latched battery-switch fault; privileged tier only. Dormant while
  *                        the firmware builds with SECONDARY_BATT_ENABLED 0.
@@ -211,6 +229,9 @@ const FORCE_MIN_DOSING_LITERS = 6.3;
 // The years ESP1's SET_CLOCK accepts (RTC_YEAR_MIN / RTC_YEAR_MAX in the firmware's pure_math.h).
 const RTC_YEAR_MIN = 2025;
 const RTC_YEAR_MAX = 2099;
+// The pump selector's TEST_PULSE targets and the side each one moves the Nano's servo to (pulseRowForTarget() in the
+// firmware's pure_math.h: servoL = row 20, servoR = row 21). Up here because commandDetailText() uses it too.
+const SERVO_TARGETS = { servoL: "TRANSFER", servoR: "BOOSTER" };
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
@@ -260,6 +281,11 @@ function hasValue(value) {
 function numberText(value, digits = 1, unit = "") {
   if (!hasValue(value)) return "Unavailable";
   return `${Number(value).toFixed(digits)}${unit ? ` ${unit}` : ""}`;
+}
+
+// ESP1 keeps the AC current limits in whole tenths of an amp (5 = 0.5 A); shown with one decimal, as on the LCD.
+function ampsFromTenthsText(tenths) {
+  return hasValue(tenths) ? (Number(tenths) / 10).toFixed(1) : "?";
 }
 
 function rawText(value, fallback = "Unavailable") {
@@ -421,6 +447,12 @@ function canAccessPrivilegedTabs() {
   // the identical re-check for the identical reason -- a persistent grant must be just as immediately
   // voidable as a temporary one the moment approval is lost.
   return isOperator() || ((hasTempAccess() || mySubOperator) && isApprovedUser());
+}
+// AC voltage limits (2026-11-14, the owner's choice): operators -- the backdoor included -- and Sub-operators only.
+// Unlike the rest of the System tab, NOT 1-hour access. firebase-rules.json refuses SET_AC_VOLT the same way. The AC
+// current limits (SET_AC_AMP, 2026-11-16) are the same kind of pump protection, so they go with it, in the rules too.
+function canSetAcVoltage() {
+  return isOperator() || (mySubOperator && isApprovedUser());
 }
 
 // Access levels (2026-11-05, the owner's design). An approved account on its own can only look: the Live dashboard,
@@ -914,6 +946,32 @@ function syncControlAvailability() {
                         : !latched ? "ESP1 reports no battery-switch fault to clear."
                         : "";
   }
+
+  // AC voltage limits: operators and Sub-operators only, and only once ESP1 reports the setting (firmware from
+  // 14 Nov 2026). Older firmware would refuse it as "not a remotely safe control".
+  const acVoltBtn = document.getElementById("sysAcVoltSendBtn");
+  if (acVoltBtn) {
+    const allowed = canSetAcVoltage();
+    const reported = hasValue(liveData.system?.acVoltMin) && hasValue(liveData.system?.acVoltMax);
+    acVoltBtn.disabled = !normalAllowed || !allowed || !reported;
+    acVoltBtn.title = !normalAllowed ? normalTitle
+                    : !allowed ? "For operators and Sub-operators."
+                    : !reported ? "ESP1's firmware doesn't have this setting yet. Update ESP1 and ESP2 first."
+                    : "";
+  }
+  // AC current limits (2026-11-16): the same people, and only once ESP1 reports them (firmware from 16 Nov 2026).
+  const acAmpBtn = document.getElementById("sysAcAmpSendBtn");
+  if (acAmpBtn) {
+    const allowed = canSetAcVoltage();
+    const reported = hasValue(liveData.system?.acAmpMin10) && hasValue(liveData.system?.acAmpMax10);
+    acAmpBtn.disabled = !normalAllowed || !allowed || !reported;
+    acAmpBtn.title = !normalAllowed ? normalTitle
+                   : !allowed ? "For operators and Sub-operators."
+                   : !reported ? "ESP1's firmware can't take this from the website yet. Update ESP1 first (16 Nov 2026)."
+                   : "";
+  }
+  // The pump selector switch on Manual/Test: the same gate as the timed test's button.
+  renderServoSwitch(normalAllowed, normalTitle);
 }
 
 function initializeFirebase() {
@@ -1468,6 +1526,10 @@ function refreshOperatorUI() {
   const privileged = canAccessPrivilegedTabs();
   const systemTab = document.getElementById("systemTab");
   if (systemTab) systemTab.hidden = !privileged;
+  const acVoltPanel = document.getElementById("sysAcVoltPanel");
+  if (acVoltPanel) acVoltPanel.hidden = !canSetAcVoltage();
+  const acAmpPanel = document.getElementById("sysAcAmpPanel");
+  if (acAmpPanel) acAmpPanel.hidden = !canSetAcVoltage();
   if (!privileged && document.querySelector('.tab[data-view="system"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
@@ -1495,7 +1557,7 @@ function refreshOperatorUI() {
 // filtering folds the open entries.
 let lastHelpAudience = null;
 function syncHelpAudience() {
-  const signature = ["all", "asker", "zones", "control", "privileged", "operator"].map(a => (helpAudienceAllowed(a) ? "1" : "0")).join("");
+  const signature = ["all", "asker", "zones", "control", "privileged", "subop", "operator"].map(a => (helpAudienceAllowed(a) ? "1" : "0")).join("");
   if (signature === lastHelpAudience) return;
   lastHelpAudience = signature;
   filterHelp(document.getElementById("helpSearch")?.value || "");
@@ -1808,7 +1870,7 @@ const USER_ACTION_INFO = {
   takecontrol: ["Control", "Ends this account's control access now. It can still see the Live dashboard and Zone profiles, and can ask again."],
   granttemp: ["1-hour access", "Opens Manual/Test, System and the rig lock to this account for exactly 1 hour, then it ends by itself. Use it for a one-off job."],
   revoketemp: ["1-hour access", "Ends this account's 1-hour access now, instead of waiting for its hour to run out."],
-  grantsubop: ["Sub-operator", "The same access as 1-hour access, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
+  grantsubop: ["Sub-operator", "The same access as 1-hour access, plus the AC voltage and current limits, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
   withholdsubop: ["Sub-operator", "Ends this account's Sub-operator access now. Nothing else ever ends it."]
 };
 function renderUserManagement() {
@@ -1885,7 +1947,7 @@ function renderUserManagement() {
     // beside the row already say which the account has.
     const access = [];
     if (tempActive) access.push(`Can use Manual/Test, System and the rig lock until ${new Date(u.tempAccessUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (1-hour access).`);
-    if (subOpActive) access.push("Sub-operator: can use Manual/Test, System and the rig lock until you remove it.");
+    if (subOpActive) access.push("Sub-operator: can use Manual/Test, System (including the AC voltage and current limits) and the rig lock until you remove it.");
     return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
       <div class="user-row-info">
         <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
@@ -2061,7 +2123,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // Persistent elevation, not a role change -- status stays "approved" throughout, same as temp
     // access above. No expiry: stays in effect until an operator withholds it again. Given by an operator, never
     // asked for (the owner's design): a Sub-operator has no request buttons.
-    if (!confirm(`Make ${name} a Sub-operator? They can use Manual/Test, System and the rig lock until you remove it.`)) return;
+    if (!confirm(`Make ${name} a Sub-operator? They can use Manual/Test, System (including the AC voltage and current limits) and the rig lock until you remove it.`)) return;
     run(() => db.ref().update({
       [`users/${uid}/subOperator`]: true,
       [`accessRequests/${uid}/zones`]: null,
@@ -2225,6 +2287,11 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus("This control is for operators, and accounts with 1-hour access or Sub-operator.", "error");
     return Promise.resolve(false);
   }
+  // Narrower still (2026-11-14): the AC voltage limits leave out 1-hour access. The rules refuse it the same way.
+  if (options.subOperatorOnly && !canSetAcVoltage()) {
+    setCommandStatus("This control is for operators and Sub-operators.", "error");
+    return Promise.resolve(false);
+  }
   // The rules refuse everything but the stops while ESP1 reports the rig locked: say so instead of a bare refusal.
   if (rigLocked() && !LOCK_EXEMPT.has(type)) {
     setCommandStatus(`${type.replaceAll("_", " ")} not sent: the rig is locked. Unlock it first (operators, and accounts with 1-hour access or Sub-operator, can).`, "error");
@@ -2318,7 +2385,8 @@ function activitySummary(type, payload) {
     case "SET_COLUMN":         return hasValue(p.enabled) && Object.keys(p).length === 2
                                  ? `Switched column ${rawText(p.col, "?")} ${Number(p.enabled) ? "on" : "off"}`
                                  : `Changed column ${rawText(p.col, "?")}'s settings`;
-    case "TEST_PULSE":         return `Timed test: ${rawText(p.target, "?")} for ${rawText(p.seconds, "?")} s`;
+    case "TEST_PULSE":         return SERVO_TARGETS[p.target] ? `Moved the pump selector to the ${SERVO_TARGETS[p.target].toLowerCase()} side`
+                                 : `Timed test: ${rawText(p.target, "?")} for ${rawText(p.seconds, "?")} s`;
     case "RUN_PUMP_TEST":      return `Exercised the ${rawText(p.pump, "?")} pump`;
     case "RECOVER":            return `Fault recovery: ${rawText(p.action, "?")}`;
     case "REBOOT":             return `Restarted ${board[p.target] || rawText(p.target, "?")}`;
@@ -2332,6 +2400,8 @@ function activitySummary(type, payload) {
     case "ACK_FAULT":          return "Asked to be reminded of a fault in 2 minutes";
     case "SET_CLOCK":          return "Set ESP1's clock";
     case "SET_THRESH":         return `Watering thresholds: start ${rawText(p.thStart, "?")} %, gap ${rawText(p.thGap, "?")}`;
+    case "SET_AC_VOLT":        return `AC voltage limits: ${rawText(p.vMin, "?")}–${rawText(p.vMax, "?")} V`;
+    case "SET_AC_AMP":         return `AC current limits: ${ampsFromTenthsText(p.aMin10)}–${ampsFromTenthsText(p.aMax10)} A`;
     case "RESTORE_DEFAULTS":   return "Restored factory settings";
     case "CLEAR_BATT_SWITCH":  return "Cleared the battery switch fault";
     case "LCD_LOCK":           return p.action === "unlock" ? "Unlocked the rig" : "Locked the rig";
@@ -4339,6 +4409,30 @@ function commandDetailText(command, fallback) {
   if (command.type === "LCD_LOCK" && /^someone is using the LCD menu/.test(text)) {
     return "someone at the rig is using the LCD's menus, so ESP1 won't lock it now. Try again once they have finished";
   }
+  // AC voltage limits, added to ESP1 and ESP2 on 14 Nov 2026: older ESP1 gives every unknown command this refusal.
+  if (command.type === "SET_AC_VOLT" && /^not a remotely safe control/.test(text)) {
+    return "this ESP1 firmware doesn't have the AC voltage limits yet: ESP1 and ESP2 need the update from 14 Nov 2026";
+  }
+  if (command.type === "SET_AC_VOLT" && /^being edited on the LCD/.test(text)) {
+    return "someone at the rig has Settings > AC Voltage open on the LCD, so ESP1 left it alone. Try again once they have finished";
+  }
+  // AC current limits from the website, added to ESP1 on 16 Nov 2026 (the LCD has had them since 15 Nov).
+  if (command.type === "SET_AC_AMP" && /^not a remotely safe control/.test(text)) {
+    return "this ESP1 firmware can't take the AC current limits from the website yet: ESP1 needs the update from 16 Nov 2026. Settings > AC Current on the LCD still works";
+  }
+  if (command.type === "SET_AC_AMP" && /^being edited on the LCD/.test(text)) {
+    return "someone at the rig has Settings > AC Current open on the LCD, so ESP1 left it alone. Try again once they have finished";
+  }
+  // The pump selector (servoL / servoR). ESP1, ESP2 and the Nano have it from 15 Nov 2026. ESP1 of 15 Nov answers a
+  // move in more than the 47 characters it can send, so the side's name arrives cut off: put it back from the request.
+  const servoSide = command.type === "TEST_PULSE" ? SERVO_TARGETS[command.payload?.target] : undefined;
+  if (servoSide && /^unknown pulse target/.test(text)) {
+    return "this ESP1 firmware doesn't have the pump selector yet: ESP1, ESP2 and the Nano need the update from 15 Nov 2026";
+  }
+  if (servoSide && /^pulse complete; SERVO OK/.test(text)) return `pulse complete; SERVO OK: selector on the ${servoSide} side`;
+  if (servoSide && /^pulse complete; SERVO NOT CONFIRMED/.test(text)) {
+    return "pulse complete; SERVO NOT CONFIRMED: check the Nano link, servo power and the lever";
+  }
   // New-F1 (audit): DIAG_SWEEP shares the same generic "not safely idle" wording as FORCE_RUN used
   // to (diagRemoteStart() has since been given specific reasons in the dev-tree firmware, but the
   // OLD flashed firmware's DIAG_SWEEP path -- and any other command that ever reuses this literal
@@ -4495,14 +4589,25 @@ function explainFaultCode(code) {
   }
   // New-F3/F4/F5 (audit): same decode pattern, for the three fault codes that gained measured-value
   // detail in this pass (ESP2/src/main.cpp -- PWR_FAIL/SAFE_STOP,MIXER_OC/DOSE_TIMEOUT).
-  const overcurrent = text.match(/^PWR_FAIL\s+OVERCURRENT\|i=([\d.]+)/);
-  if (overcurrent) return `Current draw hit ${overcurrent[1]}A during this stage — check for a jammed pump/valve or a wiring fault.`;
-  const voltage = text.match(/^PWR_FAIL\s+VOLTAGE\|v=([\d.]+)\|(LOW|HIGH)/);
-  if (voltage) return voltage[2] === "LOW"
-    ? `AC supply sagged to ${voltage[1]}V — check the mains/inverter output and connections.`
-    : `AC supply spiked to ${voltage[1]}V — check the mains/inverter output.`;
-  const noCurrent = text.match(/^PWR_FAIL\s+NO_CURRENT\|i=([\d.]+)/);
-  if (noCurrent) return `The pump was commanded on but drew almost no current (${noCurrent[1]}A) for too long — likely a failed pump, tripped breaker, or loose wiring.`;
+  // ESP2 from 15 Nov 2026 adds the current limit in force (|max= / |min=), since the AC current limits are adjustable.
+  const overcurrent = text.match(/^PWR_FAIL\s+OVERCURRENT\|i=([\d.]+)(?:\|max=([\d.]+))?/);
+  if (overcurrent) {
+    const limit = overcurrent[2] ? ` (the overcurrent limit is ${overcurrent[2]}A)` : "";
+    return `Current draw hit ${overcurrent[1]}A during this stage${limit} — check for a jammed pump/valve or a wiring fault, or the AC current limits on the System tab.`;
+  }
+  // ESP2 from 14 Nov 2026 adds the limit in force (|min= / |max=), since the AC voltage limits are adjustable.
+  const voltage = text.match(/^PWR_FAIL\s+VOLTAGE\|v=([\d.]+)\|(LOW|HIGH)(?:\|(?:min|max)=([\d.]+))?/);
+  if (voltage) {
+    const limit = voltage[3] ? ` (the ${voltage[2] === "LOW" ? "low" : "high"} limit is ${voltage[3]}V)` : "";
+    return voltage[2] === "LOW"
+      ? `AC supply sagged to ${voltage[1]}V${limit} — check the mains/inverter output and connections, or the AC voltage limits on the System tab.`
+      : `AC supply spiked to ${voltage[1]}V${limit} — check the mains/inverter output, or the AC voltage limits on the System tab.`;
+  }
+  const noCurrent = text.match(/^PWR_FAIL\s+NO_CURRENT\|i=([\d.]+)(?:\|min=([\d.]+))?/);
+  if (noCurrent) {
+    const limit = noCurrent[2] ? `, under the no-current limit of ${noCurrent[2]}A,` : "";
+    return `The pump was commanded on but drew almost no current (${noCurrent[1]}A)${limit} for too long — likely a dry run, a failed pump, a tripped breaker or loose wiring, or check the AC current limits on the System tab.`;
+  }
   const mixerOc = text.match(/^SAFE_STOP\s+MIXER_OC\|i=([\d.]+)/);
   if (mixerOc) return `The mixer motor drew ${mixerOc[1]}A, over its safety limit — check for a jammed impeller or motor fault.`;
   const dose = text.match(/^DOSE_TIMEOUT\s+(NUT_[ABC])\|delivered=([\d.]+)/);
@@ -4952,6 +5057,8 @@ const PANEL_COMMAND_RESULTS = [
   ["DIAG_SWEEP", "sweepResult"],
   ["SET_CLOCK", "sysClockResult"],
   ["SET_THRESH", "sysThreshResult"],
+  ["SET_AC_VOLT", "sysAcVoltResult"],
+  ["SET_AC_AMP", "sysAcAmpResult"],
   ["RESTORE_DEFAULTS", "sysRestoreResult"],
   ["CLEAR_BATT_SWITCH", "sysBattSwitchResult"],
   ["REBOOT", "rebootResult"],
@@ -5256,6 +5363,66 @@ document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
   sendFromPanel(show, "SET_THRESH", payload, { operatorOnly: true });
 });
 
+// AC voltage limits (2026-11-14): the range ESP2's PZEM check stops a pump on the inverter outside of. The same
+// checks as the LCD's Settings > AC Voltage and ESP1's acVoltWindowOk(); firebase-rules.json repeats the range
+// and the gap. Whole volts only: ESP1 reads a decimal as absent.
+const AC_VOLT_LIMIT_LOW = 80, AC_VOLT_LIMIT_HIGH = 260, AC_VOLT_MIN_GAP = 5;
+// Outside this, ask once more: the pumps would keep running on a supply that far from a normal 220-230 V.
+const AC_VOLT_USUAL_LOW = 200, AC_VOLT_USUAL_HIGH = 250;
+document.getElementById("sysAcVoltSendBtn")?.addEventListener("click", () => {
+  const show = resultLine("sysAcVoltResult");
+  const low = numberFromInput("sysAcVoltMin");
+  const high = numberFromInput("sysAcVoltMax");
+  if (!Number.isFinite(low) || !Number.isFinite(high)) { show("Fill in both limits. Nothing was sent.", true); return; }
+  if (!Number.isInteger(low) || !Number.isInteger(high)) { show("Use whole volts. Nothing was sent.", true); return; }
+  if (low < AC_VOLT_LIMIT_LOW || high > AC_VOLT_LIMIT_HIGH) {
+    show(`Both limits must be from ${AC_VOLT_LIMIT_LOW} to ${AC_VOLT_LIMIT_HIGH} V. Nothing was sent.`, true); return;
+  }
+  if (high - low < AC_VOLT_MIN_GAP) {
+    show(`The low limit must be at least ${AC_VOLT_MIN_GAP} V under the high limit. Nothing was sent.`, true); return;
+  }
+  const system = liveData.system || {};
+  const now = hasValue(system.acVoltMin) && hasValue(system.acVoltMax) ? ` They are ${system.acVoltMin}–${system.acVoltMax} V now.` : "";
+  const wide = low < AC_VOLT_USUAL_LOW || high > AC_VOLT_USUAL_HIGH
+    ? `\n\nThat is a wide range: pumps will keep running on a supply as low as ${low} V or as high as ${high} V, which can damage them.`
+    : "";
+  if (!confirm(`Set the AC voltage limits to ${low}–${high} V?${now} A pump on the inverter stops when the voltage leaves this range.${wide}`)) {
+    show("Nothing was sent.");
+    return;
+  }
+  sendFromPanel(show, "SET_AC_VOLT", { vMin: low, vMax: high }, { operatorOnly: true, subOperatorOnly: true });
+});
+
+// AC current limits (2026-11-16): the no-current (min) and overcurrent (max) limits ESP2's PZEM check stops a pump on
+// the inverter outside of. The same checks as the LCD's Settings > AC Current and ESP1's acAmpWindowOk(), in the same
+// unit ESP1 keeps (tenths of an amp); firebase-rules.json repeats the range and the gap.
+const AC_AMP_LIMIT_LOW10 = 1, AC_AMP_LIMIT_HIGH10 = 100, AC_AMP_MIN_GAP10 = 2;
+document.getElementById("sysAcAmpSendBtn")?.addEventListener("click", () => {
+  const show = resultLine("sysAcAmpResult");
+  const low = numberFromInput("sysAcAmpMin");
+  const high = numberFromInput("sysAcAmpMax");
+  if (!Number.isFinite(low) || !Number.isFinite(high)) { show("Fill in both limits. Nothing was sent.", true); return; }
+  const low10 = Math.round(low * 10), high10 = Math.round(high * 10);
+  // The LCD steps by 0.1 A and ESP1 keeps tenths: anything finer would be rounded here, so it is refused instead.
+  if (Math.abs(low * 10 - low10) > 1e-6 || Math.abs(high * 10 - high10) > 1e-6) {
+    show("Use steps of 0.1 A, for example 0.5 or 3.0. Nothing was sent.", true); return;
+  }
+  if (low10 < AC_AMP_LIMIT_LOW10 || high10 > AC_AMP_LIMIT_HIGH10) {
+    show(`Both limits must be from ${ampsFromTenthsText(AC_AMP_LIMIT_LOW10)} to ${ampsFromTenthsText(AC_AMP_LIMIT_HIGH10)} A. Nothing was sent.`, true); return;
+  }
+  if (high10 - low10 < AC_AMP_MIN_GAP10) {
+    show(`The no-current limit must be at least ${ampsFromTenthsText(AC_AMP_MIN_GAP10)} A under the overcurrent limit. Nothing was sent.`, true); return;
+  }
+  const system = liveData.system || {};
+  const now = hasValue(system.acAmpMin10) && hasValue(system.acAmpMax10)
+    ? ` They are ${ampsFromTenthsText(system.acAmpMin10)} A and ${ampsFromTenthsText(system.acAmpMax10)} A now.` : "";
+  if (!confirm(`Set the AC current limits to no-current ${ampsFromTenthsText(low10)} A and overcurrent ${ampsFromTenthsText(high10)} A?${now} A pump on the inverter stops at once above the overcurrent limit, and after 30 seconds below the no-current limit.`)) {
+    show("Nothing was sent.");
+    return;
+  }
+  sendFromPanel(show, "SET_AC_AMP", { aMin10: low10, aMax10: high10 }, { operatorOnly: true, subOperatorOnly: true });
+});
+
 // Dormant while the firmware builds with SECONDARY_BATT_ENABLED 0: the button only enables when ESP1
 // reports the fault as latched. Same effect as the LCD row and SMS BATTSW,CLEAR.
 document.getElementById("sysClearBattSwitchBtn")?.addEventListener("click", () => {
@@ -5284,6 +5451,50 @@ function updateSystemTab() {
   setText("sysBattSwitchStrikes", v3Only(rawText(system.battSwitchStrikes)));
   const stopLabel = document.getElementById("sysThreshStopLabel");
   if (stopLabel) stopLabel.hidden = isV3Firmware();
+  updateAcVoltPanel(system);
+  updateAcAmpPanel(system);
+}
+
+// AC voltage limits. ESP1 publishes the window (acVoltMin/acVoltMax) and, once a pump has run since it started,
+// the last AC voltage measured with its age at that snapshot (acVoltLast/acVoltLastAgeMs).
+function updateAcVoltPanel(system) {
+  const known = hasValue(system.acVoltMin) && hasValue(system.acVoltMax);
+  setText("sysAcVoltCurrent", known ? `${system.acVoltMin}–${system.acVoltMax} V`
+    : liveData.system ? "Not reported by this firmware: update ESP1 and ESP2" : "Unavailable");
+  // The age was taken when ESP1 built the snapshot; add how old the snapshot is, in Firebase's time.
+  const snapshotAge = hasValue(liveData.meta?.updatedAt) ? Math.max(0, serverNow() - Number(liveData.meta.updatedAt)) : 0;
+  setText("sysAcVoltLast", hasValue(system.acVoltLast)
+    ? `${numberText(system.acVoltLast, 1, "V")}, ${agoText(Number(system.acVoltLastAgeMs) + snapshotAge)}`
+    : known ? "None yet: it comes from the next pump run" : "Unavailable");
+  // Start the fields at the current values, without ever overwriting what someone is typing.
+  const minInput = document.getElementById("sysAcVoltMin");
+  const maxInput = document.getElementById("sysAcVoltMax");
+  const editing = [minInput, maxInput].includes(document.activeElement);
+  if (known && minInput && maxInput && !editing && !minInput.value && !maxInput.value) {
+    minInput.value = system.acVoltMin;
+    maxInput.value = system.acVoltMax;
+  }
+}
+
+// AC current limits (2026-11-16). ESP1 publishes them in tenths of an amp (acAmpMin10/acAmpMax10) and, once a pump has
+// run since it started, the last pump current measured, in amps, with its age at that snapshot (acAmpLast/AgeMs).
+function updateAcAmpPanel(system) {
+  const known = hasValue(system.acAmpMin10) && hasValue(system.acAmpMax10);
+  setText("sysAcAmpCurrent", known
+    ? `No-current ${ampsFromTenthsText(system.acAmpMin10)} A, overcurrent ${ampsFromTenthsText(system.acAmpMax10)} A`
+    : liveData.system ? "Not reported by this firmware: update ESP1 (16 Nov 2026)" : "Unavailable");
+  const snapshotAge = hasValue(liveData.meta?.updatedAt) ? Math.max(0, serverNow() - Number(liveData.meta.updatedAt)) : 0;
+  setText("sysAcAmpLast", hasValue(system.acAmpLast)
+    ? `${numberText(system.acAmpLast, 2, "A")}, ${agoText(Number(system.acAmpLastAgeMs) + snapshotAge)}`
+    : known ? "None yet: it comes from the next pump run" : "Unavailable");
+  // Start the fields at the current values, without ever overwriting what someone is typing.
+  const minInput = document.getElementById("sysAcAmpMin");
+  const maxInput = document.getElementById("sysAcAmpMax");
+  const editing = [minInput, maxInput].includes(document.activeElement);
+  if (known && minInput && maxInput && !editing && !minInput.value && !maxInput.value) {
+    minInput.value = ampsFromTenthsText(system.acAmpMin10);
+    maxInput.value = ampsFromTenthsText(system.acAmpMax10);
+  }
 }
 
 /* ---- Manual/Test tab -------------------------------------------------------------------------
@@ -5662,8 +5873,11 @@ function updatePulseNote() {
     const corrosive = (t === "phUp" || t === "phDn");
     note.textContent = `This dispenses roughly ${ml} mL of ${corrosive ? "pH adjuster (corrosive)" : "nutrient concentrate"} into the mixing tank.`;
     note.className = corrosive ? "control-result error" : "field-note";
+  } else if (t === "servoL" || t === "servoR") {
+    note.textContent = "Moves only the pump-selector servo on the Nano, with the inverter OFF, so no pump runs; the Pump selector switch above does the same in one press. Give it 10 to 15 seconds: ESP2 first waits for the inverter to be dead, and ESP1 from 16 Nov 2026 ends the test as soon as the move is settled. The result says whether the Nano confirmed the move.";
+    note.className = "field-note";
   } else if (t === "mixer") {
-    note.textContent = "ESP2 raises the inverter first, because the mixer is an AC motor. The mixer has no flow meter, so this reports no flow reading — only that the relay ran.";
+    note.textContent = "The mixer is a 12 V DC motor on its own relay (no inverter). It has no flow meter, so this reports no flow reading — only that the relay ran.";
     note.className = "field-note";
   } else {
     note.textContent = "";
@@ -5681,9 +5895,103 @@ function renderPulseResult() {
   if (!latest) return;
   const detail = commandDetailText(latest, "");
   el.textContent = `${rawText(latest.status, "pending")} — ${detail || "waiting for ESP1"}`;
+  // ESP1 of 15 Nov answers an unconfirmed servo move "completed"; from 16 Nov it is "failed".
   el.className = "control-result"
-    + (/NO FLOW/i.test(detail) || latest.status === "failed" || latest.status === "rejected" ? " error" : "");
+    + (/NO FLOW|SERVO (NOT CONFIRMED|FAIL)/i.test(detail) || latest.status === "failed" || latest.status === "rejected" ? " error" : "");
 }
+
+/* ---- Pump selector switch (Manual/Test, 2026-11-16) -----------------------------------------------
+ * Which pump the Nano's servo has selected, and two buttons that move it. A move is a TEST_PULSE on a servo row
+ * (servoL = TRANSFER, servoR = BOOSTER): ESP1 powers ESP2 up, ESP2 keeps the inverter OFF and checks its AC is dead,
+ * then ESP1 has the Nano turn the servo, so no pump runs. ESP1 from 16 Nov 2026 ends the pulse as soon as the move is
+ * settled, so SERVO_MOVE_SECONDS is only its upper bound (covering ESP2's own 10 s servo limit), and publishes where
+ * the Nano last confirmed the servo as system.servoSide. A move in flight is read from the command feed, not kept on
+ * this page, so every open page shows it, and a reload in the middle of one still does. */
+const SERVO_MOVE_SECONDS = 15;
+// ESP1 picks a row up within 3 s, ESP2 takes up to 14 s to enter Testing, the move up to 15 s, and the answer
+// takes a few seconds more. A row still unsettled after this is no longer treated as moving.
+const SERVO_MOVE_WAIT_MAX_MS = 90000;
+const SERVO_PUMP_TEXT = { TRANSFER: "Transfer pump", BOOSTER: "Booster pump" };
+let servoResultShown = "";      // which row's outcome the result line shows, so a local "Not sent" isn't overwritten
+
+function latestServoMove() {
+  return commandData
+    .filter(c => c.type === "TEST_PULSE" && SERVO_TARGETS[c.payload?.target])
+    .sort((a, b) => Number(b.requestedAt || 0) - Number(a.requestedAt || 0))[0];
+}
+
+function servoMoveInFlight() {
+  const row = latestServoMove();
+  if (!row || COMMAND_END_STATUSES.has(row.status)) return null;
+  return serverNow() - Number(row.updatedAt || row.requestedAt || 0) < SERVO_MOVE_WAIT_MAX_MS ? row : null;
+}
+
+// ESP1's answer: "SERVO OK: selector on the TRANSFER side" once the Nano confirmed it. ESP1 of 15 Nov also answers
+// "completed" when it wasn't confirmed, so only those words count as a confirmed move.
+function servoMoveConfirmed(row) {
+  return row?.status === "completed" && /SERVO OK/.test(commandDetailText(row, ""));
+}
+
+function renderServoSwitch(normalAllowed, normalTitle) {
+  const panel = document.getElementById("mtServoPanel");
+  if (!panel) return;
+  const system = liveData.system || {};
+  const side = SERVO_PUMP_TEXT[system.servoSide] ? system.servoSide : "";
+  // ESP1 from 16 Nov 2026 publishes the AC current limits unconditionally, and servoSide whenever it knows it.
+  const sideReported = hasValue(system.acAmpMin10);
+  const moving = servoMoveInFlight();
+  const movingTo = moving ? SERVO_TARGETS[moving.payload.target] : "";
+  const snapshotAge = hasValue(liveData.meta?.updatedAt) ? Math.max(0, serverNow() - Number(liveData.meta.updatedAt)) : 0;
+  setText("mtServoNow", !liveData.system ? "Unavailable"
+    : !sideReported ? "Not reported by this ESP1 firmware (it needs the update from 16 Nov 2026). The buttons still move it."
+    : !side ? "Not known yet: no move has been confirmed. Press Transfer or Booster to set it."
+    : `${SERVO_PUMP_TEXT[side]} (${side} side), confirmed by the Nano ${hasValue(system.servoSideAgeMs)
+        ? agoText(Number(system.servoSideAgeMs) + snapshotAge) : "before ESP1's last restart"}`);
+  setDeviceStatus("mtServoState", moving ? `MOVING TO ${movingTo}` : side || "UNKNOWN", moving ? "warn" : side ? "active" : "off");
+
+  const block = !normalAllowed ? normalTitle : moving ? "Wait for the move in progress to finish." : "";
+  panel.querySelectorAll(".servo-option").forEach(button => {
+    const target = SERVO_TARGETS[button.dataset.servoTarget];
+    button.setAttribute("aria-pressed", String(!moving && side === target));
+    button.classList.toggle("is-moving", movingTo === target);
+    button.disabled = Boolean(block);
+    button.title = block || (side === target ? `ESP1 reports it on the ${target} side already. Press to move it there again.`
+      : `Move the pump selector to the ${target} side.`);
+  });
+
+  // The result line: a move in flight says how far it has got; otherwise the newest move's answer, shown once per change
+  // so that this page's own "Not sent" (from sendFromPanel()) stays until a newer move appears.
+  const row = latestServoMove();
+  if (!row) return;
+  const signature = `${row.id}|${row.status}|${row.detail || ""}|${moving ? "moving" : ""}`;
+  if (signature === servoResultShown) return;
+  servoResultShown = signature;
+  const show = resultLine("mtServoResult");
+  const to = SERVO_TARGETS[row.payload.target];
+  if (moving) {
+    show(row.status === "queued" ? `Moving to the ${to} side: waiting for ESP1 to pick it up (it checks every 3 seconds)…`
+      : row.status === "received" ? `Moving to the ${to} side: ESP1 is checking the request…`
+      : `Moving to the ${to} side: ESP1 is starting ESP2, then the Nano turns the servo…`);
+    return;
+  }
+  const failed = row.status === "failed" || row.status === "rejected" || (row.status === "completed" && !servoMoveConfirmed(row));
+  show(`${rawText(row.status, "pending")} — ${commandDetailText(row, "waiting for ESP1")}`, failed);
+}
+
+function sendServoMove(target) {
+  const side = SERVO_TARGETS[target];
+  if (!side || servoMoveInFlight()) return;
+  const show = resultLine("mtServoResult");
+  if (liveData.system?.servoSide === side &&
+      !confirm(`ESP1 reports the pump selector on the ${side} side already. Move it there again? That re-seats the lever.`)) {
+    show("Nothing was sent.");
+    return;
+  }
+  sendFromPanel(show, "TEST_PULSE", { target, seconds: SERVO_MOVE_SECONDS }, { operatorOnly: true })
+    .then(key => { if (key) syncControlAvailability(); });
+}
+document.querySelectorAll("#mtServoPanel .servo-option").forEach(button =>
+  button.addEventListener("click", () => sendServoMove(button.dataset.servoTarget)));
 
 // Flow-meter table. Shares the sweep with the Diagnostics tab -- one DIAG_SWEEP fills both.
 const MT_FLOW_LABEL = {
@@ -5944,6 +6252,7 @@ function helpAudienceAllowed(audience) {
     case "zones":      return hasZoneEditAccess();
     case "control":    return hasControlAccess();
     case "privileged": return canAccessPrivilegedTabs();
+    case "subop":      return canSetAcVoltage();       // operators and Sub-operators, not 1-hour access
     case "operator":   return isOperator();
     case "asker":      return isApprovedUser() && !canAccessPrivilegedTabs() && (!myControlAccess || !myZoneEditAccess);
     default:           return isApprovedUser();
