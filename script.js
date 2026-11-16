@@ -63,14 +63,15 @@
  *   SET_THRESH         { thStart, thGap }   both required; same clamps as the LCD. Older firmware
  *                        also requires thStop, and web v.3 ignores it.
  *   SET_AC_VOLT        { vMin, vMax }   both required, whole volts, 80-260 with vMin at least 5 under vMax:
- *                        the AC supply window ESP2's PZEM check stops an inverter pump outside of. Operators
- *                        and Sub-operators only (not 1-hour access), in the rules too. ESP1 from 14 Nov 2026
+ *                        the AC supply window ESP2's PZEM check stops an inverter pump outside of. Privileged
+ *                        tier (operators, Sub-operators, 1-hour access; 1-hour access only since 16 Nov 2026),
+ *                        in the rules too. ESP1 from 14 Nov 2026
  *                        publishes the window as system.acVoltMin/acVoltMax, plus system.acVoltLast and
  *                        acVoltLastAgeMs once a pump has run; older firmware rejects it as "not a remotely
  *                        safe control". Refused while someone has Settings > AC Voltage open on the LCD.
  *   SET_AC_AMP         { aMin10, aMax10 }   both required, whole TENTHS of an amp (5 = 0.5 A), 1-100 with aMin10
  *                        at least 2 under aMax10: the no-current and overcurrent limits ESP2's PZEM check stops an
- *                        inverter pump outside of. Same people as SET_AC_VOLT, in the rules too. ESP1 from 16 Nov
+ *                        inverter pump outside of. Same accounts as SET_AC_VOLT, in the rules too. ESP1 from 16 Nov
  *                        2026 publishes them as system.acAmpMin10/acAmpMax10, plus system.acAmpLast (amps) and
  *                        acAmpLastAgeMs once a pump has run; older firmware rejects it as "not a remotely safe
  *                        control". Refused while someone has Settings > AC Current open on the LCD.
@@ -448,11 +449,11 @@ function canAccessPrivilegedTabs() {
   // voidable as a temporary one the moment approval is lost.
   return isOperator() || ((hasTempAccess() || mySubOperator) && isApprovedUser());
 }
-// AC voltage limits (2026-11-14, the owner's choice): operators -- the backdoor included -- and Sub-operators only.
-// Unlike the rest of the System tab, NOT 1-hour access. firebase-rules.json refuses SET_AC_VOLT the same way. The AC
-// current limits (SET_AC_AMP, 2026-11-16) are the same kind of pump protection, so they go with it, in the rules too.
+// The AC voltage and current limits (SET_AC_VOLT, SET_AC_AMP). From 14 Nov 2026 they were for operators and
+// Sub-operators only; on 16 Nov 2026 the owner opened them to 1-hour access too, so they now follow the rest of the
+// System tab. firebase-rules.json allows the same accounts.
 function canSetAcVoltage() {
-  return isOperator() || (mySubOperator && isApprovedUser());
+  return canAccessPrivilegedTabs();
 }
 
 // Access levels (2026-11-05, the owner's design). An approved account on its own can only look: the Live dashboard,
@@ -947,7 +948,7 @@ function syncControlAvailability() {
                         : "";
   }
 
-  // AC voltage limits: operators and Sub-operators only, and only once ESP1 reports the setting (firmware from
+  // AC voltage limits: the privileged tier, and only once ESP1 reports the setting (firmware from
   // 14 Nov 2026). Older firmware would refuse it as "not a remotely safe control".
   const acVoltBtn = document.getElementById("sysAcVoltSendBtn");
   if (acVoltBtn) {
@@ -955,7 +956,7 @@ function syncControlAvailability() {
     const reported = hasValue(liveData.system?.acVoltMin) && hasValue(liveData.system?.acVoltMax);
     acVoltBtn.disabled = !normalAllowed || !allowed || !reported;
     acVoltBtn.title = !normalAllowed ? normalTitle
-                    : !allowed ? "For operators and Sub-operators."
+                    : !allowed ? "For operators, Sub-operators and 1-hour access."
                     : !reported ? "ESP1's firmware doesn't have this setting yet. Update ESP1 and ESP2 first."
                     : "";
   }
@@ -966,7 +967,7 @@ function syncControlAvailability() {
     const reported = hasValue(liveData.system?.acAmpMin10) && hasValue(liveData.system?.acAmpMax10);
     acAmpBtn.disabled = !normalAllowed || !allowed || !reported;
     acAmpBtn.title = !normalAllowed ? normalTitle
-                   : !allowed ? "For operators and Sub-operators."
+                   : !allowed ? "For operators, Sub-operators and 1-hour access."
                    : !reported ? "ESP1's firmware can't take this from the website yet. Update ESP1 first (16 Nov 2026)."
                    : "";
   }
@@ -1557,7 +1558,7 @@ function refreshOperatorUI() {
 // filtering folds the open entries.
 let lastHelpAudience = null;
 function syncHelpAudience() {
-  const signature = ["all", "asker", "zones", "control", "privileged", "subop", "operator"].map(a => (helpAudienceAllowed(a) ? "1" : "0")).join("");
+  const signature = ["all", "asker", "zones", "control", "privileged", "operator"].map(a => (helpAudienceAllowed(a) ? "1" : "0")).join("");
   if (signature === lastHelpAudience) return;
   lastHelpAudience = signature;
   filterHelp(document.getElementById("helpSearch")?.value || "");
@@ -1868,9 +1869,9 @@ const USER_ACTION_INFO = {
   takezones: ["Zone editing", "Ends this account's zone editing now. It can still see everything, and can ask again."],
   givecontrol: ["Control", "Lets this account use the Controls tab (Emergency stop, pumps and valves, forced runs, restarts) and see Diagnostics. It lasts until you take it back."],
   takecontrol: ["Control", "Ends this account's control access now. It can still see the Live dashboard and Zone profiles, and can ask again."],
-  granttemp: ["1-hour access", "Opens Manual/Test, System and the rig lock to this account for exactly 1 hour, then it ends by itself. Use it for a one-off job."],
+  granttemp: ["1-hour access", "Opens Manual/Test, System (the AC voltage and current limits included) and the rig lock to this account for exactly 1 hour, then it ends by itself. Use it for a one-off job."],
   revoketemp: ["1-hour access", "Ends this account's 1-hour access now, instead of waiting for its hour to run out."],
-  grantsubop: ["Sub-operator", "The same access as 1-hour access, plus the AC voltage and current limits, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
+  grantsubop: ["Sub-operator", "The same access as 1-hour access, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
   withholdsubop: ["Sub-operator", "Ends this account's Sub-operator access now. Nothing else ever ends it."]
 };
 function renderUserManagement() {
@@ -2285,11 +2286,6 @@ function queueCommand(type, payload = {}, options = {}) {
   // independently enforces the identical operator-or-temp-access check for these six command types.
   if (options.operatorOnly && !canAccessPrivilegedTabs()) {
     setCommandStatus("This control is for operators, and accounts with 1-hour access or Sub-operator.", "error");
-    return Promise.resolve(false);
-  }
-  // Narrower still (2026-11-14): the AC voltage limits leave out 1-hour access. The rules refuse it the same way.
-  if (options.subOperatorOnly && !canSetAcVoltage()) {
-    setCommandStatus("This control is for operators and Sub-operators.", "error");
     return Promise.resolve(false);
   }
   // The rules refuse everything but the stops while ESP1 reports the rig locked: say so instead of a bare refusal.
@@ -5390,7 +5386,7 @@ document.getElementById("sysAcVoltSendBtn")?.addEventListener("click", () => {
     show("Nothing was sent.");
     return;
   }
-  sendFromPanel(show, "SET_AC_VOLT", { vMin: low, vMax: high }, { operatorOnly: true, subOperatorOnly: true });
+  sendFromPanel(show, "SET_AC_VOLT", { vMin: low, vMax: high }, { operatorOnly: true });
 });
 
 // AC current limits (2026-11-16): the no-current (min) and overcurrent (max) limits ESP2's PZEM check stops a pump on
@@ -5420,7 +5416,7 @@ document.getElementById("sysAcAmpSendBtn")?.addEventListener("click", () => {
     show("Nothing was sent.");
     return;
   }
-  sendFromPanel(show, "SET_AC_AMP", { aMin10: low10, aMax10: high10 }, { operatorOnly: true, subOperatorOnly: true });
+  sendFromPanel(show, "SET_AC_AMP", { aMin10: low10, aMax10: high10 }, { operatorOnly: true });
 });
 
 // Dormant while the firmware builds with SECONDARY_BATT_ENABLED 0: the button only enables when ESP1
@@ -6252,7 +6248,6 @@ function helpAudienceAllowed(audience) {
     case "zones":      return hasZoneEditAccess();
     case "control":    return hasControlAccess();
     case "privileged": return canAccessPrivilegedTabs();
-    case "subop":      return canSetAcVoltage();       // operators and Sub-operators, not 1-hour access
     case "operator":   return isOperator();
     case "asker":      return isApprovedUser() && !canAccessPrivilegedTabs() && (!myControlAccess || !myZoneEditAccess);
     default:           return isApprovedUser();
