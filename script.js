@@ -2599,7 +2599,8 @@ function plannedDays(marks, todayYmd) {
 // set in the plan carries its word and a stronger edge, the rest follow the default. Days before today or past the
 // plan's reach are greyed and can't be changed.
 const PLAN_WEEK_START = Date.UTC(2026, 10, 1);   // 1 Nov 2026 was a Sunday
-function planCalendarHtml(id, { month, marks, defaultOp, today, editable }) {
+// locked: shown but not clickable, while ESP1 can't take a plan yet (firmware before 18 Nov 2026).
+function planCalendarHtml(id, { month, marks, defaultOp, today, editable, locked = false }) {
   const y = Math.floor(month / 10000), m = Math.floor(month / 100) % 100;
   const firstDay = ymdToDayNumber(month);
   const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -2624,7 +2625,7 @@ function planCalendarHtml(id, { month, marks, defaultOp, today, editable }) {
     const words = `${ymdLabel(ymd)}${n === todayN ? " (today)" : ""}: ${inRange ? `${OPERATION_SHORT[op] || "unknown"}${mark ? ", set in the plan" : ", the default"}` : "outside the plan"}`;
     const body = `<span class="plan-num">${d}</span><span class="plan-tag">${tag}</span>`;
     cells.push(editable
-      ? `<button type="button" class="${cls}" data-plan-day="${ymd}" data-col="${id}"${inRange ? "" : " disabled"} aria-label="${escapeHtml(words)}" title="${escapeHtml(words)}">${body}</button>`
+      ? `<button type="button" class="${cls}" data-plan-day="${ymd}" data-col="${id}"${inRange && !locked ? "" : " disabled"} aria-label="${escapeHtml(words)}" title="${escapeHtml(words)}">${body}</button>`
       : `<span class="${cls}" role="img" aria-label="${escapeHtml(words)}" title="${escapeHtml(words)}">${body}</span>`);
   }
   return `<div class="plan-cal${editable ? " editable" : ""}">
@@ -2745,7 +2746,8 @@ function renderZoneSummary(zone) {
       (s.operation === "MANUAL" ? ". Only on days planned Automatic" : ""));
   // Operation (18 Nov 2026): the default, and today's when the day plan says otherwise.
   const planned = s.operation ? plannedDays(s.plan, rigTodayYmd()).length : 0;
-  setText(`zoneOps${id}`, !s.operation ? "Unavailable"
+  setText(`zoneOps${id}`, !s.operation
+    ? (s.known ? "Automatic: the only choice on ESP1's current firmware. Manual and the day plan come with its firmware of 18 Nov 2026." : "Unavailable")
     : OPERATION_TEXT[s.operation] +
       (s.operationToday !== s.operation ? `. Today: ${OPERATION_SHORT[s.operationToday]}, from the day plan` : "") +
       (planned ? `. ${planned} day${planned === 1 ? "" : "s"} planned` : ""));
@@ -2790,7 +2792,16 @@ function renderPlanView(id, s = zoneSettings(id)) {
   const box = document.getElementById(`planView${id}`);
   if (!box) return;
   // Hidden while the column's editor is open: its own calendar is right beside it, and this one would say "press Edit".
-  if (!s.operation || (s.known && !s.enabled) || zoneDrafts[id]) { box.hidden = true; planViewKeys[id] = ""; return; }
+  if ((s.known && !s.enabled) || zoneDrafts[id] || (!s.operation && !s.known)) { box.hidden = true; planViewKeys[id] = ""; return; }
+  // ESP1 reports the column but not its Operation: firmware from before 18 Nov 2026. Say what is missing, rather than
+  // leaving the feature invisible (the owner looked for it on 18 Nov and found nothing).
+  if (!s.operation) {
+    if (planViewKeys[id] === "waiting") return;
+    planViewKeys[id] = "waiting";
+    box.hidden = false;
+    box.innerHTML = `<p class="plan-none">Day plan (Manual or Automatic days): ESP1 needs its firmware of 18 Nov 2026 first. Until then every day is Automatic.</p>`;
+    return;
+  }
   const today = rigTodayYmd();
   const days = plannedDays(s.plan, today);
   const lastMonth = monthOfYmd(ymdAddDays(today, PLAN_DAYS - 1));
@@ -2827,9 +2838,10 @@ function renderPlanEditor(id) {
   const today = rigTodayYmd();
   const lastMonth = monthOfYmd(ymdAddDays(today, PLAN_DAYS - 1));
   if (!d.planMonth || d.planMonth < monthOfYmd(today) || d.planMonth > lastMonth) d.planMonth = monthOfYmd(today);
-  box.innerHTML = planCalendarHtml(id, { month: d.planMonth, marks: d.plan, defaultOp: d.operation || "AUTOMATIC", today, editable: true });
+  const locked = !planSupported();
+  box.innerHTML = planCalendarHtml(id, { month: d.planMonth, marks: d.plan, defaultOp: d.operation || "AUTOMATIC", today, editable: true, locked });
   const clear = document.getElementById(`cfgPlanClear${id}`);
-  if (clear) clear.disabled = !plannedDays(d.plan, today).length;
+  if (clear) clear.disabled = locked || !plannedDays(d.plan, today).length;
 }
 
 // default -> Manual -> Automatic -> default (the user's choice, 18 Nov 2026).
@@ -3292,8 +3304,8 @@ function renderZonesUI() {
 
     const summary = `
         <dl class="zone-summary">
-          ${planOn ? `<dt>Operation${info("Operation", "Automatic waters on its watering times. Manual is readings only: ESP1 starts no scheduled run, and you water it with Water a column now. The day plan can change it for single days.", "help-operation")}</dt>
-          <dd id="zoneOps${id}">Unavailable</dd>` : ""}
+          <dt>Operation${info("Operation", "Automatic waters on its watering times. Manual is readings only: ESP1 starts no scheduled run, and you water it with Water a column now. The day plan can change it for single days. Needs ESP1's firmware of 18 Nov 2026.", "help-operation")}</dt>
+          <dd id="zoneOps${id}">Unavailable</dd>
           <dt>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</dt>
           <dd id="zoneDoes${id}">Unavailable</dd>
           <dt>When it runs${info("When it runs", "The times of day this column may be watered: at most once in each, and only when its soil is dry enough.", "help-window")}</dt>
@@ -3307,16 +3319,17 @@ function renderZonesUI() {
 
     const form = `
         <form id="zoneForm${id}" class="zone-form" novalidate>
-          ${planOn ? `<fieldset>
+          <fieldset>
             <legend>Operation${info("Operation", "Automatic waters on its watering times. Manual is readings only: ESP1 starts no scheduled run, and you water or fertigate it yourself with Water a column now. This is the default for every day; the day plan below changes single days.", "help-operation")}</legend>
-            <label class="choice"><input type="radio" name="cfgOps${id}" value="AUTOMATIC">Automatic: waters on its watering times when the soil is dry</label>
-            <label class="choice"><input type="radio" name="cfgOps${id}" value="MANUAL">Manual: readings only, no scheduled runs</label>
+            <label class="choice"><input type="radio" name="cfgOps${id}" value="AUTOMATIC"${planOn ? "" : " disabled"}>Automatic: waters on its watering times when the soil is dry</label>
+            <label class="choice"><input type="radio" name="cfgOps${id}" value="MANUAL"${planOn ? "" : " disabled"}>Manual: readings only, no scheduled runs</label>
+            ${planOn ? "" : `<p class="plan-wait">ESP1 hasn't reported Manual or Automatic yet: it needs its firmware of 18 Nov 2026. Until it runs that, these stay off and Save to rig leaves them out; the rest of this form works as usual.</p>`}
           </fieldset>
           <fieldset class="plan-fieldset">
             <legend>Day plan${info("Day plan", "Click a day to set it for that date only: once for Manual, twice for Automatic, a third time to go back to the default above. Up to about two months ahead, by ESP1's own clock.", "help-operation")}</legend>
             <div id="cfgPlan${id}" class="plan-edit"></div>
-            <button type="button" id="cfgPlanClear${id}" class="secondary small">Clear the day plan</button>
-          </fieldset>` : ""}
+            <button type="button" id="cfgPlanClear${id}" class="secondary small"${planOn ? "" : " disabled"}>Clear the day plan</button>
+          </fieldset>
           <fieldset>
             <legend>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</legend>
             <label class="choice"><input type="radio" name="cfgMode${id}" value="AUTO">Water + nutrients when the soil needs them</label>
@@ -3402,7 +3415,7 @@ function renderZonesUI() {
             ${reading("NPK probe moisture", `npkMoist${id}`, "", "The NPK probe's own moisture reading. It counts toward Soil moisture when the two agree.", "help-moisture", "Counts toward soil moisture when it agrees")}
             ${reading("Soil temperature", `soilTemp${id}`, "", "Root-zone temperature, from the 7-in-1 probe.", "", "Root zone")}
           </dl>
-          ${planOn ? `<div class="plan-view" id="planView${id}" hidden></div>` : ""}
+          <div class="plan-view" id="planView${id}" hidden></div>
         </section>
         <section class="zone-does" aria-label="Column ${id}: what ESP1 does with it">
           <div class="zone-section-head"><h4>What ESP1 does with it</h4></div>

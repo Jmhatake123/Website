@@ -262,6 +262,8 @@ body.takeover > .sidebar, body.takeover > .main-content { display: none; }
 .plan-next { margin: 0 0 10px; color: var(--muted); font-size: .88rem; line-height: 1.45; }
 .plan-next strong { color: var(--text); }
 .plan-none { margin: 0; color: var(--muted); font-size: .88rem; line-height: 1.45; }
+/* Shown in the editor while ESP1's firmware can't take an Operation yet: the same note style as Up next's. */
+.plan-wait { margin: 8px 0 0; padding: 9px 12px; border-left: 3px solid var(--warning); border-radius: 6px; background: var(--surface-muted); color: var(--text); font-size: .86rem; line-height: 1.45; }
 .plan-cal { max-width: 460px; }
 .plan-cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .plan-month { font-weight: 600; }
