@@ -243,7 +243,8 @@ function escapeHtml(value) {
 function setText(id, text) {
   const element = document.getElementById(id);
   if (!element) return;
-  if (element.classList.contains("reading-value") && rollNumber(element, String(text))) return;
+  // .s-roll: Simple mode's big numbers (18 Nov 2026) roll the same way.
+  if ((element.classList.contains("reading-value") || element.classList.contains("s-roll")) && rollNumber(element, String(text))) return;
   element.textContent = text;
 }
 
@@ -1040,6 +1041,7 @@ function initializeFirebase() {
         showAuthForm("login");
         if (logoutButton) logoutButton.hidden = true;
         if (currentUserEmailEl) { currentUserEmailEl.hidden = true; currentUserEmailEl.textContent = ""; }
+        syncAccountBadge(null);
         setConnection(false, "Sign in required");
         syncControlAvailability();
         refreshOperatorUI();
@@ -1058,6 +1060,7 @@ function initializeFirebase() {
       // Lets whoever is at this screen confirm which account is actually signed in -- e.g. on a
       // shared terminal, or after a Kick silently swapped the session back to the login screen.
       if (currentUserEmailEl) { currentUserEmailEl.textContent = user.email || ""; currentUserEmailEl.hidden = !user.email; }
+      syncAccountBadge(user);            // Simple mode's round initial (18 Nov 2026)
       attachDatabaseListeners();
       attachUserStatusListener(user.uid);
       attachPresence(user.uid);
@@ -3406,6 +3409,7 @@ function renderZonesUI() {
         </div>
         ${power}
       </header>
+      ${simpleZoneHeroHtml(id)}
       <div class="zone-body">
         <section class="zone-now" aria-label="Column ${id}: soil now">
           <div class="zone-section-head">
@@ -3413,7 +3417,8 @@ function renderZonesUI() {
             ${compare}
           </div>
           <p class="zone-off-note" id="zoneOffNote${id}" hidden>This column is off. ESP1 isn't watering it, and isn't sending its readings. Its settings are kept.</p>
-          <dl class="reading-grid">
+          ${simpleReadingsToggleHtml(id)}
+          <dl class="reading-grid" id="zoneReadings${id}">
             <div class="reading reading-gauge">
               <dt>Soil moisture${info("Soil moisture", "The column's main moisture figure. ESP1 waters it when this is below Soil start %, the marked line on the gauge. The other mark is what the crop profile wants.", "help-moisture")}</dt>
               <dd class="gauge-wrap">${moistureGaugeSvg(id)}</dd>
@@ -3438,6 +3443,7 @@ function renderZonesUI() {
         </section>
       </div>`;
     container.appendChild(block);
+    syncSimpleZoneFold(id);              // Simple mode's folded readings stay as they were across rebuilds
 
     if (canEdit) {
       block.querySelector(`#zonePower${id}`)?.addEventListener("click", () => toggleZonePower(id));
@@ -3587,6 +3593,7 @@ function updateZoneReadings() {
     setText(`soilTemp${zone.id}`, numberText(z.soilTemperature, 1, "°C"));
     updateMoistureGauge(zone);
     renderZoneSummary(zone);
+    renderSimpleZone(zone);              // Simple mode's big figure and status (18 Nov 2026)
   });
 }
 
@@ -3870,6 +3877,7 @@ function renderCropLibrary() {
           : `<span class="crop-badge">${escapeHtml(crop.name)}</span>`).join(" ")}`
       : "";
   }
+  syncCropFold();                        // Simple mode: open while an editor is, folded otherwise
   if (!cropDraft) return;
   fillCropForm();
   const focus = cropDraftFocus;
@@ -4435,6 +4443,7 @@ function updateDashboard() {
   renderUpNext();
   updateSystemTab();
   syncControlAvailability();
+  renderSimpleDashboard();               // Simple mode's dashboard, from the same report
 }
 
 function setPumpLamp(id, on) {
@@ -6783,14 +6792,26 @@ document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", (
   if (view === "manualtest") renderManualHold();
 }));
 
+// Light is the default from 18 Nov 2026 (the owner's choice); a saved choice is kept. The <head> script applies it
+// before the first paint; this repeats it for safety and keeps the button in step. Storage can be blocked (private
+// windows, strict settings), so every access is guarded and the page works without it.
 const themeToggle = document.getElementById("theme-toggle");
-const savedTheme = localStorage.getItem("theme") || "dark";
-document.documentElement.dataset.theme = savedTheme;
-function refreshThemeButton() { if (themeToggle) themeToggle.textContent = document.documentElement.dataset.theme === "dark" ? "Light theme" : "Dark theme"; }
+let savedTheme = null;
+try { savedTheme = localStorage.getItem("theme"); } catch { /* storage blocked */ }
+document.documentElement.dataset.theme = savedTheme === "dark" ? "dark" : "light";
+function refreshThemeButton() {
+  if (!themeToggle) return;
+  const dark = document.documentElement.dataset.theme === "dark";
+  // The words have their own span: the button also holds the sun / moon icons.
+  const label = themeToggle.querySelector(".theme-label") || themeToggle;
+  label.textContent = dark ? "Light theme" : "Dark theme";
+  themeToggle.setAttribute("aria-label", dark ? "Switch to the light theme" : "Switch to the dark theme");
+}
 refreshThemeButton();
 themeToggle?.addEventListener("click", () => {
-  document.documentElement.dataset.theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("theme", document.documentElement.dataset.theme);
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch { /* storage blocked: kept for this visit only */ }
   refreshThemeButton();
 });
 
@@ -6845,7 +6866,8 @@ function requestRefresh() {
   const button = document.getElementById("refreshBtn");
   refreshAskedAt = serverNow();
   refreshBaseStamp = Number(liveData.meta?.updatedAt || 0);
-  if (button) { button.disabled = true; button.textContent = "Refreshing…"; }
+  // The label has its own span since 18 Nov 2026: the button also holds Simple mode's icon.
+  if (button) { button.disabled = true; (button.querySelector(".refresh-label") || button).textContent = "Refreshing…"; }
   refreshStatusText("Asking ESP1 for a fresh report…");
   viewerTouch({ refreshAt: firebase.database.ServerValue.TIMESTAMP }).then(ok => {
     if (!ok) finishRefresh(false, "Couldn't ask ESP1: this account may not be allowed, or the connection dropped.");
@@ -6869,7 +6891,7 @@ function finishRefresh(answered, message) {
   refreshAskedAt = 0;
   if (refreshTimeout) { clearTimeout(refreshTimeout); refreshTimeout = null; }
   const button = document.getElementById("refreshBtn");
-  if (button) { button.disabled = false; button.textContent = "Refresh"; }
+  if (button) { button.disabled = false; (button.querySelector(".refresh-label") || button).textContent = "Refresh"; }
   if (answered) refreshStatusText(`Fresh report from ESP1 in ${(took / 1000).toFixed(1)} s`, 8000);
   else refreshStatusText(message || "No new report from ESP1 yet: it may be offline or busy, or its firmware is older than 17 Nov.", 15000);
 }
@@ -7098,6 +7120,7 @@ setInterval(() => {
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;
   updateFaultBanner();
   renderTankCheck();                   // its button follows freshness and the rig's state
+  renderSimpleDashboard();             // Simple mode: ages, countdowns and "unknown" when ESP1 goes quiet
 }, 1000);
 
 /* Info icons ------------------------------------------------------------------------------------
@@ -7228,6 +7251,785 @@ function openHelpEntry(entryId) {
   entry.querySelector("summary")?.focus({ preventScroll: true });
 }
 
+/* ==== Simple mode (18 Nov 2026) =====================================================================================
+ * A plainer way of showing the same page, after the owner's sample design: the farm at a glance on the dashboard, big
+ * numbers on Zone profiles, and the technical parts of Controls folded away. Presentation only. It reads the same
+ * liveData and commandData as everything else, sends nothing of its own, and every control it shows is the same element,
+ * with the same handler and the same checks, as in Complete mode. The choice is this browser's own (localStorage
+ * "uiMode"), never written to Firebase; the <head> script applies it before the first paint.
+ * Freshness: anything deviceIsFresh() doesn't vouch for is shown as "last known" or "unknown", never as running or idle,
+ * and nothing in the picture moves. */
+const UI_MODE_KEY = "uiMode";
+function storedUiMode() {
+  try { return localStorage.getItem(UI_MODE_KEY) === "complete" ? "complete" : "simple"; } catch { return "simple"; }
+}
+function uiMode() {
+  return document.documentElement.dataset.mode === "complete" ? "complete" : "simple";
+}
+
+function applyUiMode(mode, { save = false, focus = false } = {}) {
+  const next = mode === "complete" ? "complete" : "simple";
+  document.documentElement.dataset.mode = next;
+  if (save) { try { localStorage.setItem(UI_MODE_KEY, next); } catch { /* storage blocked: kept for this visit only */ } }
+  document.querySelectorAll("#modeSwitch [data-mode-choice]").forEach(option => {
+    const on = option.dataset.modeChoice === next;
+    option.setAttribute("aria-checked", on ? "true" : "false");
+    option.tabIndex = on ? 0 : -1;
+    if (on && focus) option.focus();
+  });
+  // Simple mode has no Manual/Test, System or Diagnostics. Leaving one goes through the tab's own click handler, the
+  // one path that leaves Manual/Test properly: it disarms the page and gives ESP1's manual hold straight back.
+  if (next === "simple" && document.querySelector(".tab.active")?.classList.contains("complete-tab")) {
+    document.querySelector('.tab[data-view="dashboard"]')?.click();
+  }
+  renderSimpleDashboard();
+}
+
+function initModeSwitch() {
+  const group = document.getElementById("modeSwitch");
+  if (!group) return;
+  const options = [...group.querySelectorAll("[data-mode-choice]")];
+  options.forEach(option => option.addEventListener("click", () => {
+    if (option.dataset.modeChoice !== uiMode()) applyUiMode(option.dataset.modeChoice, { save: true });
+  }));
+  // A radio group: Tab reaches the chosen option, the arrow keys (and Home / End) choose the other.
+  group.addEventListener("keydown", event => {
+    const steps = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };
+    if (!(event.key in steps) && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const at = Math.max(0, options.findIndex(o => o.dataset.modeChoice === uiMode()));
+    const index = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+      : (at + steps[event.key] + options.length) % options.length;
+    applyUiMode(options[index].dataset.modeChoice, { save: true, focus: true });
+  });
+  // Changed in another tab of this site: follow it, so two windows never disagree about what is shown.
+  window.addEventListener("storage", event => {
+    if (event.key === UI_MODE_KEY) applyUiMode(storedUiMode());
+    if (event.key === "theme") {
+      document.documentElement.dataset.theme = event.newValue === "dark" ? "dark" : "light";
+      refreshThemeButton();
+    }
+  });
+  applyUiMode(storedUiMode());
+}
+
+// The signed-in account's first letter, as the sample design's avatar. Its full address is in the tooltip and is read
+// out by screen readers; the text itself comes from Firebase Auth and only ever goes in through textContent.
+function syncAccountBadge(user) {
+  const badge = document.getElementById("accountBadge");
+  if (!badge) return;
+  const email = user?.email || "";
+  badge.hidden = !email;
+  badge.textContent = email ? email.trim().charAt(0).toUpperCase() : "";
+  badge.title = email ? `Signed in as ${email}` : "";
+  if (email) { badge.setAttribute("role", "img"); badge.setAttribute("aria-label", `Signed in as ${email}`); badge.removeAttribute("aria-hidden"); }
+  else { badge.removeAttribute("role"); badge.removeAttribute("aria-label"); badge.setAttribute("aria-hidden", "true"); }
+}
+
+// Small setters that only touch the page when something changed, as this runs every second.
+function sSet(id, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el.classList.contains("s-roll")) { setText(id, text); return; }
+  if (el.textContent !== text) el.textContent = text;
+}
+function sAttr(el, name, value) {
+  if (el && el.getAttribute(name) !== value) el.setAttribute(name, value);
+}
+function sTone(id, tone) {
+  const el = document.getElementById(id);
+  if (el && el.dataset.tone !== tone) el.dataset.tone = tone;
+}
+function sIcon(useId, symbol) {
+  sAttr(document.getElementById(useId), "href", `#${symbol}`);
+}
+// A level bar: fills to pct (0 to 100 shown; a tank can read over 100 %), or empties and says so when there is no reading.
+function sBar(id, pct, stale) {
+  const bar = document.getElementById(id);
+  if (!bar) return;
+  const known = pct !== null;
+  const shown = known ? Math.min(100, Math.max(0, pct)) : 0;
+  const fill = bar.firstElementChild;
+  if (fill) fill.style.width = `${shown}%`;
+  bar.classList.toggle("is-stale", Boolean(stale));
+  bar.classList.toggle("is-empty", !known);
+  if (known) { sAttr(bar, "aria-valuenow", String(Math.round(shown))); sAttr(bar, "aria-valuetext", `${Math.round(pct)} percent${stale ? ", last known" : ""}`); }
+  else { bar.removeAttribute("aria-valuenow"); sAttr(bar, "aria-valuetext", "No reading"); }
+}
+
+// ESP2's stage names in plain words (the ones this page knows; anything else is shown as ESP2 named it).
+const SIMPLE_STAGE_WORDS = {
+  "Starting": "Getting ready",
+  "Transfer Water": "Filling the mixing tank from the reservoir",
+  "Pump Nutrients": "Adding nutrients to the mixing tank",
+  "Mixing": "Stirring the water and nutrients together",
+  "Release": "Sending the water to the column",
+  "Flush Fill": "Rinsing: filling the mixing tank with clean water",
+  "Flush Release": "Rinsing: sending the clean water to the column"
+};
+function simpleStageText(run) {
+  return SIMPLE_STAGE_WORDS[run.stage] || rawText(run.stage, "Working");
+}
+// The same words mid-sentence ("Watering column A: getting ready.").
+function lowerFirst(text) {
+  return text ? text.charAt(0).toLowerCase() + text.slice(1) : text;
+}
+
+// Whether someone is testing by hand (Manual/Test on this site, the LCD's tests, or a pump exercise). ESP1's pump flags
+// only follow a run's stages, so during a test a pump can be running while they say off: the page must not claim idle.
+function simpleTesting() {
+  const d = liveData.diagnostics || {};
+  return liveData.system?.state === "TEST_MODE" || Boolean(d.actuator?.pumpTestActive) || d.webManual?.held === true;
+}
+
+// The one-line situation for the big status card, worst first: unknown, connection lost, a problem that stops the rig,
+// running, something worth knowing, idle.
+function simpleSituation() {
+  const d = liveData.diagnostics || {};
+  const sys = liveData.system || {};
+  const run = d.runProgress || {};
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  if (databaseAccessDenied) return { tone: "wait", icon: "si-alert", title: "Can't read the farm's data", text: "This account isn't allowed to read the controller's reports." };
+  if (!currentUserIsSignedIn() || !databaseListenersAttached) return { tone: "wait", icon: "si-clock", title: "Connecting…", text: "Waiting for the farm's data." };
+  if (!stamp) return { tone: "wait", icon: "si-clock", title: "Waiting for the system", text: "The farm's controller (ESP1) hasn't sent a report yet, so its state is unknown." };
+  if (!firebaseConnected) return { tone: "lost", icon: "si-unlink", title: "Connection lost", text: "This browser has lost its connection, so what the system is doing now is unknown. The numbers below are the last ones received." };
+  // No running age in this sentence: the card is a live region, and the age (in the Controller chip) changes every
+  // minute, which would make a screen reader repeat the whole card.
+  if (!deviceIsFresh()) return { tone: "lost", icon: "si-unlink", title: "Controller not reporting", text: "It has stopped sending reports, so what the system is doing now is unknown. The numbers below are from its last report." };
+  const bad = [];
+  const warn = [];
+  if (d.fault?.held) bad.push("A problem stopped the system and is waiting for someone to decide what to do. See the red banner at the top.");
+  else if (sys.state === "EMERGENCY_STOP") bad.push("The emergency stop is on. Nothing runs until someone returns the system to normal.");
+  if (d.tankCheck?.needed === true) bad.push("The mixing tank must be checked before scheduled watering goes on. See the banner at the top.");
+  if (d.esp2?.communicationLost) bad.push("The controller has lost contact with the pump board (ESP2).");
+  if (hasValue(d.nano?.lastSampleAgeMs) && ageFlag(d.nano.lastSampleAgeMs) !== "ok") bad.push("The sensor board (Nano) has stopped sending readings.");
+  if (d.peripherals?.rtcOk === false || sys.rtcOk === false) bad.push("The controller's clock isn't working, so its watering times can't be trusted.");
+  if (d.power?.batteryCritical) bad.push("The battery is critically low.");
+  if (run.active && run.phase === "error") bad.push("The last run stopped with a problem. The controller's screen says what happened.");
+  if (actuationsAreOff()) warn.push("Pumps and valves are switched off, so nothing runs, not even the schedule.");
+  const res = liveData.sensors?.reservoirLevel;
+  if (hasValue(res) && Number(res) < RIG_RES_LOW_PCT) warn.push(`The reservoir is below ${RIG_RES_LOW_PCT} %, so watering waits until it is refilled.`);
+  if (d.power?.batteryLow && !d.power?.batteryCritical) warn.push("The battery is low.");
+  const more = n => n > 0 ? ` (${n} more thing${n === 1 ? "" : "s"} to check in Complete mode.)` : "";
+  if (bad.length) return { tone: "bad", icon: "si-stop", title: "Attention needed", text: bad[0] + more(bad.length + warn.length - 1) };
+  const running = run.active && (run.phase === "starting" || run.phase === "running");
+  if (running) {
+    const what = run.operation === "fertigation" ? "Feeding" : "Watering";
+    return { tone: "run", icon: "si-drop", title: "System is running", text: `${what} column ${rawText(run.zone, "?")}: ${lowerFirst(simpleStageText(run))}.${warn.length ? ` Also: ${warn[0]}` : ""}` };
+  }
+  if (simpleTesting()) return { tone: "warn", icon: "si-hand", title: "Testing in progress", text: "Someone is testing the pumps and valves by hand. Scheduled watering waits until the test is closed." };
+  if (warn.length) return { tone: "warn", icon: "si-alert", title: "Attention needed", text: warn[0] + more(warn.length - 1) };
+  if (["BOOT_STATE", "STARTUP_SYNC", "RECOVERY_STATE"].includes(sys.state)) {
+    return { tone: "warn", icon: "si-clock", title: "Getting ready", text: `${(STATE_BUSY_TEXT[sys.state] || "ESP1 is starting up").replace(/^ESP1/, "The controller")}.` };
+  }
+  if (run.active && run.phase === "finishing") return { tone: "ok", icon: "si-check", title: "Watering finished", text: `Column ${rawText(run.zone, "?")} has just been ${run.operation === "fertigation" ? "fed" : "watered"}. All pumps are off.` };
+  return { tone: "ok", icon: "si-check", title: "System is idle", text: "All pumps are off. It waters each column at its watering time when the soil is dry." };
+}
+
+// The reservoir or mixing tank card.
+function renderSimpleTank(prefix, pct, litres, status, stale) {
+  const known = hasValue(pct);
+  const value = known ? Number(pct) : null;
+  sSet(`${prefix}Pct`, known ? `${Math.round(value)} %` : "No reading");
+  const why = !known ? TANK_STATUS_WORDS[status] : "";
+  sSet(`${prefix}Litres`, known ? (hasValue(litres) ? `About ${numberText(litres, 1, "L")}` : "Litres not reported") : (why ? `The level sensor reports ${why}.` : "The controller sent no level."));
+  sBar(`${prefix}Bar`, value, stale);
+  const card = document.getElementById(prefix);
+  card?.classList.toggle("is-stale", stale);
+  const tag = card?.querySelector(".s-stale-tag");
+  if (tag) tag.hidden = !stale || !known;
+  return { known, value };
+}
+
+// A column's state in plain words, from its moisture against ESP1's Soil start % and the crop profile's moisture.
+// Nothing invented: ESP1 waters below Soil start %, and the crop profile's number is this site's own reference.
+function simpleSoilState(id) {
+  const z = liveData.sensors?.zones?.[id] || {};
+  const zone = activeZones.find(item => item.id === id);
+  const target = zone ? zoneCrop(zone).stage?.moisture : null;
+  const start = soilStartPercent();
+  const fresh = deviceIsFresh();
+  const run = liveData.diagnostics?.runProgress || {};
+  const live = fresh && run.active && (run.phase === "starting" || run.phase === "running") && String(run.zone || "").toUpperCase().includes(id);
+  if (z.enabled === false) return { tone: "off", word: "Switched off", say: "Switched off on the controller: not watered, no readings.", pct: null };
+  if (!hasValue(z.moisture)) return { tone: "none", word: "No reading", say: "The controller sent no moisture reading for it.", pct: null };
+  const pct = Math.min(100, Math.max(0, Number(z.moisture)));
+  if (live) {
+    const booster = Boolean(liveData.actuators?.boosterRunning);
+    return { tone: "flow", word: booster ? "Being watered" : "Water being prepared", say: booster ? "Water is flowing to it now." : "Its water is being prepared in the mixing tank.", pct };
+  }
+  // A Manual day (ESP1 from 18 Nov 2026): no scheduled run, so don't promise one.
+  const manualToday = zoneSettings(id).operationToday === "MANUAL";
+  if (pct < start) return { tone: "dry", word: "Needs water", pct, say: manualToday
+    ? `Drier than ${start} %. It is on Manual today, so only Water a column now waters it.`
+    : `Drier than ${start} %: it is watered at its next watering time.` };
+  if (hasValue(target) && pct < Number(target)) return { tone: "low", word: "Below target", say: `Moist enough for now, but under the crop's ${Number(target)} %.`, pct };
+  return { tone: "ok", word: hasValue(target) ? "On target" : "Moist enough", say: hasValue(target) ? `At or above the crop's ${Number(target)} %.` : `Wetter than ${start} %, so no water is needed.`, pct };
+}
+
+function renderSimpleSoil(stale) {
+  ["A", "B", "C"].forEach(id => {
+    const s = simpleSoilState(id);
+    const zone = activeZones.find(item => item.id === id);
+    const crop = zone ? zoneCrop(zone) : {};
+    sSet(`sColCrop${id}`, crop.crop ? `${crop.crop.name}${crop.stage ? `, ${crop.stage.name.toLowerCase()}` : ""}` : "");
+    sSet(`sColPct${id}`, s.pct === null ? "--" : `${Math.round(s.pct)} %`);
+    sSet(`sColState${id}`, s.word);
+    sTone(`sCol${id}`, stale && s.tone === "flow" ? "none" : s.tone);
+    document.getElementById(`sCol${id}`)?.classList.toggle("is-stale", stale);
+    const tag = document.getElementById(`sColStale${id}`);
+    if (tag) tag.hidden = !stale || s.pct === null;      // an old reading always says so
+  });
+  sSet("sSoilHint", `A column is watered at its watering time when its soil is drier than ${soilStartPercent()} % (Soil start).`);
+}
+
+function renderSimpleActivity(fresh) {
+  const d = liveData.diagnostics || {};
+  const run = d.runProgress || {};
+  const bar = document.getElementById("sActBar");
+  const progress = document.getElementById("sActProgress");
+  let title, text, tone = "none", pct = null, progressText = "";
+  if (!liveData.meta?.updatedAt) { title = "Waiting for the system"; text = "The controller hasn't reported yet."; }
+  else if (!fresh) {
+    title = "Unknown right now"; tone = "lost";
+    text = run.active ? `Its last report showed column ${rawText(run.zone, "?")} being ${run.operation === "fertigation" ? "fed" : "watered"}. This page can't tell whether that is still going.`
+      : "The controller isn't reporting, so this page can't tell what it is doing.";
+  } else if (run.active && (run.phase === "starting" || run.phase === "running")) {
+    tone = "run";
+    title = `${run.operation === "fertigation" ? "Feeding" : "Watering"} column ${rawText(run.zone, "?")}`;
+    const step = hasValue(run.stageOrdinal) && hasValue(run.stageTotal) ? ` (step ${run.stageOrdinal} of ${run.stageTotal})` : "";
+    text = `${simpleStageText(run)}${step}.`;
+    // As on the Complete dashboard (updateRunProgress()): the Release stage under way counts toward the total.
+    const releasing = run.stage === "Release" || run.stage === "Flush Release";
+    const delivered = Number(run.waterDeliveredLiters || 0) + (releasing ? Number(run.stageLiters || 0) : 0);
+    if (Number(run.waterTargetLiters) > 0) {
+      pct = Math.min(100, Math.max(0, delivered / Number(run.waterTargetLiters) * 100));
+      progressText = `${numberText(delivered, 1, "L")} of ${numberText(run.waterTargetLiters, 1, "L")} delivered`;
+    }
+  } else if (run.active && run.phase === "finishing") {
+    tone = "ok"; title = "Just finished";
+    text = `Column ${rawText(run.zone, "?")} has been ${run.operation === "fertigation" ? "fed" : "watered"}. All pumps are off.`;
+  } else if (run.active && run.phase === "error") {
+    tone = "bad"; title = "Last run stopped";
+    text = "The last run stopped with a problem. The controller's screen says what happened.";
+  } else if (simpleTesting()) {
+    tone = "warn"; title = "Testing by hand";
+    const ex = EXERCISE_IDS.indexOf(String(d.actuator?.pumpUnderTest || ""));
+    text = d.actuator?.pumpTestActive && ex >= 0 ? `${EXERCISE_PUMPS[ex]}: a short run to keep it healthy (pump exercise).` : "Someone is testing the pumps and valves. Scheduled watering waits.";
+  } else if (forceArmedInfo) {
+    tone = "run"; title = "Forced run counting down";
+    text = `Column ${rawText(forceArmedInfo.columns, "?")}, ${numberText(forceArmedInfo.liters, 1, "L")}, starts in ${Math.max(0, forceArmedInfo.left)} s. Cancel it on Controls.`;
+  } else {
+    tone = "ok"; title = "Nothing running"; text = "All pumps are off.";
+  }
+  sTone("sActivity", tone);
+  sSet("sActTitle", title);
+  sSet("sActText", text);
+  if (bar) bar.hidden = pct === null;
+  if (pct !== null) sBar("sActBar", pct, false);
+  if (progress) { progress.hidden = !progressText; if (progress.textContent !== progressText) progress.textContent = progressText; }
+}
+
+// Why the next watering may not happen: upNextBlockText()'s reasons, in Simple mode's plain words.
+function simpleNextBlockText() {
+  const d = liveData.diagnostics || {};
+  const reasons = [];
+  if (!deviceIsFresh()) reasons.push("From the controller's last report.");
+  if (d.fault?.held) reasons.push("A problem is waiting for a decision, so nothing runs until then.");
+  else if (liveData.system?.state === "EMERGENCY_STOP") reasons.push("The emergency stop is on, so nothing runs until it is cleared.");
+  if (actuationsAreOff()) reasons.push("Pumps and valves are switched off, so nothing runs.");
+  if (d.webManual?.held === true) reasons.push("Testing by hand is open, so nothing starts by itself.");
+  if (d.tankCheck?.needed === true) reasons.push("The mixing tank must be checked first (see the banner at the top).");
+  const res = liveData.sensors?.reservoirLevel;
+  if (hasValue(res) && Number(res) < RIG_RES_LOW_PCT) reasons.push(`The reservoir is below ${RIG_RES_LOW_PCT} %, so nothing is watered until it is refilled.`);
+  return reasons.join(" ");
+}
+
+function renderSimpleNext(fresh) {
+  const now = liveData.system ? rigNow() : null;
+  let what = "--", when = "Waiting for the controller's report.", note = "";
+  if (liveData.system && !now) { when = "Unknown"; note = "The controller's clock can't be read, so its watering times are unknown."; }
+  else if (now) {
+    const items = upNextItems(now).filter(item => !/exercise$/.test(item.what));
+    const next = items.find(item => item.forced || item.at >= 0);
+    const manual = items.filter(item => item.at < 0 && item.day.getTime() === dayStart(now).getTime()).map(item => item.what);
+    if (next) {
+      const days = Math.round((next.day.getTime() - dayStart(now).getTime()) / 86400000);
+      what = next.what;
+      when = `${days === 0 ? "Today" : days === 1 ? "Tomorrow" : next.day.toLocaleDateString([], { weekday: "long" })}, ${next.time}`;
+      note = next.note;
+    } else {
+      what = "Nothing planned";
+      when = "No watering time ahead";
+      const on = ["A", "B", "C"].map(zoneSettings).filter(s => s.known && s.enabled);
+      note = on.length ? "" : "No column is switched on.";
+    }
+    if (manual.length) note = `${note}${note ? " " : ""}${columnList(manual.map(w => w.replace(/^Column /, "")))} ${manual.length === 1 ? "is" : "are"} not watered by the schedule today.`;
+    const block = simpleNextBlockText();
+    if (block) note = `${block} ${note}`.trim();
+  }
+  if (!fresh && liveData.meta?.updatedAt && !now) note = `From the controller's last report. ${note}`.trim();
+  sSet("sNextWhat", what);
+  sSet("sNextWhenText", when);
+  sSet("sNextNote", note);
+}
+
+function renderSimpleMore(fresh) {
+  const s = liveData.sensors || {};
+  sSet("sTemp", numberText(s.temperature, 1, "°C").replace("Unavailable", "--"));
+  sSet("sHum", numberText(s.humidity, 0, "%").replace("Unavailable", "--"));
+  sSet("sLux", hasValue(s.lightLevel) ? `${Math.round(Number(s.lightLevel)).toLocaleString()} lux` : "--");
+  sSet("sPh", numberText(s.waterPH, 1).replace("Unavailable", "--"));
+  sSet("sEc", numberText(s.waterEC, 2, "mS/cm").replace("Unavailable", "--"));
+  sSet("sBattV", numberText(s.batteryVoltage, 1, "V").replace("Unavailable", "--"));
+  sSet("sSolarToday", numberText(s.solarEnergyTodayWh, 0, "Wh").replace("Unavailable", "--"));
+  sSet("sBatt2", numberText(s.secondaryBatteryPercent, 0, "%").replace("Unavailable", "--"));
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  sSet("sMoreFoot", !stamp ? "Waiting for the controller's first report."
+    : `${fresh ? "From the controller's latest report" : "From the controller's last report"}, ${formatAge(Math.max(0, serverNow() - stamp))} ago. pH and EC are measured in the mixing tank. Every reading is in Complete mode.`);
+}
+
+// Everything on the Simple dashboard. Runs with every snapshot and every second (ages, countdowns, freshness).
+function renderSimpleDashboard() {
+  if (!document.getElementById("simpleDashboard")) return;
+  const fresh = deviceIsFresh();
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  const stale = Boolean(stamp) && !fresh;
+  const sit = simpleSituation();
+  sTone("sStatus", sit.tone);
+  sIcon("sStatusIconUse", sit.icon);
+  sSet("sStatusTitle", sit.title);
+  sSet("sStatusText", sit.text);
+
+  // The chips: the controller's link, solar and battery.
+  const link = !stamp ? { tone: "wait", icon: "si-wifi", text: databaseListenersAttached ? "No report yet" : "Connecting…" }
+    : !firebaseConnected ? { tone: "bad", icon: "si-unlink", text: "This browser is offline" }
+    : fresh ? { tone: "ok", icon: "si-wifi", text: "Connected" }
+    : { tone: "bad", icon: "si-unlink", text: `Not reporting (${formatAge(serverNow() - stamp)})` };
+  sTone("sChipLink", link.tone);
+  sIcon("sLinkIconUse", link.icon);
+  sSet("sLinkText", link.text);
+  const sensors = liveData.sensors || {};
+  const last = stale ? " · last known" : "";
+  sSet("sSolar", hasValue(sensors.solarPower) ? `${numberText(sensors.solarPower, 1, "W")}${last}` : "No reading");
+  const power = liveData.diagnostics?.power || {};
+  const battWord = power.batteryCritical ? " · critical" : power.batteryLow ? " · low" : "";
+  sSet("sBattery", hasValue(sensors.batteryPercent) ? `${numberText(sensors.batteryPercent, 0, "%")}${battWord}${last}` : "No reading");
+  sTone("sChipBattery", stale || !hasValue(sensors.batteryPercent) ? "none" : power.batteryCritical ? "bad" : power.batteryLow ? "warn" : "ok");
+  sTone("sChipSolar", stale || !hasValue(sensors.solarPower) ? "none" : "solar");
+
+  // The two tanks.
+  const rawTank = liveData.diagnostics?.sensorsRaw?.tank || {};
+  const res = renderSimpleTank("sRes", sensors.reservoirLevel, sensors.reservoirLiters, rawTank.reservoirStatus, stale);
+  const low = res.known && res.value < RIG_RES_LOW_PCT;
+  sTone("sRes", !res.known || stale ? "none" : low ? "warn" : "water");
+  sSet("sResHint", low ? `Below ${RIG_RES_LOW_PCT} %: no column is watered until the reservoir is refilled, so the pumps never run dry.`
+    : `Watering pauses if it falls below ${RIG_RES_LOW_PCT} % (the marked line), so the pumps never run dry.`);
+  const mix = renderSimpleTank("sMix", sensors.mixingLevel, sensors.mixingLiters, rawTank.mixingStatus, stale);
+  sTone("sMix", !mix.known || stale ? "none" : "mix");
+
+  renderSimpleSoil(stale);
+  updateSimpleDiagram(fresh, stale);
+  renderSimpleActivity(fresh);
+  renderSimpleNext(fresh);
+  renderSimpleMore(fresh);
+}
+
+/* The system picture: reservoir → transfer pump → mixing tank (nutrients, mixer) → booster pump → columns. Drawn in
+ * code, in two layouts (wide, and tall for phones), and driven by the same pump flags as the Complete drawing: water moves
+ * along a pipe only while ESP1's fresh report says that pump is running, and nothing moves at all when the report is old. */
+// Below this width the wide picture's words get too small to read (tablets included), so the tall one is drawn.
+const SIMPLE_DIAGRAM_NARROW_PX = 700;
+const SIMPLE_LAYOUTS = {
+  wide: {
+    w: 1000, h: 300,
+    res: { x: 30, y: 72, w: 140, h: 178 },
+    tp: { cx: 258, cy: 226 },
+    mix: { x: 380, y: 92, w: 160, h: 158, mixerDx: 26 },
+    bottles: { x: 446, y: 14, gap: 38 },
+    bp: { cx: 624, cy: 226 },
+    manifoldY: 120, nozzleY: 150,
+    cols: { xs: [690, 800, 910], w: 82, y: 198, h: 64 },
+    pipes: {
+      resOut: "M170 226 H234",
+      transferOut: "M282 226 H380",
+      mixOut: "M540 226 H600",
+      boosterOut: "M624 202 V120 H951",
+      dropA: "M731 120 V150", dropB: "M841 120 V150", dropC: "M951 120 V150"
+    },
+    // Where each pump's name and state go, from its centre.
+    labels: { transfer: { dx: 0, dy: 44, anchor: "middle" }, booster: { dx: 0, dy: 44, anchor: "middle" } },
+    ground: "M0 270 C 120 258 240 262 360 266 S 620 262 760 266 S 920 260 1000 264 V300 H0 Z"
+  },
+  narrow: {
+    w: 360, h: 560,
+    res: { x: 14, y: 62, w: 104, h: 150 },
+    tp: { cx: 160, cy: 192 },
+    mix: { x: 206, y: 92, w: 140, h: 150, mixerDx: 22 },
+    bottles: { x: 254, y: 10, gap: 32 },
+    bp: { cx: 276, cy: 296 },
+    manifoldY: 352, nozzleY: 382,
+    cols: { xs: [18, 133, 248], w: 94, y: 432, h: 70 },
+    pipes: {
+      resOut: "M118 192 H136",
+      transferOut: "M184 192 H206",
+      mixOut: "M276 242 V272",
+      boosterOut: "M276 320 V352 H65 M276 352 H295",
+      dropA: "M65 352 V382", dropB: "M180 352 V382", dropC: "M295 352 V382"
+    },
+    // The booster's words sit to its left, clear of the pipe running down from it.
+    labels: { transfer: { dx: 0, dy: 42, anchor: "middle" }, booster: { dx: -34, dy: -4, anchor: "end" } },
+    ground: "M0 520 C 90 510 180 514 270 518 S 340 512 360 514 V560 H0 Z"
+  }
+};
+// seen: which levels have had a reading since the picture was drawn. The first one is set at once, with no long rise
+// from empty (as the Complete drawing does); later changes move smoothly.
+const sDiagram = { layout: "", els: null, seen: new Set() };
+function sInstant(el, apply) {
+  el.style.transition = "none";
+  apply();
+  el.getBoundingClientRect();            // commit it now, so the transition only covers later changes
+  el.style.transition = "";
+}
+
+function simpleTankSvg(key, t, name) {
+  const inner = { x: t.x + 6, y: t.y + 6, w: t.w - 12, h: t.h - 12 };
+  const wave = (y, amp) => {
+    let d = `M${inner.x - 60} ${y}`;
+    for (let x = inner.x - 60; x < inner.x + inner.w + 60; x += 30) d += ` q 7.5 ${-amp} 15 0 t 15 0`;
+    return `${d} V${inner.h + 8} H${inner.x - 60} Z`;      // relative to the tank's inside top; clipped to the tank
+  };
+  const low = key === "res" ? `<line class="s-dg-low" x1="${t.x + 8}" x2="${t.x + t.w - 8}" y1="${(inner.y + inner.h * (1 - RIG_RES_LOW_PCT / 100)).toFixed(1)}" y2="${(inner.y + inner.h * (1 - RIG_RES_LOW_PCT / 100)).toFixed(1)}"/><text class="s-dg-note" x="${t.x + t.w - 10}" y="${(inner.y + inner.h * (1 - RIG_RES_LOW_PCT / 100) - 5).toFixed(1)}" text-anchor="end">${RIG_RES_LOW_PCT} %</text>` : "";
+  // The mixer: a motor on the lid, its shaft, and a propeller near the bottom that turns (seen from the side, it flips)
+  // inside a swirl while ESP1 reports it running.
+  const sx = t.x + (t.mixerDx || 0);
+  const py = t.y + t.h - 30;
+  const mixer = key === "mix" ? `<g class="s-dg-mixer">
+        <rect class="s-dg-motor" x="${sx - 9}" y="${t.y - 12}" width="18" height="14" rx="3"/>
+        <line class="s-dg-shaft" x1="${sx}" y1="${t.y + 2}" x2="${sx}" y2="${py}"/>
+        <g transform="translate(${sx} ${py})"><g class="s-dg-swirl"><path d="M-20 0 a20 20 0 0 1 20 -20"/><path d="M20 0 a20 20 0 0 1 -20 20"/></g></g>
+        <g transform="translate(${sx} ${py})"><g class="s-dg-prop"><path d="M-14 0 C -10 -6 -3 -6 0 0 C 3 6 10 6 14 0 C 10 -6 3 -6 0 0 C -3 6 -10 6 -14 0Z"/></g></g>
+      </g>` : "";
+  return `<g class="s-dg-tank s-dg-${key}" data-s-tank="${key}">
+      <clipPath id="sClip-${key}"><rect x="${inner.x}" y="${inner.y}" width="${inner.w}" height="${inner.h}" rx="10"/></clipPath>
+      <rect class="s-dg-tank-body" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" rx="16"/>
+      <g clip-path="url(#sClip-${key})">
+        <g class="s-dg-level" data-s-level="${key}" style="transform: translateY(${inner.h}px)">
+          <g transform="translate(0 ${inner.y})">
+            <path class="s-dg-water-back s-dg-wave2" d="${wave(4, 5)}"/>
+            <path class="s-dg-water s-dg-wave" d="${wave(0, 6)}"/>
+          </g>
+        </g>
+      </g>
+      ${low}${mixer}
+      <text class="s-dg-tank-name" x="${t.x + t.w / 2}" y="${t.y + 24}" text-anchor="middle">${name}</text>
+      <text class="s-dg-tank-value" x="${t.x + t.w / 2}" y="${t.y + 58}" text-anchor="middle" data-s-value="${key}">--</text>
+    </g>`;
+}
+
+// Four blades, so the impeller's box is centred on its hub and it turns in place (transform-box: fill-box).
+function simplePumpSvg(key, p, name, label) {
+  const blade = angle => `<path d="M0 -15 C 6 -10 6 -4 0 0 C -6 -4 -6 -10 0 -15Z" transform="rotate(${angle})"/>`;
+  return `<g class="s-dg-pump" data-s-pump="${key}" transform="translate(${p.cx} ${p.cy})">
+      <circle class="s-dg-pump-body" r="24"/>
+      <g class="s-dg-impeller">${[0, 90, 180, 270].map(blade).join("")}<circle r="3.5"/></g>
+      <text class="s-dg-label" x="${label.dx}" y="${label.dy}" text-anchor="${label.anchor}">${name}</text>
+      <text class="s-dg-state" x="${label.dx}" y="${label.dy + 17}" text-anchor="${label.anchor}" data-s-pumpstate="${key}">--</text>
+    </g>`;
+}
+
+function buildSimpleDiagram(name) {
+  const host = document.getElementById("sDiagram");
+  if (!host) return;
+  const L = SIMPLE_LAYOUTS[name];
+  sDiagram.layout = name;
+  const pipe = (key, d) => `<path class="s-dg-pipe" d="${d}"/><path class="s-dg-flow" data-s-flow="${key}" d="${d}"/>`;
+  const bottles = ["A", "B", "C"].map((k, i) => {
+    const x = L.bottles.x + i * L.bottles.gap;
+    const y = L.bottles.y;
+    const mixTop = L.mix.y;
+    return `<g class="s-dg-bottle" data-s-bottle="${k}">
+        <path class="s-dg-bottle-body" d="M${x - 9} ${y + 12} h18 v24 a4 4 0 0 1 -4 4 h-10 a4 4 0 0 1 -4 -4 z"/>
+        <rect class="s-dg-bottle-cap" x="${x - 5}" y="${y + 4}" width="10" height="8" rx="2"/>
+        <text class="s-dg-bottle-tag" x="${x}" y="${y + 33}" text-anchor="middle">${k}</text>
+        <path class="s-dg-drip-line" d="M${x} ${y + 40} V${mixTop - 2}"/>
+        <circle class="s-dg-drip" cx="${x}" cy="${y + 44}" r="3"/>
+      </g>`;
+  }).join("");
+  const cols = ["A", "B", "C"].map((id, i) => {
+    const x = L.cols.xs[i];
+    const cx = x + L.cols.w / 2;
+    const top = L.cols.y;
+    const plants = [-24, 0, 24].map((dx, k) => {
+      const px = cx + dx;
+      const hgt = k === 1 ? 24 : 18;
+      return `<g class="s-dg-plant"><path class="s-dg-stem" d="M${px} ${top} V${top - hgt}"/>` +
+        `<path class="s-dg-leaf" d="M${px} ${top - hgt * .4} c -11 -2 -16 -9 -16 -17 c 9 0 15 7 16 17z"/>` +
+        `<path class="s-dg-leaf s-dg-leaf2" d="M${px} ${top - hgt * .72} c 11 -2 16 -9 16 -17 c -9 0 -15 7 -16 17z"/>` +
+        `<path class="s-dg-leaf" d="M${px} ${top - hgt} c -4 -5 -4 -10 0 -14 c 4 4 4 9 0 14z"/></g>`;
+    }).join("");
+    const drops = [-14, 0, 14].map((dx, k) => `<circle class="s-dg-drop" style="animation-delay:${(k * .28).toFixed(2)}s" cx="${cx + dx}" cy="${L.nozzleY + 8}" r="3"/>`).join("");
+    return `<g class="s-dg-col" data-s-col="${id}">
+        <path class="s-dg-valve" d="M${cx - 7} ${L.nozzleY - 16} l14 8 v-8 l-14 8z" data-s-valve="${id}"/>
+        <path class="s-dg-nozzle" d="M${cx - 8} ${L.nozzleY} h16 l-3 5 h-10z"/>
+        <g class="s-dg-drops" data-s-drops="${id}">${drops}</g>
+        ${plants}
+        <clipPath id="sClipCol${id}"><rect x="${x + 4}" y="${top + 4}" width="${L.cols.w - 8}" height="${L.cols.h - 8}" rx="6"/></clipPath>
+        <rect class="s-dg-bed" x="${x}" y="${top}" width="${L.cols.w}" height="${L.cols.h}" rx="10"/>
+        <g clip-path="url(#sClipCol${id})"><rect class="s-dg-moist" data-s-moist="${id}" x="${x + 4}" y="${top + 4}" width="${L.cols.w - 8}" height="${L.cols.h - 8}" style="transform: scaleY(0)"/></g>
+        <line class="s-dg-start" data-s-start="${id}" x1="${x + 6}" x2="${x + L.cols.w - 6}" y1="${top}" y2="${top}"/>
+        <rect class="s-dg-col-pill" x="${cx - 28}" y="${top + L.cols.h / 2 - 12}" width="56" height="24" rx="12"/>
+        <text class="s-dg-col-value" x="${cx}" y="${top + L.cols.h / 2 + 5}" text-anchor="middle" data-s-colvalue="${id}">--</text>
+        <text class="s-dg-label" x="${cx}" y="${top + L.cols.h + 20}" text-anchor="middle">Column ${id}</text>
+      </g>`;
+  }).join("");
+  host.innerHTML = `<svg class="s-dg s-dg-${name}" viewBox="0 0 ${L.w} ${L.h}" role="img" aria-labelledby="sDiagramDesc">
+      <title id="sDiagramDesc">The irrigation system</title>
+      <path class="s-dg-ground" d="${L.ground}"/>
+      ${Object.entries(L.pipes).filter(([k]) => !k.startsWith("drop")).map(([k, d]) => pipe(k, d)).join("")}
+      ${["A", "B", "C"].map(id => pipe(`drop${id}`, L.pipes[`drop${id}`])).join("")}
+      ${simpleTankSvg("res", L.res, "Reservoir")}
+      ${simpleTankSvg("mix", L.mix, "Mixing tank")}
+      ${bottles}
+      <text class="s-dg-label" x="${L.bottles.x + L.bottles.gap}" y="${L.bottles.y}" text-anchor="middle">Nutrients</text>
+      ${simplePumpSvg("transfer", L.tp, "Transfer pump", L.labels.transfer)}
+      ${simplePumpSvg("booster", L.bp, "Booster pump", L.labels.booster)}
+      ${cols}
+    </svg>`;
+  const svg = host.querySelector("svg");
+  sDiagram.els = { svg, desc: svg.querySelector("#sDiagramDesc") };
+  sDiagram.seen.clear();
+}
+
+function updateSimpleDiagram(fresh, stale) {
+  const host = document.getElementById("sDiagram");
+  if (!host) return;
+  if (!sDiagram.els) buildSimpleDiagram(host.clientWidth && host.clientWidth < SIMPLE_DIAGRAM_NARROW_PX ? "narrow" : "wide");
+  const svg = sDiagram.els?.svg;
+  if (!svg) return;
+  const L = SIMPLE_LAYOUTS[sDiagram.layout];
+  const sensors = liveData.sensors || {};
+  const actuators = liveData.actuators || {};
+  const run = liveData.diagnostics?.runProgress || {};
+  const known = Boolean(liveData.meta?.updatedAt);
+  // The same rules as updateRigDrawing(): only a fresh report can show anything moving.
+  const transfer = fresh && Boolean(actuators.transferRunning);
+  const booster = fresh && Boolean(actuators.boosterRunning);
+  const mixer = fresh && Boolean(actuators.mixerRunning);
+  const dosing = fresh && Boolean(run.active) && run.stage === "Pump Nutrients";
+  const doseNow = dosing ? ["A", "B", "C"].find(k => Number(run.dosesMl?.[k]?.target) > Number(run.dosesMl?.[k]?.delivered || 0)) || null : null;
+  const zone = String(run.zone || "").toUpperCase();
+  svg.classList.toggle("is-fresh", fresh);
+  svg.classList.toggle("is-stale", stale);
+  // Water levels.
+  [["res", sensors.reservoirLevel, L.res], ["mix", sensors.mixingLevel, L.mix]].forEach(([key, pct, t]) => {
+    const level = svg.querySelector(`[data-s-level="${key}"]`);
+    const innerH = t.h - 12;
+    const has = hasValue(pct);
+    const frac = has ? Math.min(1, Math.max(0, Number(pct) / 100)) : 0;
+    const place = () => { level.style.transform = `translateY(${(innerH * (1 - frac)).toFixed(1)}px)`; };
+    if (level && has && !sDiagram.seen.has(key)) { sDiagram.seen.add(key); sInstant(level, place); }
+    else if (level) place();
+    const value = svg.querySelector(`[data-s-value="${key}"]`);
+    if (value) value.textContent = has ? `${Math.round(Number(pct))} %` : "No reading";
+    svg.querySelector(`[data-s-tank="${key}"]`)?.classList.toggle("is-active", key === "res" ? transfer : (transfer || booster || mixer || Boolean(doseNow)));
+  });
+  svg.querySelector('[data-s-tank="res"]')?.classList.toggle("is-low", hasValue(sensors.reservoirLevel) && Number(sensors.reservoirLevel) < RIG_RES_LOW_PCT);
+  svg.querySelector(".s-dg-mixer")?.classList.toggle("on", mixer);
+  // Pumps: a word under each, so the state never rests on colour alone.
+  [["transfer", transfer], ["booster", booster]].forEach(([key, on]) => {
+    svg.querySelector(`[data-s-pump="${key}"]`)?.classList.toggle("on", on);
+    const state = svg.querySelector(`[data-s-pumpstate="${key}"]`);
+    if (state) state.textContent = !known ? "--" : !fresh ? "unknown" : on ? "ON" : "off";
+  });
+  const flowing = new Set();
+  if (transfer) { flowing.add("resOut"); flowing.add("transferOut"); }
+  if (booster) { flowing.add("mixOut"); flowing.add("boosterOut"); ["A", "B", "C"].filter(id => zone.includes(id)).forEach(id => flowing.add(`drop${id}`)); }
+  svg.querySelectorAll("[data-s-flow]").forEach(el => el.classList.toggle("on", flowing.has(el.dataset.sFlow)));
+  svg.querySelectorAll("[data-s-bottle]").forEach(el => el.classList.toggle("on", el.dataset.sBottle === doseNow));
+  // Columns: moisture from the bottom, Soil start % marked, droplets on the one being watered.
+  const start = soilStartPercent();
+  const words = [];
+  ["A", "B", "C"].forEach(id => {
+    const z = sensors.zones?.[id] || {};
+    const off = z.enabled === false;
+    const has = !off && hasValue(z.moisture);
+    const pct = has ? Math.min(100, Math.max(0, Number(z.moisture))) : 0;
+    const group = svg.querySelector(`[data-s-col="${id}"]`);
+    group?.classList.toggle("off", off);
+    group?.classList.toggle("dry", has && pct < start);
+    const moist = svg.querySelector(`[data-s-moist="${id}"]`);
+    const fill = () => { moist.style.transform = `scaleY(${(pct / 100).toFixed(3)})`; };
+    if (moist && has && !sDiagram.seen.has(`col${id}`)) { sDiagram.seen.add(`col${id}`); sInstant(moist, fill); }
+    else if (moist) fill();
+    const line = svg.querySelector(`[data-s-start="${id}"]`);
+    if (line) {
+      const y = (L.cols.y + 4 + (L.cols.h - 8) * (1 - start / 100)).toFixed(1);
+      line.setAttribute("y1", y);
+      line.setAttribute("y2", y);
+    }
+    const value = svg.querySelector(`[data-s-colvalue="${id}"]`);
+    if (value) value.textContent = off ? "off" : has ? `${Math.round(pct)} %` : "--";
+    svg.querySelector(`[data-s-valve="${id}"]`)?.classList.toggle("open", booster && zone.includes(id));
+    svg.querySelector(`[data-s-drops="${id}"]`)?.classList.toggle("on", booster && zone.includes(id));
+    words.push(`column ${id} ${off ? "switched off" : has ? `${Math.round(pct)} % moist` : "no reading"}`);
+  });
+  const note = !known ? "Waiting for the controller's report."
+    : !fresh ? "The controller isn't reporting, so this is its last report and nothing is shown moving."
+    : booster ? `Water is flowing from the mixing tank to column ${columnList([...zone].filter(ch => "ABC".includes(ch))) || "?"}.`
+    : mixer ? "The mixer is stirring the water and nutrients."
+    : doseNow ? `Nutrient ${doseNow} is being added to the mixing tank.`
+    : transfer ? "Water is flowing from the reservoir into the mixing tank."
+    : run.active && (run.phase === "starting" || run.phase === "running") ? `${simpleStageText(run)}.`
+    : simpleTesting() ? "Someone is testing by hand: a pump may run without showing here. See Complete mode."
+    : "Nothing is moving: all pumps are off.";
+  sSet("sDiagramNote", note);
+  const tank = key => hasValue(sensors[key]) ? `${Math.round(Number(sensors[key]))} %` : "no reading";
+  if (sDiagram.els.desc) sDiagram.els.desc.textContent = `The irrigation system: reservoir ${tank("reservoirLevel")}, mixing tank ${tank("mixingLevel")}, ${words.join(", ")}. ${note}`;
+}
+
+function initSimpleDiagram() {
+  const host = document.getElementById("sDiagram");
+  if (!host) return;
+  const pick = () => {
+    if (!host.clientWidth) return;   // hidden (Complete mode or another tab): keep what is there
+    const name = host.clientWidth < SIMPLE_DIAGRAM_NARROW_PX ? "narrow" : "wide";
+    if (name === sDiagram.layout) return;
+    buildSimpleDiagram(name);
+    updateSimpleDiagram(deviceIsFresh(), Boolean(liveData.meta?.updatedAt) && !deviceIsFresh());
+  };
+  if (window.ResizeObserver) new ResizeObserver(pick).observe(host);
+  else window.addEventListener("resize", pick);
+  // Nothing animates while the page is hidden.
+  const syncHidden = () => document.documentElement.classList.toggle("page-hidden", document.hidden);
+  document.addEventListener("visibilitychange", syncHidden);
+  syncHidden();
+}
+
+/* Zone profiles in Simple mode: each card leads with the big moisture figure and a status in words; the full readings
+ * fold away. The open/closed state is kept here, because renderZonesUI() rebuilds the cards. Editing is untouched. */
+const simpleZoneReadingsOpen = {};
+function simpleZoneHeroHtml(id) {
+  return `
+      <div class="s-zone-hero simple-only" data-tone="none" id="sZoneHero${id}">
+        <div class="s-zone-figure">
+          <span class="s-zone-label">Soil moisture</span>
+          <span class="s-zone-pct s-roll" id="sZonePct${id}">--</span>
+          <span class="s-pill" id="sZoneState${id}">No reading</span>
+          <span class="s-stale-tag" id="sZoneStale${id}" hidden>last known</span>
+        </div>
+        <div class="s-zone-words">
+          <p class="s-zone-say" id="sZoneSay${id}">Waiting for the controller's report.</p>
+          <p class="s-zone-crop" id="sZoneCrop${id}"></p>
+          <div class="s-zone-scale" aria-hidden="true">
+            <span class="s-zone-scale-fill" id="sZoneFill${id}"></span>
+            <span class="s-zone-mark s-zone-mark-start" id="sZoneStart${id}" title="Soil start"></span>
+            <span class="s-zone-mark s-zone-mark-crop" id="sZoneTarget${id}" title="Crop profile"></span>
+          </div>
+          <p class="s-zone-legend"><span class="s-key s-key-start"></span>Soil start <span id="sZoneStartPct${id}">--</span><span class="s-key s-key-crop"></span>Crop <span id="sZoneTargetPct${id}">--</span></p>
+        </div>
+      </div>`;
+}
+function simpleReadingsToggleHtml(id) {
+  const open = Boolean(simpleZoneReadingsOpen[id]);
+  return `<button type="button" class="s-collapse-toggle simple-only" data-s-readings="${id}" aria-expanded="${open}" aria-controls="zoneReadings${id}"><svg class="si" aria-hidden="true"><use href="#si-beaker"/></svg><span>${open ? "Hide" : "Show"} all readings (nutrients, pH, EC, temperature)</span><svg class="si s-chev" aria-hidden="true"><use href="#si-chevron"/></svg></button>`;
+}
+function renderSimpleZone(zone) {
+  const id = zone.id;
+  const hero = document.getElementById(`sZoneHero${id}`);
+  if (!hero) return;
+  const s = simpleSoilState(id);
+  const stale = Boolean(liveData.meta?.updatedAt) && !deviceIsFresh();
+  const start = soilStartPercent();
+  const target = zoneCrop(zone).stage?.moisture;
+  const crop = zoneCrop(zone);
+  if (hero.dataset.tone !== (stale && s.tone === "flow" ? "none" : s.tone)) hero.dataset.tone = stale && s.tone === "flow" ? "none" : s.tone;
+  hero.classList.toggle("is-stale", stale);
+  sSet(`sZonePct${id}`, s.pct === null ? "--" : `${Math.round(s.pct)} %`);
+  sSet(`sZoneState${id}`, s.word);
+  const staleTag = document.getElementById(`sZoneStale${id}`);
+  if (staleTag) staleTag.hidden = !stale || s.pct === null;
+  sSet(`sZoneSay${id}`, stale ? `From the controller's last report: ${s.say.charAt(0).toLowerCase()}${s.say.slice(1)}` : s.say);
+  sSet(`sZoneCrop${id}`, crop.crop ? `Growing ${cropLabel(crop.crop)}${crop.stage ? `, ${crop.stage.name.toLowerCase()} stage` : ""}` : "No crop profile picked");
+  const fill = document.getElementById(`sZoneFill${id}`);
+  if (fill) fill.style.width = `${s.pct === null ? 0 : s.pct}%`;
+  const startMark = document.getElementById(`sZoneStart${id}`);
+  if (startMark) startMark.style.left = `${Math.min(100, Math.max(0, start))}%`;
+  const targetMark = document.getElementById(`sZoneTarget${id}`);
+  if (targetMark) {
+    targetMark.hidden = !hasValue(target);
+    if (hasValue(target)) targetMark.style.left = `${Math.min(100, Math.max(0, Number(target)))}%`;
+  }
+  sSet(`sZoneStartPct${id}`, `${start} %`);
+  sSet(`sZoneTargetPct${id}`, hasValue(target) ? `${Number(target)} %` : "not set");
+}
+function syncSimpleZoneFold(id) {
+  const block = document.querySelector(`.zone-block[data-zone="${id}"]`);
+  const open = Boolean(simpleZoneReadingsOpen[id]);
+  block?.classList.toggle("s-readings-open", open);
+  const button = block?.querySelector(`[data-s-readings="${id}"]`);
+  if (button) {
+    button.setAttribute("aria-expanded", String(open));
+    const label = button.querySelector("span");
+    if (label) label.textContent = `${open ? "Hide" : "Show"} all readings (nutrients, pH, EC, temperature)`;
+  }
+}
+document.getElementById("dynamic-zones-container")?.addEventListener("click", event => {
+  const button = event.target.closest("button[data-s-readings]");
+  if (!button) return;
+  const id = button.dataset.sReadings;
+  simpleZoneReadingsOpen[id] = !simpleZoneReadingsOpen[id];
+  syncSimpleZoneFold(id);
+});
+
+// The crop library folds away in Simple mode, and opens by itself while a crop is being added or changed.
+let simpleCropOpen = false;
+function syncCropFold() {
+  const library = document.getElementById("cropLibrary");
+  const toggle = document.getElementById("sCropToggle");
+  if (!library || !toggle) return;
+  const open = simpleCropOpen || Boolean(cropDraft);
+  library.classList.toggle("s-open", open);
+  toggle.setAttribute("aria-expanded", String(open));
+  const label = toggle.querySelector("span");
+  if (label) label.textContent = open ? "Hide the crop profiles" : "Show the crop profiles";
+  toggle.disabled = Boolean(cropDraft);   // an editor that is open stays in view until it is saved or cancelled
+}
+document.getElementById("sCropToggle")?.addEventListener("click", () => {
+  simpleCropOpen = !simpleCropOpen;
+  syncCropFold();
+});
+
+// Controls in Simple mode: the nutrient boxes behind a toggle that always says what they hold, and Restart a board
+// behind "Advanced controls". Same inputs, same buttons, same checks as Complete mode; only what is folded differs.
+let simpleDoseOpen = false;
+function syncDoseToggle() {
+  const toggle = document.getElementById("sDoseToggle");
+  const form = document.getElementById("forceRunForm");
+  if (!toggle || !form) return;
+  const doses = ["A", "B", "C"].map(k => [k, Number(document.getElementById(`forceDose${k}`)?.value || 0)]);
+  const set = doses.filter(([, v]) => Number.isFinite(v) && v > 0);
+  const open = simpleDoseOpen;
+  form.classList.toggle("s-doses-open", open);
+  toggle.setAttribute("aria-expanded", String(open));
+  const text = set.length ? `Nutrients: ${set.map(([k, v]) => `${k} ${v} mL`).join(", ")}` : "Add nutrients (optional): now plain water";
+  sSet("sDoseToggleText", `${text}${open ? "" : set.length ? " (show)" : ""}`);
+}
+document.getElementById("sDoseToggle")?.addEventListener("click", () => {
+  simpleDoseOpen = !simpleDoseOpen;
+  syncDoseToggle();
+});
+document.getElementById("forceRunForm")?.addEventListener("input", syncDoseToggle);
+document.querySelectorAll(".s-collapsible > .s-collapse-toggle").forEach(toggle => toggle.addEventListener("click", () => {
+  const panel = toggle.parentElement;
+  const open = !panel.classList.contains("s-open");
+  panel.classList.toggle("s-open", open);
+  toggle.setAttribute("aria-expanded", String(open));
+}));
+
+initModeSwitch();
+initSimpleDiagram();
+syncDoseToggle();
 initRigDrawing();
 renderZonesUI();
 renderCropLibrary();

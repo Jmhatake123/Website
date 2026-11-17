@@ -1,8 +1,19 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light" data-mode="simple">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Theme and display mode before the first paint (18 Nov 2026), so a saved choice never flashes the default first.
+       Light theme and Simple mode are the defaults for a first visit; anything unexpected in storage falls back to them.
+       localStorage "theme" (light/dark) and "uiMode" (simple/complete) are this browser's own preferences only. -->
+  <script>
+    (function () {
+      var root = document.documentElement, theme = null, mode = null;
+      try { theme = localStorage.getItem("theme"); mode = localStorage.getItem("uiMode"); } catch (e) { /* storage blocked */ }
+      root.setAttribute("data-theme", theme === "dark" ? "dark" : "light");
+      root.setAttribute("data-mode", mode === "complete" ? "complete" : "simple");
+    })();
+  </script>
   <meta name="description" content="Authenticated monitoring and safe remote command dashboard for the CIT-U EE smart irrigation master controller.">
   <title>CIT-U EE Smart Irrigation</title>
   <!-- IBM Plex: designed for technical/engineering interfaces, not the Inter/system-ui default --
@@ -18,6 +29,44 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Icons for Simple mode (18 Nov 2026): one hidden sprite, drawn for this site, used as <svg class="si"><use href="#si-…"/></svg>.
+       24×24, drawn with strokes in currentColor, so they follow the text colour and both themes. -->
+  <svg class="si-sprite" aria-hidden="true" focusable="false">
+    <symbol id="si-home" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></symbol>
+    <symbol id="si-sprout" viewBox="0 0 24 24"><path d="M12 20v-8"/><path d="M12 12c0-4 3-6.5 7.5-6.5 0 4.5-3 6.5-7.5 6.5z"/><path d="M12 14.5C12 11 9.5 9 5 9c0 3.6 2.6 5.5 7 5.5z"/><path d="M7 20h10"/></symbol>
+    <symbol id="si-controls" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/></symbol>
+    <symbol id="si-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1.9-1.1 1.8v.5"/><path d="M12 17h.01"/></symbol>
+    <symbol id="si-users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3 2.8-4.8 5.5-4.8s4.9 1.8 5.5 4.8"/><path d="M15.5 5.6a3 3 0 0 1 0 5.8"/><path d="M17 14.4c1.9.5 3.2 2.1 3.5 4.6"/></symbol>
+    <symbol id="si-tools" viewBox="0 0 24 24"><path d="M15 4.5a4.5 4.5 0 0 0-5.6 5.8L4 15.7V20h4.3l5.4-5.4A4.5 4.5 0 0 0 19.5 9l-2.8 2.8-2.9-.8-.8-2.9z"/></symbol>
+    <symbol id="si-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M2.5 12h3M18.5 12h3M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1"/></symbol>
+    <symbol id="si-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></symbol>
+    <symbol id="si-leaf" viewBox="0 0 24 24"><path d="M5 19c0-8 5-13 14-14-.5 9-5.5 14-13 14z"/><path d="M5 19 13 11"/></symbol>
+    <symbol id="si-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></symbol>
+    <symbol id="si-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+    <symbol id="si-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></symbol>
+    <symbol id="si-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8 5.7-5.8"/></symbol>
+    <symbol id="si-alert" viewBox="0 0 24 24"><path d="M12 3.5 2.8 19.5h18.4z"/><path d="M12 10v4.5M12 17.2h.01"/></symbol>
+    <symbol id="si-stop" viewBox="0 0 24 24"><path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z"/><path d="M9 9l6 6M15 9l-6 6"/></symbol>
+    <symbol id="si-unlink" viewBox="0 0 24 24"><path d="M2.5 8.5a14 14 0 0 1 4-2.4M21.5 8.5A14 14 0 0 0 11 4.6"/><path d="M5.5 12a9.5 9.5 0 0 1 3-1.8M18.5 12a9.5 9.5 0 0 0-2.4-1.6"/><path d="M8.8 15.4a4.8 4.8 0 0 1 6.4 0"/><path d="M12 19h.01"/><path d="M3 3l18 18"/></symbol>
+    <symbol id="si-wifi" viewBox="0 0 24 24"><path d="M2.5 8.5a14.5 14.5 0 0 1 19 0"/><path d="M5.5 12a10 10 0 0 1 13 0"/><path d="M8.8 15.4a4.8 4.8 0 0 1 6.4 0"/><path d="M12 19h.01"/></symbol>
+    <symbol id="si-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+    <symbol id="si-drop" viewBox="0 0 24 24"><path d="M12 3.5c3.5 4.2 6 7.6 6 10.5a6 6 0 0 1-12 0c0-2.9 2.5-6.3 6-10.5z"/></symbol>
+    <symbol id="si-solar" viewBox="0 0 24 24"><path d="M4 15h16l-2-8H6z"/><path d="M5 11h14M10 7l-1 8M14 7l1 8"/><path d="M12 15v4M8.5 19.5h7"/></symbol>
+    <symbol id="si-battery" viewBox="0 0 24 24"><rect x="2.5" y="7" width="17" height="10" rx="2"/><path d="M21.5 10.5v3"/><path d="M5.5 10v4M8.5 10v4M11.5 10v4"/></symbol>
+    <symbol id="si-tank" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13"/><path d="M5 13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></symbol>
+    <symbol id="si-flask" viewBox="0 0 24 24"><path d="M9.5 3h5M10 3v6L4.8 18.2A1.8 1.8 0 0 0 6.4 21h11.2a1.8 1.8 0 0 0 1.6-2.8L14 9V3"/><path d="M7.5 14.5h9"/></symbol>
+    <symbol id="si-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M8 14h2M12 14h2M8 17h2"/></symbol>
+    <symbol id="si-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8h.01"/></symbol>
+    <symbol id="si-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="si-thermo" viewBox="0 0 24 24"><path d="M10 14.8V5a2 2 0 1 1 4 0v9.8a4 4 0 1 1-4 0z"/><path d="M12 10v6"/></symbol>
+    <symbol id="si-beaker" viewBox="0 0 24 24"><path d="M6 3h12M7.5 3v15a3 3 0 0 0 3 3h3a3 3 0 0 0 3-3V3"/><path d="M7.5 12h9"/></symbol>
+    <symbol id="si-bolt" viewBox="0 0 24 24"><path d="M13 2.5 5 13.5h6l-1 8 8-11h-6z"/></symbol>
+    <symbol id="si-pause" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></symbol>
+    <symbol id="si-hand" viewBox="0 0 24 24"><path d="M8 13V6.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11V4.5a1.5 1.5 0 0 1 3 0V12"/><path d="M14 11.5V6a1.5 1.5 0 0 1 3 0v8a7 7 0 0 1-7 7h-.5a6 6 0 0 1-5-2.7L3 15.5a1.6 1.6 0 0 1 2.6-1.8L8 16"/></symbol>
+    <symbol id="si-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4.5V11h-6.5"/></symbol>
+    <symbol id="si-logout" viewBox="0 0 24 24"><path d="M9.5 20.5h-4a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h4"/><path d="M15.5 16.5 20 12l-4.5-4.5M20 12H9.5"/></symbol>
+    <symbol id="si-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 6.6a8 8 0 1 0 11.2 0"/></symbol>
+  </svg>
   <div id="loginScreen" class="login-screen">
     <form id="loginForm" class="login-card">
       <p class="eyebrow">CIT-U Electrical Engineering</p>
@@ -93,24 +142,40 @@
   </div>
 
   <aside class="sidebar">
-    <div>
+    <div class="complete-only">
       <p class="eyebrow">CIT-U EE</p>
       <h2>Smart<br>Irrigation</h2>
+    </div>
+    <!-- Simple mode's brand (18 Nov 2026), after the owner's sample design: the farm's name with a sprout mark. -->
+    <div class="s-brand simple-only">
+      <svg class="s-brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+        <path class="s-brand-leaf" d="M24 40c0-12 6-21 18-24-1 13-7 22-18 24z"/>
+        <path class="s-brand-leaf2" d="M24 40C23 30 17 23 6 22c1 10 7 17 18 18z"/>
+        <path class="s-brand-drop" d="M24 8c4 5 6.5 8.5 6.5 11.5a6.5 6.5 0 0 1-13 0C17.5 16.5 20 13 24 8z"/>
+      </svg>
+      <div>
+        <p class="s-brand-name">Pinamungahan Automated Farm</p>
+        <p class="s-brand-sub">Smart Irrigation System</p>
+      </div>
     </div>
     <!-- The owner's order (2026-11-05). Each tab shows only for the accounts that may use it (refreshOperatorUI() in
          script.js): Manual/Test and System for Sub-operators, 1-hour access and operators; User Management for
          operators; Diagnostics with Control. Hidden by default, so there is no flash of a tab before JS runs. Hiding a
          tab is a convenience; firebase-rules.json is the real boundary. -->
+    <!-- Simple mode (18 Nov 2026, the owner's choice) shows only Dashboard, Zone profiles, Controls, Help and, for operators,
+         User Management; Manual/Test, System and Diagnostics are Complete-mode tabs (.complete-tab, hidden in Simple by
+         CSS on top of the account checks above). Each tab carries an icon and a short label for Simple mode. -->
     <nav class="tabs" aria-label="Dashboard sections">
-      <button type="button" class="tab active" data-view="dashboard">Live dashboard</button>
-      <button type="button" class="tab" data-view="zones">Zone profiles</button>
-      <button type="button" class="tab" data-view="manual">Controls</button>
-      <button type="button" class="tab" data-view="manualtest" id="manualtestTab" hidden>Manual/Test</button>
-      <button type="button" class="tab" data-view="system" id="systemTab" hidden>System</button>
-      <button type="button" class="tab" data-view="users" id="usersTab" hidden>User Management</button>
-      <button type="button" class="tab" data-view="diagnostics" id="diagnosticsTab" hidden>Diagnostics</button>
-      <button type="button" class="tab" data-view="help">Help</button>
+      <button type="button" class="tab active" data-view="dashboard"><svg class="si tab-icon" aria-hidden="true"><use href="#si-home"/></svg><span class="complete-only">Live dashboard</span><span class="simple-only">Dashboard</span></button>
+      <button type="button" class="tab" data-view="zones"><svg class="si tab-icon" aria-hidden="true"><use href="#si-sprout"/></svg>Zone profiles</button>
+      <button type="button" class="tab" data-view="manual"><svg class="si tab-icon" aria-hidden="true"><use href="#si-controls"/></svg>Controls</button>
+      <button type="button" class="tab complete-tab" data-view="manualtest" id="manualtestTab" hidden><svg class="si tab-icon" aria-hidden="true"><use href="#si-tools"/></svg>Manual/Test</button>
+      <button type="button" class="tab complete-tab" data-view="system" id="systemTab" hidden><svg class="si tab-icon" aria-hidden="true"><use href="#si-gear"/></svg>System</button>
+      <button type="button" class="tab" data-view="users" id="usersTab" hidden><svg class="si tab-icon" aria-hidden="true"><use href="#si-users"/></svg>User Management</button>
+      <button type="button" class="tab complete-tab" data-view="diagnostics" id="diagnosticsTab" hidden><svg class="si tab-icon" aria-hidden="true"><use href="#si-pulse"/></svg>Diagnostics</button>
+      <button type="button" class="tab" data-view="help"><svg class="si tab-icon" aria-hidden="true"><use href="#si-help"/></svg>Help</button>
     </nav>
+    <p class="s-side-note simple-only">Manual/Test, System and Diagnostics are in <strong>Complete</strong> mode.</p>
     <div class="system-status" aria-live="polite">
       <p class="status-label">ESP1 state<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the ESP1 status block" data-info-title="ESP1 status" data-info-text="ESP1's current state, connection freshness, and whether a run is active.">i</button></p>
       <span id="systemState" class="device-status off">WAITING FOR DATA</span>
@@ -122,6 +187,12 @@
       <span id="sideLock" class="device-status off">UNKNOWN</span>
     </div>
     <button type="button" id="contributorsBtn" class="link-button">Contributors &amp; project</button>
+    <svg class="s-side-art simple-only" viewBox="0 0 240 150" preserveAspectRatio="xMinYMax meet" aria-hidden="true" focusable="false">
+      <path class="s-art-leaf1" d="M14 150C10 108 30 72 78 54c-4 46-24 78-64 96z"/>
+      <path class="s-art-leaf2" d="M52 150c6-34 30-58 70-64-8 34-30 56-70 64z"/>
+      <path class="s-art-leaf3" d="M-6 150c-2-30 8-52 34-66 2 30-10 52-34 66z"/>
+      <path class="s-art-vein" d="M16 146C30 112 48 86 74 60M56 146c18-22 36-40 62-56"/>
+    </svg>
   </aside>
 
   <main class="main-content">
@@ -207,22 +278,175 @@
     </section>
 
     <header class="topbar">
-      <div>
-        <p class="eyebrow">Pinamungahan Automated Farm</p>
-        <h1>ESP1 live operations</h1>
+      <!-- Simple mode's header art (18 Nov 2026): a quiet farm landscape behind the title, drawn here, decorative only. -->
+      <svg class="s-topbar-art simple-only" viewBox="0 0 720 140" preserveAspectRatio="xMaxYMax slice" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="sSkyGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="s-sky-top"/><stop offset="1" class="s-sky-bottom"/></linearGradient>
+          <linearGradient id="sArtFade" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".45" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></linearGradient>
+          <mask id="sArtMask"><rect width="720" height="140" fill="url(#sArtFade)"/></mask>
+        </defs>
+        <g mask="url(#sArtMask)">
+          <rect width="720" height="140" fill="url(#sSkyGrad)"/>
+          <circle class="s-art-sun" cx="610" cy="34" r="16"/>
+          <path class="s-art-hill3" d="M180 104c80-34 150-50 230-36s130 6 190-20 90-12 120 2v90H180z"/>
+          <path class="s-art-hill2" d="M260 116c70-26 140-30 210-14s120 12 170-8 60-8 80-2v48H260z"/>
+          <path class="s-art-field" d="M300 126c90-14 190-16 280-6s100 4 140-4v24H300z"/>
+          <path class="s-art-rows" d="M380 130l-30 10M440 128l-18 12M500 127l-6 13M560 127l6 13M620 128l18 12M680 129l28 11"/>
+          <g class="s-art-tree"><path d="M520 88v18"/><circle cx="520" cy="80" r="11"/><path d="M548 92v14"/><circle cx="548" cy="86" r="8"/></g>
+        </g>
+      </svg>
+      <div class="topbar-title">
+        <p class="eyebrow complete-only">Pinamungahan Automated Farm</p>
+        <h1><span class="complete-only">ESP1 live operations</span><span class="simple-only">Smart Irrigation Dashboard</span></h1>
+        <p class="s-subtitle simple-only">Watch and control the watering and feeding of the farm.</p>
       </div>
       <div class="topbar-actions">
         <span class="connection-status"><i id="connectionDot" class="online-dot"></i><span id="connectionStatus">Firebase not configured</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About connection status" data-info-title="Connection status" data-info-text="Whether this browser is connected to Firebase, and whether ESP1 has reported recently.">i</button></span>
-        <span id="currentUserEmail" class="muted" hidden></span>
+        <span id="currentUserEmail" class="muted complete-only" hidden></span>
         <span id="refreshStatus" class="refresh-status muted" aria-live="polite"></span>
-        <button id="refreshBtn" type="button" title="Ask ESP1 for a fresh report now" hidden>Refresh</button>
-        <button id="theme-toggle" type="button">Light theme</button>
-        <button id="logoutBtn" type="button" hidden>Sign out</button>
+        <button id="refreshBtn" type="button" title="Ask ESP1 for a fresh report now" hidden><svg class="si simple-only" aria-hidden="true"><use href="#si-refresh"/></svg><span class="refresh-label">Refresh</span></button>
+        <!-- Simple / Complete (18 Nov 2026): a two-option switch, saved in this browser only (localStorage "uiMode").
+             A radio group: Tab reaches the chosen option, the arrow keys move between the two. See initModeSwitch(). -->
+        <div class="mode-switch" id="modeSwitch" role="radiogroup" aria-label="Display mode">
+          <button type="button" role="radio" class="mode-option" id="modeSimple" data-mode-choice="simple" aria-checked="true" tabindex="0"><svg class="si" aria-hidden="true"><use href="#si-leaf"/></svg><span>Simple</span></button>
+          <button type="button" role="radio" class="mode-option" id="modeComplete" data-mode-choice="complete" aria-checked="false" tabindex="-1"><svg class="si" aria-hidden="true"><use href="#si-grid"/></svg><span>Complete</span></button>
+        </div>
+        <button id="theme-toggle" type="button"><svg class="si theme-icon-sun" aria-hidden="true"><use href="#si-sun"/></svg><svg class="si theme-icon-moon" aria-hidden="true"><use href="#si-moon"/></svg><span class="theme-label">Dark theme</span></button>
+        <span id="accountBadge" class="s-account simple-only" hidden aria-hidden="true"></span>
+        <button id="logoutBtn" type="button" title="Sign out" hidden><svg class="si simple-only" aria-hidden="true"><use href="#si-logout"/></svg><span class="logout-label">Sign out</span></button>
       </div>
     </header>
 
     <section class="view active" id="dashboard">
-      <div class="section-heading">
+      <!-- SIMPLE MODE dashboard (18 Nov 2026). Read-only: it shows ESP1's latest report in plain words and sends nothing.
+           Filled by renderSimpleDashboard() in script.js from the same liveData as the Complete dashboard below, and it
+           says "unknown" whenever deviceIsFresh() does. The diagram is built by buildSimpleDiagram(). -->
+      <div class="s-dash simple-only" id="simpleDashboard">
+        <div class="s-row s-row-top">
+          <article class="s-card s-status" id="sStatus" data-tone="wait" role="status" aria-live="polite">
+            <span class="s-status-icon" aria-hidden="true"><svg class="si"><use id="sStatusIconUse" href="#si-clock"/></svg></span>
+            <div class="s-status-words">
+              <h2 id="sStatusTitle">Connecting…</h2>
+              <p id="sStatusText">Waiting for the first report from the farm's controller.</p>
+            </div>
+            <svg class="s-status-art" viewBox="0 0 120 90" aria-hidden="true" focusable="false">
+              <path class="s-art-leaf1" d="M58 88C54 58 66 34 100 22c-2 32-16 54-42 66z"/>
+              <path class="s-art-leaf2" d="M58 88C54 66 40 52 14 50c4 22 18 36 44 38z"/>
+              <path class="s-art-drop" d="M30 12c5 6 8 10 8 14a8 8 0 0 1-16 0c0-4 3-8 8-14z"/>
+            </svg>
+          </article>
+          <div class="s-chips">
+            <div class="s-chip" id="sChipLink" data-tone="wait">
+              <svg class="si s-chip-icon" aria-hidden="true"><use id="sLinkIconUse" href="#si-wifi"/></svg>
+              <span><span class="s-chip-label">Controller</span><strong id="sLinkText">Connecting…</strong></span>
+            </div>
+            <div class="s-chip" id="sChipSolar" data-tone="solar">
+              <svg class="si s-chip-icon" aria-hidden="true"><use href="#si-solar"/></svg>
+              <span><span class="s-chip-label">Solar</span><strong id="sSolar">No reading</strong></span>
+            </div>
+            <div class="s-chip" id="sChipBattery" data-tone="ok">
+              <svg class="si s-chip-icon" aria-hidden="true"><use href="#si-battery"/></svg>
+              <span><span class="s-chip-label">Battery</span><strong id="sBattery">No reading</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="s-row s-row-water">
+          <article class="s-card s-tank" id="sRes" data-tone="water">
+            <span class="s-icon" aria-hidden="true"><svg class="si"><use href="#si-tank"/></svg></span>
+            <div class="s-tank-body">
+              <h3>Reservoir <span class="s-sub">(main water tank)</span></h3>
+              <p class="s-big"><span id="sResPct" class="s-roll">--</span><span class="s-stale-tag" hidden>last known</span></p>
+              <p class="s-note" id="sResLitres">No reading yet</p>
+              <div class="s-bar" id="sResBar" role="progressbar" aria-label="Reservoir water level" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+              <p class="s-hint" id="sResHint">Watering pauses below 18 %, so the pumps never run dry.</p>
+            </div>
+          </article>
+          <article class="s-card s-tank s-mix" id="sMix" data-tone="mix">
+            <span class="s-icon" aria-hidden="true"><svg class="si"><use href="#si-flask"/></svg></span>
+            <div class="s-tank-body">
+              <h3>Mixing tank <span class="s-sub">(water with nutrients)</span></h3>
+              <p class="s-big"><span id="sMixPct" class="s-roll">--</span><span class="s-stale-tag" hidden>last known</span></p>
+              <p class="s-note" id="sMixLitres">No reading yet</p>
+              <div class="s-bar" id="sMixBar" role="progressbar" aria-label="Mixing tank water level" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+              <p class="s-hint" id="sMixHint">Water and nutrients are mixed here, then sent to a column.</p>
+            </div>
+          </article>
+          <article class="s-card s-soil" id="sSoil">
+            <h3><svg class="si" aria-hidden="true"><use href="#si-sprout"/></svg>Soil moisture <span class="s-sub">(planting columns)</span></h3>
+            <div class="s-soil-cols">
+              <div class="s-col" id="sColA" data-tone="none"><span class="s-col-name">Column A</span><span class="s-col-crop" id="sColCropA"></span><span class="s-col-pct s-roll" id="sColPctA">--</span><span class="s-pill" id="sColStateA">No reading</span><span class="s-stale-tag" id="sColStaleA" hidden>last known</span></div>
+              <div class="s-col" id="sColB" data-tone="none"><span class="s-col-name">Column B</span><span class="s-col-crop" id="sColCropB"></span><span class="s-col-pct s-roll" id="sColPctB">--</span><span class="s-pill" id="sColStateB">No reading</span><span class="s-stale-tag" id="sColStaleB" hidden>last known</span></div>
+              <div class="s-col" id="sColC" data-tone="none"><span class="s-col-name">Column C</span><span class="s-col-crop" id="sColCropC"></span><span class="s-col-pct s-roll" id="sColPctC">--</span><span class="s-pill" id="sColStateC">No reading</span><span class="s-stale-tag" id="sColStaleC" hidden>last known</span></div>
+            </div>
+            <p class="s-hint" id="sSoilHint">A column is watered when its soil is drier than Soil start %.</p>
+          </article>
+        </div>
+
+        <article class="s-card s-diagram" aria-labelledby="sDiagramTitle">
+          <div class="s-card-head">
+            <h3 id="sDiagramTitle"><svg class="si" aria-hidden="true"><use href="#si-gear"/></svg>Irrigation system <span class="s-sub">(how it works)</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the irrigation system picture" data-info-title="Irrigation system" data-info-text="Water goes from the reservoir, through the transfer pump, into the mixing tank, where nutrients can be added. The booster pump then sends it to one of the columns. Water moves in the picture only while the controller reports that pump running, and nothing moves when its report is old." data-help="help-tanks">i</button></h3>
+            <p class="s-hint" id="sDiagramNote">Waiting for the controller's report.</p>
+          </div>
+          <div class="s-diagram-host" id="sDiagram"></div>
+        </article>
+
+        <div class="s-row s-row-bottom">
+          <article class="s-card s-activity" id="sActivity" data-tone="none">
+            <h3><svg class="si" aria-hidden="true"><use href="#si-drop"/></svg>Current activity</h3>
+            <div class="s-activity-body">
+              <svg class="s-activity-art" viewBox="0 0 96 72" aria-hidden="true" focusable="false">
+                <g class="s-art-drops"><circle cx="34" cy="10" r="3"/><circle cx="48" cy="6" r="3"/><circle cx="62" cy="10" r="3"/></g>
+                <path class="s-art-soil" d="M8 60h80l-6 12H14z"/>
+                <path class="s-art-leaf1" d="M30 60c-2-14 4-24 16-28-1 14-7 23-16 28z"/>
+                <path class="s-art-leaf2" d="M46 60c1-12 8-20 22-22-2 12-9 19-22 22z"/>
+                <path class="s-art-leaf1" d="M62 60c0-10 6-17 16-19-1 10-6 16-16 19z"/>
+              </svg>
+              <div>
+                <p class="s-activity-title" id="sActTitle">Waiting for the system</p>
+                <p class="s-activity-text" id="sActText">The controller hasn't reported yet.</p>
+                <div class="s-bar s-act-bar" id="sActBar" role="progressbar" aria-label="Water delivered in this run" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
+                <p class="s-hint" id="sActProgress" hidden></p>
+              </div>
+            </div>
+          </article>
+          <article class="s-card s-next" id="sNext">
+            <h3><svg class="si" aria-hidden="true"><use href="#si-calendar"/></svg>Next watering</h3>
+            <div class="s-next-body">
+              <svg class="s-next-art" viewBox="0 0 80 72" aria-hidden="true" focusable="false">
+                <path class="s-art-pot" d="M22 50h36l-5 20H27z"/>
+                <path class="s-art-leaf1" d="M40 50c-2-16 4-28 20-34-1 18-8 29-20 34z"/>
+                <path class="s-art-leaf2" d="M40 50c0-12-6-21-20-24 2 13 9 21 20 24z"/>
+              </svg>
+              <div>
+                <p class="s-next-what" id="sNextWhat">--</p>
+                <p class="s-next-when" id="sNextWhen"><svg class="si" aria-hidden="true"><use href="#si-clock"/></svg><span id="sNextWhenText">Waiting for the controller's report.</span></p>
+                <p class="s-hint" id="sNextNote"></p>
+              </div>
+            </div>
+          </article>
+          <details class="s-card s-more" id="sMore" open>
+            <summary>
+              <span class="s-more-head"><svg class="si" aria-hidden="true"><use href="#si-info"/></svg><span class="s-more-title">More information</span></span>
+              <span class="s-hint">Other readings and system details</span>
+              <svg class="si s-more-chevron" aria-hidden="true"><use href="#si-chevron"/></svg>
+            </summary>
+            <div class="s-more-grid">
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-thermo"/></svg><span class="s-tile-label">Temperature</span><strong id="sTemp" class="s-roll">--</strong></div>
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-drop"/></svg><span class="s-tile-label">Humidity</span><strong id="sHum" class="s-roll">--</strong></div>
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-sun"/></svg><span class="s-tile-label">Light</span><strong id="sLux">--</strong></div>
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-beaker"/></svg><span class="s-tile-label">Mix tank pH</span><strong id="sPh" class="s-roll">--</strong></div>
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-bolt"/></svg><span class="s-tile-label">Mix tank EC</span><strong id="sEc" class="s-roll">--</strong></div>
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-battery"/></svg><span class="s-tile-label">Main battery</span><strong id="sBattV">--</strong></div>
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-solar"/></svg><span class="s-tile-label">Solar today</span><strong id="sSolarToday">--</strong></div>
+              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-battery"/></svg><span class="s-tile-label">Battery 2</span><strong id="sBatt2">--</strong></div>
+            </div>
+            <p class="s-hint s-more-foot" id="sMoreFoot">More detail is in Complete mode.</p>
+          </details>
+        </div>
+      </div>
+
+      <div class="section-heading complete-only">
         <div>
           <h2>Live farm status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the live farm status" data-info-title="Live farm status" data-info-text="What ESP1 measured in its latest report, grouped by what it is about. A reading says Unavailable when ESP1 didn't send it, usually because that sensor isn't answering." data-help="help-snapshot">i</button></h2>
           <p class="hint">What ESP1 measured in its latest report.</p>
@@ -231,7 +455,7 @@
       </div>
 
       <!-- The rig drawn from ESP1's latest report (2026-11-05): see buildRigDrawing() in script.js. -->
-      <article class="panel rig-panel" aria-labelledby="rigTitle">
+      <article class="panel rig-panel complete-only" aria-labelledby="rigTitle">
         <div class="panel-heading">
           <div>
             <h3 id="rigTitle">The rig now<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the rig drawing" data-info-title="The rig now" data-info-text="The tanks, pumps and columns as ESP1 last reported them. Water sits at the measured level, a pipe shows water moving only while ESP1 reports that pump running, and each column fills to its soil moisture, with Soil start % marked." data-help="help-tanks">i</button></h3>
@@ -241,7 +465,7 @@
         <div id="rigDrawing" class="rig-drawing"></div>
       </article>
 
-      <div class="reading-panels">
+      <div class="reading-panels complete-only">
         <article class="panel reading-panel">
           <h3>Water<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the water readings" data-info-title="Water" data-info-text="The reservoir holds the plain water, and each batch is mixed in the mixing tank. Their levels come from ultrasonic sensors. pH and EC are measured in the mixing tank during a run, so between runs they show the last batch." data-help="help-tanks">i</button></h3>
           <dl class="reading-grid">
@@ -292,7 +516,7 @@
       </div>
 
       <!-- Current run, with what ESP1 will do next beside it (Up next, 6 Nov 2026: see renderUpNext() in script.js). -->
-      <div class="run-row">
+      <div class="run-row complete-only">
       <article class="panel run-panel">
         <div class="panel-heading">
           <div><h3>Current run<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the current run" data-info-title="Current run" data-info-text="The run ESP1 is doing now, scheduled or forced: its step, and the water and nutrients delivered so far." data-help="help-run-phases">i</button></h3><p id="runSummary">Nothing is running.</p></div>
@@ -319,7 +543,7 @@
       </article>
       </div>
 
-      <article class="panel command-panel">
+      <article class="panel command-panel complete-only">
         <div class="panel-heading"><div><h3>Recent commands<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About recent commands" data-info-title="Recent commands" data-info-text="What this website asked ESP1 to do, newest first, with ESP1's reply. Queued only means sent: only the reply (accepted, completed, rejected or failed) says whether it happened." data-help="help-command-status">i</button></h3><p>Newest first, with ESP1's reply.</p></div></div>
         <p id="commandStatus" class="command-status" aria-live="polite">No dashboard command has been sent in this session.</p>
         <div id="commandHistory" class="command-history"><p class="muted">No command history received yet.</p></div>
@@ -357,6 +581,8 @@
           </div>
           <button type="button" id="cropAddBtn" hidden>Add a crop</button>
         </div>
+        <!-- Simple mode folds the library behind this (18 Nov 2026); it opens by itself while a crop is being edited. -->
+        <button type="button" class="s-collapse-toggle simple-only" id="sCropToggle" aria-expanded="false" aria-controls="cropList"><svg class="si" aria-hidden="true"><use href="#si-sprout"/></svg><span>Show the crop profiles</span><svg class="si s-chev" aria-hidden="true"><use href="#si-chevron"/></svg></button>
         <p id="cropLibraryNote" class="field-note" hidden>Only operators and Sub-operators can add, change or remove crops.</p>
         <p id="cropLibraryResult" class="control-result" aria-live="polite"></p>
         <div id="cropEditorNew"></div>
@@ -389,8 +615,8 @@
       <div id="controlsBody" hidden>
       <article class="emergency-panel">
         <div>
-          <h3>Emergency stop<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Emergency stop" data-info-title="Emergency stop" data-info-text="Switches every pump and valve off at once and cuts ESP2's power. It is never held back by the cooldown or the rig lock. When it is safe again, press Return to normal in the red banner. While ESP1 isn't reporting it can't be sent from here: use the physical cutoff, MODE + BACK on the unit, or SMS STOP,ALL." data-help="help-stop">i</button></h3>
-          <p>Every pump and valve off at once.</p>
+          <h3><span class="complete-only">Emergency stop</span><span class="simple-only">Stop everything now</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Emergency stop" data-info-title="Emergency stop" data-info-text="Switches every pump and valve off at once and cuts ESP2's power. It is never held back by the cooldown or the rig lock. When it is safe again, press Return to normal in the red banner. While ESP1 isn't reporting it can't be sent from here: use the physical cutoff, MODE + BACK on the unit, or SMS STOP,ALL." data-help="help-stop">i</button></h3>
+          <p><span class="complete-only">Every pump and valve off at once.</span><span class="simple-only">If anything looks wrong, this turns every pump and valve off at once.</span></p>
           <p id="emergencyOfflineNote" class="control-result error" hidden>ESP1 isn't reporting, so a stop can't be sent from here. Use the physical cutoff, MODE + BACK on the unit, or SMS STOP,ALL.</p>
         </div>
         <button id="emergencyStop" class="danger estop-btn" type="button">Emergency stop now</button>
@@ -401,7 +627,7 @@
       <article class="panel switch-panel">
         <div class="panel-heading">
           <div>
-            <h3>Pumps and valves<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About switching pumps and valves off" data-info-title="Pumps and valves" data-info-text="On: the schedule, forced runs, exercises and tests can run. Switch it off before maintenance to stop everything at once. Off (actuations disabled): nothing runs, not even the schedule, until someone switches it back on, even after a restart. Readings, logging and this website keep working. At the rig: Settings, Enable Actuations. Switching off is a stop, so it can't be sent while ESP1 isn't reporting." data-help="help-pause">i</button></h3>
+            <h3><span class="complete-only">Pumps and valves</span><span class="simple-only">Allow pumps and valves to run</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About switching pumps and valves off" data-info-title="Pumps and valves" data-info-text="On: the schedule, forced runs, exercises and tests can run. Switch it off before maintenance to stop everything at once. Off (actuations disabled): nothing runs, not even the schedule, until someone switches it back on, even after a restart. Readings, logging and this website keep working. At the rig: Settings, Enable Actuations. Switching off is a stop, so it can't be sent while ESP1 isn't reporting." data-help="help-pause">i</button></h3>
             <p id="actStateText">Waiting for ESP1's report.</p>
           </div>
           <div class="switch-row">
@@ -436,7 +662,10 @@
           <!-- A column switched off on ESP1 can't be picked above; this offers to switch it on, as the LCD's Force Run
                does by itself (18 Nov 2026). Filled by syncForceColumnOptions() in script.js. -->
           <div id="forceOffCols" class="force-off" hidden></div>
-          <fieldset class="dose-fieldset">
+          <!-- Simple mode keeps the nutrient boxes behind this toggle (18 Nov 2026). It says what they hold while closed, so a
+               dose set earlier is never hidden; the boxes, their limits and Start forced run are the same in both modes. -->
+          <button type="button" class="s-dose-toggle simple-only" id="sDoseToggle" aria-expanded="false" aria-controls="forceDoseFieldset"><svg class="si" aria-hidden="true"><use href="#si-flask"/></svg><span id="sDoseToggleText">Add nutrients (optional): now plain water</span><svg class="si s-chev" aria-hidden="true"><use href="#si-chevron"/></svg></button>
+          <fieldset class="dose-fieldset" id="forceDoseFieldset">
             <legend>Nutrients (mL, up to 500 each). Leave at 0 for plain water</legend>
             <div class="force-row">
               <label>Nutrient A<input id="forceDoseA" type="number" min="0" max="500" step="1" value="0" required></label>
@@ -462,7 +691,9 @@
         </article>
       </article>
 
-      <article class="panel">
+      <!-- In Simple mode this sits behind "Advanced controls" (18 Nov 2026); the buttons and their checks are the same. -->
+      <article class="panel s-collapsible" id="restartPanel">
+        <button type="button" class="s-collapse-toggle simple-only" aria-expanded="false" aria-controls="restartPanel"><svg class="si" aria-hidden="true"><use href="#si-refresh"/></svg><span>Advanced controls: restart a board</span><svg class="si s-chev" aria-hidden="true"><use href="#si-chevron"/></svg></button>
         <h3>Restart a board<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About restarting a board" data-info-title="Restart a board" data-info-text="Restarts one of the rig's three boards, for when it has stopped answering. ESP1 refuses to restart ESP2 or itself during a run, a pump test or a held fault. The LCD calls this Reboot." data-help="help-controllers">i</button></h3>
         <ul class="action-list">
           <li><button id="rebootNanoBtn2" type="button">Restart the Nano</button><span>The sensor board. Soil, air, light and tank readings pause for a moment.</span></li>
@@ -864,6 +1095,15 @@
         <details class="help-item" id="help-rename" data-for="zones">
           <summary>Rename a column</summary>
           <p>Press <strong>Rename</strong> beside the column's name on its card, type the new name (up to 40 characters) and press <strong>Save name</strong>. Everyone who signs in sees the new name. It is kept on this website only: the LCD and SMS keep ESP1's own name for the column.</p>
+        </details>
+        <details class="help-item" id="help-modes" data-for="all">
+          <summary>Simple and Complete modes</summary>
+          <p>The switch at the top of the page changes how much the website shows. It changes nothing on the rig.</p>
+          <ul>
+            <li><strong>Simple</strong> (the first time you open the site): the farm at a glance, in plain words. Is it running, how much water is left, how wet each column's soil is, what it is doing now and when it waters next. Zone profiles, Controls and Help work as usual, with the technical parts folded away.</li>
+            <li><strong>Complete</strong>: every reading and control, including Manual/Test, System and Diagnostics.</li>
+          </ul>
+          <p>Both modes use the same live report from ESP1 and the same safety checks: a button works the same, and is refused for the same reasons, in either mode. When ESP1's report is old, both say the state is unknown rather than guess. Your choice is kept in this browser only, so another phone or computer keeps its own.</p>
         </details>
         <details class="help-item" id="help-operation" data-for="all">
           <summary>Run a column by hand (Manual), and plan Manual or Automatic days</summary>

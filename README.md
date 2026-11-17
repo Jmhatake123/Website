@@ -72,6 +72,14 @@ The page works with web v.3 firmware too (no litres shown).
 
 ## What the dashboard does
 
+- **Simple and Complete modes** (18 Nov 2026) — a switch at the top changes how much the site shows; it
+  changes nothing on the rig. **Simple** (the default) shows the farm at a glance in plain words: whether it
+  is running, how much water is left, how wet each column's soil is, a drawn picture of the system with water
+  moving only while ESP1 reports it, what it is doing now and when it waters next. Its tabs are Dashboard,
+  Zone profiles, Controls and Help (plus User Management for operators), with the technical parts folded
+  away. **Complete** is every reading and control, as described below. Both use the same live report and the
+  same safety checks; when ESP1's report is old, both say the state is unknown rather than guess. The choice
+  and the theme (light by default) are kept in this browser only.
 - **Rig lock** — one switch, at the top of every tab and on System, that locks this website's controls
   and the buttons on the rig's LCD together. It is ESP1's own Lock Screen flag, so locking or unlocking at
   the rig does the same to the website. Automatic watering carries on; Emergency stop, switching pumps and
