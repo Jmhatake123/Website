@@ -4592,6 +4592,8 @@ function explainFaultCode(code) {
     const moved = text.match(/\|moved=(-?[\d.]+)/);
     const m = moved ? ` (${Number(moved[1]).toFixed(2)} L moved)` : "";
     if (lvl[2] === "NO_LEVEL_CHANGE") return `The tank levels did not change during ${stage}${m}: a failed pump, a shut valve, a blocked line or filter, or the pump selector on the wrong pump.`;
+    const left = text.match(/\|left=([\d.]+)/);
+    if (lvl[2] === "STALL" && left) return `The delivery stopped with ${Number(left[1]).toFixed(1)} L still in the mixing tank${m}: the column was not watered. Check the line, the column valve and the booster pump.`;
     if (lvl[2] === "STALL") return `Water moved, then stopped during ${stage}${m}: a blocked line or filter, a shut valve, or a failed pump.`;
     return `${stage[0].toUpperCase()}${stage.slice(1)} ran past its time limit${m}: the pump is much slower than expected. Check the line and filter, and the pump rates on the LCD (Calibration).`;
   }
@@ -4606,6 +4608,13 @@ function explainFaultCode(code) {
   const weak = text.match(/^ESP2_DEGRADED\s+PUMP_WEAK\|(\w+)\|levels=([\d.]+)\|by_rate=([\d.]+)/);
   if (weak) {
     return `The ${weak[1].toLowerCase()} pump moved ${weak[2]} L where its measured rate says ${weak[3]} L: under half. The run carried on. Check for a blocked filter, a half-shut valve or a worn pump, or re-measure its rate.`;
+  }
+  const jump = text.match(/^ESP2_DEGRADED\s+LEVEL_JUMP\|(FILL|DRAIN)\|moved=([\d.]+)\|s=([\d.]+)/);
+  if (jump) {
+    return `The mixing tank's level said the ${jump[1] === "FILL" ? "fill" : "delivery"} was done (${jump[2]} L in ${jump[3]} s), faster than the pump can move water. ESP2 treated it as a bad reading and kept going. Check the ultrasonic sensor and its cable.`;
+  }
+  if (/^ESP2_DEGRADED\s+FLOW_NOISE\b/.test(text)) {
+    return "A nutrient flow meter counted a burst of pulses no pump can produce: electrical noise on its cable (a relay or the inverter switching nearby). ESP2 left the burst out of the dose. Check the meter cable's routing, shielding and ground.";
   }
   if (/^ESP2_DEGRADED\s+LEVEL_DISAGREE\b/.test(text)) {
     return "During a fill the mixing tank's rise and the reservoir's drop disagreed. The run carried on; check both ultrasonics and the tank calibrations.";

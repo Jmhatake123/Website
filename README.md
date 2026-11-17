@@ -39,6 +39,11 @@ the page shows differently:
   `LEVEL_BLIND`, `SERVO_FAIL`, `ESP2_DEGRADED PUMP_WEAK` and `LEVEL_DISAGREE`. `LEVEL_BLIND` and
   `SERVO_FAIL` are named in the held-fault banner. The pre-v.4 `FLOW_FAIL …|pulses=` text is still
   explained.
+- Hardening from the web v.3 log of 17 Nov 2026 (a delivery reported done within a second, nothing reached
+  the column): `FLOW_FAIL MAIN|STALL|left=…` (a delivery that stopped with most of its water still in the
+  tank is held, not finished), `ESP2_DEGRADED LEVEL_JUMP` (a level "done" faster than the pump can move
+  water is ignored) and `ESP2_DEGRADED FLOW_NOISE` (a nutrient meter's noise burst is left out of the dose)
+  are explained in words.
 
 The page works with web v.3 firmware too (no litres shown).
 
