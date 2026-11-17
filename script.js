@@ -356,6 +356,14 @@ function snapshotAgeText() {
   return `Snapshot received ${formatAge(age)} ago`;
 }
 
+// The age at the top of the dashboard, with the pace ESP1 is reporting at (web v.4 of 17 Nov 2026: fast while watched).
+function liveAgeText() {
+  const base = snapshotAgeText();
+  if (!liveData.meta?.updatedAt || !deviceIsFresh()) return base;
+  const every = Math.round(Number(liveData.meta.refreshMs || 60000) / 1000);
+  return liveData.meta.live ? `${base} · live, every ${every} s` : `${base} · every ${every} s`;
+}
+
 function deviceIsFresh() {
   const stamp = Number(liveData.meta?.updatedAt || 0);
   const refreshMs = Number(liveData.meta?.refreshMs || 60000);
@@ -1083,8 +1091,10 @@ function attachDatabaseListeners() {
     liveData = snapshot.val() || {};
     lastKnownFresh = deviceIsFresh();
     updateDashboard();
+    setText("liveAge", liveAgeText());
     syncConnection();
     syncControlAvailability();
+    if (refreshAskedAt && Number(liveData.meta?.updatedAt || 0) > refreshBaseStamp) finishRefresh(true);
   }, error => {
     if (error.code === "PERMISSION_DENIED") {
       // Live data needs an approved account. The denial also ends this listener, so
@@ -4016,9 +4026,15 @@ function initRigDrawing() {
   reduceMotionQuery?.addEventListener?.("change", rigWake);
 }
 
-function tankReadingText(pct, litres) {
+// The Nano's pinger status letter (web v.4 firmware of 17 Nov 2026, sensorsRaw.tank.*Status): why a tank has no reading.
+const TANK_STATUS_WORDS = { E: "no echo", S: "echo line stuck", R: "out of range", F: "too few good pings", X: "not pinging" };
+function tankReadingText(pct, litres, status) {
+  if (!hasValue(pct)) {
+    const why = TANK_STATUS_WORDS[status];
+    return why ? `No reading: ${why}` : "Unavailable";
+  }
   const p = numberText(pct, 1, "%");
-  return hasValue(pct) && hasValue(litres) ? `${p} · ${numberText(litres, 1, "L")}` : p;
+  return hasValue(litres) ? `${p} · ${numberText(litres, 1, "L")}` : p;
 }
 
 function updateDashboard() {
@@ -4028,8 +4044,9 @@ function updateDashboard() {
   const diagnostics = liveData.diagnostics || {};
   // web v.4 firmware also reports the litres each tank holds (its tank calibration); older firmware only the %.
   // A tank may read over 100 %: water above the calibrated full mark.
-  setText("reservoirLevel", tankReadingText(sensors.reservoirLevel, sensors.reservoirLiters));
-  setText("mixingLevel", tankReadingText(sensors.mixingLevel, sensors.mixingLiters));
+  const rawTank = diagnostics.sensorsRaw?.tank || {};
+  setText("reservoirLevel", tankReadingText(sensors.reservoirLevel, sensors.reservoirLiters, rawTank.reservoirStatus));
+  setText("mixingLevel", tankReadingText(sensors.mixingLevel, sensors.mixingLiters, rawTank.mixingStatus));
   setText("flowRate", numberText(sensors.flowRate, 1, "L/min"));
   setText("temperature", numberText(sensors.temperature, 1, "°C"));
   setText("humidity", numberText(sensors.humidity, 1, "%"));
@@ -4277,7 +4294,7 @@ function renderDiagnostics() {
   const current = deviceIsFresh();
   const diagnosticsAvailable = Object.keys(d).length > 0;
   const groups = [
-    ["ESP1's report", [["Report", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : isV3Firmware() ? "web v.3" : "Older than web v.3"], ["Report size", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"]]],
+    ["ESP1's report", [["Report", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : liveData.system.firmware ? String(liveData.system.firmware) : isV3Firmware() ? "web v.3 (or web v.4 before 17 Nov)" : "Older than web v.3"], ["Report size", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"]]],
     ["Wi-Fi", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Signal strength", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm` : "Unavailable"]]],
     ["Link to this website (Firebase)", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
     ["ThingSpeak graphs", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
@@ -4365,6 +4382,13 @@ const FORCE_ABORT_REASONS = {
   // Added by the web v.3 firmware: the rest of forceTick()'s codes, plus every other forceAbort() caller.
   TANK_CHECK:     "the mixing tank must be checked first (SMS TANKCHECK,OK or the LCD)",
   BATT2:          "the secondary battery blocked inverter use",
+  // ESP1 from 17 Nov 2026 names which secondary-battery reason it was.
+  BATT2_LOW:       "the second battery is at 30 % or less",
+  BATT2_MONITOR:   "the second battery's monitor is not answering",
+  BATT2_NOT_SEEN:  "the second battery is not seen (check its wiring and ground)",
+  BATTSW_FAULT:    "a battery-switch fault is latched (clear it on the System tab)",
+  BATTSW_RECHARGE: "the controllers had just restarted (a minute's wait)",
+  MAIN_BATT_CRIT:  "the main battery is critical",
   REFUSED:        "ESP1 refused the work order",
   WEB:            "it was cancelled from this dashboard",
   OPERATOR:       "the operator cancelled it at the LCD",
@@ -5048,6 +5072,9 @@ function renderRawSensors() {
         ["Reservoir distance", numberText(r.tank?.reservoirCm, 1, "cm")],
         ["Mixing distance", numberText(r.tank?.mixingCm, 1, "cm")],
         ["Reservoir refill flow", numberText(r.tank?.flowLpm, 2, "L/min")],
+        ["Sensor status", r.tank?.reservoirStatus || r.tank?.mixingStatus
+          ? `reservoir ${TANK_STATUS_WORDS[r.tank?.reservoirStatus] || (r.tank?.reservoirStatus === "K" ? "OK" : "not reported")}, mixing tank ${TANK_STATUS_WORDS[r.tank?.mixingStatus] || (r.tank?.mixingStatus === "K" ? "OK" : "not reported")}`
+          : "Not reported by this firmware"],
         ["Reading age", `${formatAge(r.tank?.ageMs)} (${ageFlag(r.tank?.ageMs)})`]
       ]));
       const soilRows = ["A", "B", "C"]
@@ -6190,10 +6217,87 @@ const contributorsDialog = document.getElementById("contributorsDialog");
 document.getElementById("contributorsBtn")?.addEventListener("click", () => contributorsDialog?.showModal());
 contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () => contributorsDialog.close());
 
+/* ---- Live viewing and Refresh (2026-11-17, user: "a very realtime website, and a refresh button") --------------------
+ * While this page is open and on screen it tells ESP1 someone is watching (irrigation/viewer/at, every VIEWER_TOUCH_MS);
+ * ESP1 then reports every 2 s during a run and every 4 s otherwise, instead of every 20 / 60 s, and goes back to that
+ * pace about 45 s after the last touch. Refresh asks for a report now (irrigation/viewer/refreshAt) and says how long
+ * ESP1 took to answer. An older ESP1 ignores the node: the page then simply keeps the old pace. */
+const VIEWER_TOUCH_MS = 15000;
+const REFRESH_WAIT_MS = 12000;
+let viewerTouchTimer = null;
+let refreshAskedAt = 0, refreshBaseStamp = 0, refreshTimeout = null, refreshClearTimer = null;
+
+function viewerTouch(extra) {
+  if (!db || !auth?.currentUser || !isApprovedUser() || databaseAccessDenied) return Promise.resolve(false);
+  const update = Object.assign({ at: firebase.database.ServerValue.TIMESTAMP }, extra || {});
+  return db.ref("irrigation/viewer").update(update).then(() => true).catch(error => {
+    console.warn("irrigation/viewer", error);
+    return false;
+  });
+}
+
+function syncViewerTouch() {
+  const allowed = Boolean(auth?.currentUser) && isApprovedUser() && !databaseAccessDenied;
+  const refreshButton = document.getElementById("refreshBtn");
+  if (refreshButton) refreshButton.hidden = !allowed;
+  const want = allowed && document.visibilityState === "visible";
+  if (want && !viewerTouchTimer) {
+    viewerTouch();
+    viewerTouchTimer = setInterval(() => viewerTouch(), VIEWER_TOUCH_MS);
+  } else if (!want && viewerTouchTimer) {
+    clearInterval(viewerTouchTimer);
+    viewerTouchTimer = null;
+  }
+}
+document.addEventListener("visibilitychange", syncViewerTouch);
+
+function refreshStatusText(text, clearAfterMs) {
+  const status = document.getElementById("refreshStatus");
+  if (!status) return;
+  status.textContent = text;
+  if (refreshClearTimer) clearTimeout(refreshClearTimer);
+  refreshClearTimer = clearAfterMs ? setTimeout(() => { status.textContent = ""; }, clearAfterMs) : null;
+}
+
+function requestRefresh() {
+  if (refreshAskedAt || !db || !isApprovedUser()) return;
+  const button = document.getElementById("refreshBtn");
+  refreshAskedAt = serverNow();
+  refreshBaseStamp = Number(liveData.meta?.updatedAt || 0);
+  if (button) { button.disabled = true; button.textContent = "Refreshing…"; }
+  refreshStatusText("Asking ESP1 for a fresh report…");
+  viewerTouch({ refreshAt: firebase.database.ServerValue.TIMESTAMP }).then(ok => {
+    if (!ok) finishRefresh(false, "Couldn't ask ESP1: this account may not be allowed, or the connection dropped.");
+  });
+  // Re-read what Firebase already holds, so the page is current even before ESP1 answers.
+  liveRef?.once("value").then(snapshot => {
+    liveData = snapshot.val() || {};
+    lastKnownFresh = deviceIsFresh();
+    updateDashboard();
+    setText("liveAge", liveAgeText());
+    syncConnection();
+    syncControlAvailability();
+  }).catch(() => {});
+  if (refreshTimeout) clearTimeout(refreshTimeout);
+  refreshTimeout = setTimeout(() => finishRefresh(false), REFRESH_WAIT_MS);
+}
+
+function finishRefresh(answered, message) {
+  if (!refreshAskedAt) return;
+  const took = Math.max(0, serverNow() - refreshAskedAt);
+  refreshAskedAt = 0;
+  if (refreshTimeout) { clearTimeout(refreshTimeout); refreshTimeout = null; }
+  const button = document.getElementById("refreshBtn");
+  if (button) { button.disabled = false; button.textContent = "Refresh"; }
+  if (answered) refreshStatusText(`Fresh report from ESP1 in ${(took / 1000).toFixed(1)} s`, 8000);
+  else refreshStatusText(message || "No new report from ESP1 yet: it may be offline or busy, or its firmware is older than 17 Nov.", 15000);
+}
+document.getElementById("refreshBtn")?.addEventListener("click", requestRefresh);
+
 // The snapshot ages between pushes, so the freshness gate has to be re-evaluated on a timer as well
 // as on each update -- otherwise a device that goes silent leaves the controls enabled indefinitely.
 setInterval(() => {
-  setText("liveAge", snapshotAgeText());
+  setText("liveAge", liveAgeText());
   syncControlAvailability();
   // A temporary Manual/Test + System grant (see canAccessPrivilegedTabs()) expires by clock alone --
   // no Firebase write happens at the exact expiry moment, so nothing else would re-check this. 15 s
@@ -6208,6 +6312,8 @@ setInterval(() => {
 // re-prompt is the whole point of the option.
 setInterval(() => {
   syncFreshness();
+  setText("liveAge", liveAgeText());   // the age moves every second, now that reports come every few seconds
+  syncViewerTouch();                   // start / stop telling ESP1 someone is watching (sign-in, approval, tab hidden)
   updateForceArmed();
   renderUpNext();             // the clock moves on: a watering time opens or closes, the day turns over
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;

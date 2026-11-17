@@ -127,6 +127,8 @@ body.takeover > .sidebar, body.takeover > .main-content { display: none; }
 .connection-status { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: .86rem; }
 .online-dot { display: inline-block; width: 9px; height: 9px; border-radius: 999px; background: var(--danger); }
 .snapshot-age { padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted); font-size: .82rem; white-space: nowrap; }
+.refresh-status { font-size: .82rem; max-width: 22rem; }
+#refreshBtn[disabled] { opacity: .7; cursor: progress; }
 
 .view { display: none; }
 .view.active { display: block; }
