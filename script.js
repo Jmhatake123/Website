@@ -4623,6 +4623,9 @@ function explainFaultCode(code) {
     if (lvl[2] === "STALL") return `Water moved, then stopped during ${stage}${m}: a blocked line or filter, a shut valve, or a failed pump.`;
     return `${stage[0].toUpperCase()}${stage.slice(1)} ran past its time limit${m}: the pump is much slower than expected. Check the line and filter, and the pump rates on the LCD (Calibration).`;
   }
+  if (/^ESP2_DEGRADED\s+LEVEL_BLIND\|FILL\b/.test(text)) {
+    return "The mixing tank's level was lost during the fill. The transfer carried on by its run time, cut short to keep a quarter of the tank's room free, and the tank is measured again after it settles (topped up if short). Check the mixing-tank ultrasonic: the log's NANO,LEVEL lines say why its readings were not used.";
+  }
   if (/^LEVEL_BLIND\b/.test(text)) {
     return "The mixing tank's ultrasonic gave no usable reading, so ESP2 stopped rather than fill blind (it could overflow). Check the Nano and the sensor. Release or irrigate-only then run on a timer.";
   }
