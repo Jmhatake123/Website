@@ -4576,7 +4576,9 @@ let faultAckLocalUntil = 0;          // client-side half of the "ask me again in
 // The faults that hold a run (enterFaultHold() in the firmware). ESP1 reports everything in one text field, so
 // after pressing Hold it says "HELD - waiting" there, and "Resume refused: ..." after a refused resume, and a
 // minor fault can land there too. The banner must go on naming the fault that is actually being held.
-const HELD_FAULT_CODE = /^(ESP2_ERROR|FLOW_FAIL|PWR_FAIL|SAFE_STOP|DOSE_TIMEOUT|LEVEL_BLIND|SERVO_FAIL)\b/;
+// BATT_SWITCH_FAIL / INVERTER_FAIL: held like SERVO_FAIL since 2026-11-16 (ESP1 main.cpp, the "resp ==
+// BATT_SWITCH_FAIL || INVERTER_FAIL" branch -> enterFaultHold(resp, ...)).
+const HELD_FAULT_CODE = /^(ESP2_ERROR|FLOW_FAIL|PWR_FAIL|SAFE_STOP|DOSE_TIMEOUT|LEVEL_BLIND|SERVO_FAIL|BATT_SWITCH_FAIL|INVERTER_FAIL)\b/;
 let heldFaultCode = "";
 
 // Tracks held||stopped SPECIFICALLY (not lockedOut) across snapshots so the moment it clears can be
@@ -4633,6 +4635,21 @@ function explainFaultCode(code) {
     return /STUCK/.test(text)
       ? "The pump selector stayed on the wrong pump after it was re-seated. Check the servo and the selector lever before choosing."
       : "The pump selector could not be confirmed, so the inverter was never switched on. Check the Nano and the servo.";
+  }
+  // ESP2 moves the boards to the secondary battery (P0) before every AC pump start and checks that all of them came
+  // through the switch; the reason after the "|" says which check failed. The inverter is never switched on.
+  if (/^BATT_SWITCH_FAIL\b/.test(text)) {
+    const why = /NANO_RESET/.test(text) ? " The Nano restarted during the switch."
+      : /NANO_SILENT/.test(text) ? " The Nano stopped answering during the switch."
+      : /PCF_RESET/.test(text) ? " The relay board (PCF8575) restarted during the switch."
+      : /NO_CONFIRM|TIMEOUT/.test(text) ? " ESP1 never confirmed that every board came through the switch." : "";
+    return `Moving the boards to the secondary battery failed, so the inverter was never switched on.${why} Check the secondary battery's charge, the battery-switch relay and its wiring.`;
+  }
+  // The inverter relay was on for 6 s and the PZEM read no AC voltage on its output; ESP2 switched the relay off again.
+  if (/^INVERTER_FAIL\b/.test(text)) {
+    return /v=none/.test(text)
+      ? "The inverter was switched on but the PZEM power meter did not answer at all, so its output could not be confirmed. ESP2 switched the inverter off again. Check the PZEM and its wiring, then the inverter."
+      : "The inverter was switched on but gave no AC voltage within 6 seconds, so ESP2 switched it off again. Check the inverter (its own switch, fuse and battery input) and its relay.";
   }
   const weak = text.match(/^ESP2_DEGRADED\s+PUMP_WEAK\|(\w+)\|levels=([\d.]+)\|by_rate=([\d.]+)/);
   if (weak) {
