@@ -1186,6 +1186,8 @@ function detachDatabaseListeners() {
   if (commandsRef) commandsRef.off();
   if (zonesRef) zonesRef.off();
   if (cropsRef) cropsRef.off();
+  if (logsRef) { logsRef.off(); logsRef = null; }
+  logsIndex = {}; logsDenied = false;
   serverOffsetRef = null;
   firebaseLinkRef = null;
   firebaseLinkSeen = false;
@@ -4298,7 +4300,7 @@ function renderDiagnostics() {
     ["Wi-Fi", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Signal strength", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm` : "Unavailable"]]],
     ["Link to this website (Firebase)", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
     ["ThingSpeak graphs", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
-    ["Log upload (Supabase)", [["Configured", booleanText(d.supabase?.configured, "Configured", "Not configured")], ["Upload", booleanText(d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.supabase?.lastUploadedDay) : "No completed upload"]]],
+    ["Log upload", [["Goes to", d.logUpload?.target === "firebase" ? "Firebase (SD card logs, below)" : d.logUpload?.target === "supabase" || (!d.logUpload && d.supabase?.configured) ? "Supabase" : "Not configured"], ["Upload", booleanText(d.logUpload ? d.logUpload.busy : d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay) : "No completed upload"]]],
     ["Runs and faults", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Run waiting to start", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")], ["Rig lock", booleanText(d.system?.lcdLocked, "Locked", "Unlocked")]]],
     ["ESP2 (pumps and valves)", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last reply", agoText(d.esp2?.lastResponseAgeMs)]]],
     ["Nano (sensors)", [["Last reading", agoText(d.nano?.lastSampleAgeMs)], ["Air", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
@@ -6294,6 +6296,111 @@ function finishRefresh(answered, message) {
 }
 document.getElementById("refreshBtn")?.addEventListener("click", requestRefresh);
 
+/* ---- SD card logs (2026-11-17: the Supabase upload expired; the daily CSV now comes through Firebase) ---------------
+ * ESP1 puts each day under logs/files/<yyyymmdd>/<nnnn> (pieces of ~12 KB) with logs/index/<yyyymmdd> saying how far it
+ * got. The list follows logs/index live; Download joins the pieces into the CSV; "Upload from the rig" writes
+ * irrigation/logRequest, which ESP1 polls every 10 s. Operators and the privileged tier only (the rules agree). */
+let logsRef = null, logsIndex = {}, logsDenied = false;
+
+function logDayLabel(day) {
+  const s = String(day);
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+}
+
+function syncLogsListener() {
+  const want = Boolean(db && auth?.currentUser) && canAccessPrivilegedTabs();
+  const panel = document.getElementById("logsPanel");
+  if (panel) panel.hidden = !want;
+  const dayInput = document.getElementById("logDay");
+  if (dayInput && !dayInput.value) {
+    const now = new Date(serverNow());
+    dayInput.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }
+  if (want && !logsRef && !logsDenied) {
+    logsRef = db.ref("logs/index");
+    logsRef.on("value", snapshot => {
+      logsIndex = snapshot.val() || {};
+      renderLogs();
+    }, error => {
+      logsDenied = true;
+      logsRef = null;
+      setText("logsNote", error.code === "PERMISSION_DENIED"
+        ? "This account can't read the logs: they need an operator, a Sub-operator or 1-hour access."
+        : `Couldn't read the list: ${error.code || "unknown error"}.`);
+    });
+  } else if (!want && logsRef) {
+    logsRef.off(); logsRef = null; logsIndex = {};
+  }
+}
+
+function logStateText(entry) {
+  const at = Number(entry?.at || 0);
+  const when = at ? `, ${agoText(Math.max(0, serverNow() - at))}` : "";
+  switch (entry?.state) {
+    case "done":
+      return `${(Number(entry.size || 0) / 1024).toFixed(0)} KB${entry.partial ? " (the day so far)" : ""}, sent${when}`;
+    case "uploading": return `Being sent from the rig${when}…`;
+    case "missing":   return `Not on the rig's SD card${when}`;
+    case "failed":    return `Sending failed${when}; ESP1 tries again`;
+    default:          return rawText(entry?.state, "Unknown");
+  }
+}
+
+function renderLogs() {
+  const list = document.getElementById("logsList");
+  if (!list) return;
+  const days = Object.keys(logsIndex).filter(day => /^\d{8}$/.test(day)).sort().reverse();
+  if (!days.length) {
+    list.innerHTML = `<li class="muted">No logs here yet. Finished days arrive after midnight; use Upload from the rig for one now.</li>`;
+    return;
+  }
+  list.innerHTML = days.map(day => {
+    const entry = logsIndex[day] || {};
+    const ready = entry.state === "done";
+    return `<li class="log-row"><span><strong>${escapeHtml(logDayLabel(day))}</strong> · ${escapeHtml(logStateText(entry))}</span>` +
+           `<button type="button" data-log-day="${escapeHtml(day)}"${ready ? "" : " disabled"}>Download</button></li>`;
+  }).join("");
+}
+
+async function downloadLog(day, button) {
+  if (!db) return;
+  if (button) { button.disabled = true; button.textContent = "Downloading…"; }
+  try {
+    const snapshot = await db.ref(`logs/files/${day}`).once("value");
+    const pieces = snapshot.val() || {};
+    const keys = Object.keys(pieces).sort();
+    if (!keys.length) { setText("logsNote", `${logDayLabel(day)}: no data in Firebase. Use Upload from the rig.`); return; }
+    const text = keys.map(key => String(pieces[key] ?? "")).join("");
+    const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = `${day}.CSV`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setText("logsNote", `${logDayLabel(day)}: downloaded (${(text.length / 1024).toFixed(0)} KB).`);
+  } catch (error) {
+    setText("logsNote", `${logDayLabel(day)}: download failed (${error.code || error.message || "unknown error"}).`);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "Download"; }
+  }
+}
+
+function requestLogUpload() {
+  const value = document.getElementById("logDay")?.value || "";
+  const parts = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!db || !parts) { setText("logsNote", "Pick a day first."); return; }
+  const day = Number(parts[1] + parts[2] + parts[3]);
+  db.ref("irrigation/logRequest").set({ day, at: firebase.database.ServerValue.TIMESTAMP })
+    .then(() => setText("logsNote", `Asked the rig for ${logDayLabel(day)}. It appears in the list as it is sent (about a minute per megabyte); ESP1 checks every 10 seconds.`))
+    .catch(error => setText("logsNote", error.code === "PERMISSION_DENIED"
+      ? "Not sent: this account may not ask (operators, Sub-operators and 1-hour access can), or you asked less than 5 seconds ago."
+      : `Not sent: ${error.code || error.message || "unknown error"}.`));
+}
+document.getElementById("logRequestBtn")?.addEventListener("click", requestLogUpload);
+document.getElementById("logsList")?.addEventListener("click", event => {
+  const button = event.target.closest("button[data-log-day]");
+  if (button) downloadLog(button.dataset.logDay, button);
+});
+
 // The snapshot ages between pushes, so the freshness gate has to be re-evaluated on a timer as well
 // as on each update -- otherwise a device that goes silent leaves the controls enabled indefinitely.
 setInterval(() => {
@@ -6314,6 +6421,7 @@ setInterval(() => {
   syncFreshness();
   setText("liveAge", liveAgeText());   // the age moves every second, now that reports come every few seconds
   syncViewerTouch();                   // start / stop telling ESP1 someone is watching (sign-in, approval, tab hidden)
+  syncLogsListener();                  // the SD card logs list, for the accounts that may see it
   updateForceArmed();
   renderUpNext();             // the clock moves on: a watering time opens or closes, the day turns over
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;
