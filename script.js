@@ -5026,7 +5026,7 @@ function renderRawSensors() {
       nano.appendChild(diagnosticGroup("Tank (raw)", [
         ["Reservoir distance", numberText(r.tank?.reservoirCm, 1, "cm")],
         ["Mixing distance", numberText(r.tank?.mixingCm, 1, "cm")],
-        ["Flow", numberText(r.tank?.flowLpm, 2, "L/min")],
+        ["Reservoir refill flow", numberText(r.tank?.flowLpm, 2, "L/min")],
         ["Reading age", `${formatAge(r.tank?.ageMs)} (${ageFlag(r.tank?.ageMs)})`]
       ]));
       const soilRows = ["A", "B", "C"]
