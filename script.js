@@ -3738,7 +3738,7 @@ const RIG_LAYOUTS = {
   }
 };
 const RIG_NARROW_PX = 640;
-const RIG_RES_LOW_PCT = 15;          // ESP1's RES_LOW_PCT: no run starts below it
+const RIG_RES_LOW_PCT = 18;          // ESP1's RES_LOW_PCT (web v.4: = RES_FILTER_PCT, 18 %): no run starts below it
 const rig = {
   layout: "", els: null, visible: false, frame: 0, lastTime: 0,
   tanks: {
@@ -4016,13 +4016,20 @@ function initRigDrawing() {
   reduceMotionQuery?.addEventListener?.("change", rigWake);
 }
 
+function tankReadingText(pct, litres) {
+  const p = numberText(pct, 1, "%");
+  return hasValue(pct) && hasValue(litres) ? `${p} · ${numberText(litres, 1, "L")}` : p;
+}
+
 function updateDashboard() {
   const sensors = liveData.sensors || {};
   const system = liveData.system || {};
   const actuators = liveData.actuators || {};
   const diagnostics = liveData.diagnostics || {};
-  setText("reservoirLevel", numberText(sensors.reservoirLevel, 1, "%"));
-  setText("mixingLevel", numberText(sensors.mixingLevel, 1, "%"));
+  // web v.4 firmware also reports the litres each tank holds (its tank calibration); older firmware only the %.
+  // A tank may read over 100 %: water above the calibrated full mark.
+  setText("reservoirLevel", tankReadingText(sensors.reservoirLevel, sensors.reservoirLiters));
+  setText("mixingLevel", tankReadingText(sensors.mixingLevel, sensors.mixingLiters));
   setText("flowRate", numberText(sensors.flowRate, 1, "L/min"));
   setText("temperature", numberText(sensors.temperature, 1, "°C"));
   setText("humidity", numberText(sensors.humidity, 1, "%"));
@@ -4543,7 +4550,7 @@ let faultAckLocalUntil = 0;          // client-side half of the "ask me again in
 // The faults that hold a run (enterFaultHold() in the firmware). ESP1 reports everything in one text field, so
 // after pressing Hold it says "HELD - waiting" there, and "Resume refused: ..." after a refused resume, and a
 // minor fault can land there too. The banner must go on naming the fault that is actually being held.
-const HELD_FAULT_CODE = /^(ESP2_ERROR|FLOW_FAIL|PWR_FAIL|SAFE_STOP|DOSE_TIMEOUT)\b/;
+const HELD_FAULT_CODE = /^(ESP2_ERROR|FLOW_FAIL|PWR_FAIL|SAFE_STOP|DOSE_TIMEOUT|LEVEL_BLIND|SERVO_FAIL)\b/;
 let heldFaultCode = "";
 
 // Tracks held||stopped SPECIFICALLY (not lockedOut) across snapshots so the moment it clears can be
@@ -4575,6 +4582,33 @@ function explainFaultCode(code) {
     return pulses === 0
       ? `Zero flow pulses were counted during the ${stage} stage — consistent with a dead pump, a closed/stuck valve, or a disconnected flow sensor.`
       : `Flow started (${pulses} pulses counted) then stalled during the ${stage} stage — consistent with an air lock, a weakening pump, or a sensor only partially in the flow path.`;
+  }
+  // web v.4 firmware: water is metered by the tank ultrasonics, so a FLOW_FAIL carries what the levels saw
+  // (moved=<litres>) and the rule that fired, instead of a pulse count. Both pumps sit below their tanks and are
+  // always primed, so "nothing moved" is never a pump still priming.
+  const lvl = text.match(/^FLOW_FAIL\s+(TRANSFER|MAIN|FLUSH)\|(NO_LEVEL_CHANGE|STALL|CAP)\b/);
+  if (lvl) {
+    const stage = lvl[1] === "TRANSFER" ? "the fill from the reservoir to the mixing tank" : "the delivery from the mixing tank to the column";
+    const moved = text.match(/\|moved=(-?[\d.]+)/);
+    const m = moved ? ` (${Number(moved[1]).toFixed(2)} L moved)` : "";
+    if (lvl[2] === "NO_LEVEL_CHANGE") return `The tank levels did not change during ${stage}${m}: a failed pump, a shut valve, a blocked line or filter, or the pump selector on the wrong pump.`;
+    if (lvl[2] === "STALL") return `Water moved, then stopped during ${stage}${m}: a blocked line or filter, a shut valve, or a failed pump.`;
+    return `${stage[0].toUpperCase()}${stage.slice(1)} ran past its time limit${m}: the pump is much slower than expected. Check the line and filter, and the pump rates on the LCD (Calibration).`;
+  }
+  if (/^LEVEL_BLIND\b/.test(text)) {
+    return "The mixing tank's ultrasonic gave no usable reading, so ESP2 stopped rather than fill blind (it could overflow). Check the Nano and the sensor. Release or irrigate-only then run on a timer.";
+  }
+  if (/^SERVO_FAIL\b/.test(text)) {
+    return /STUCK/.test(text)
+      ? "The pump selector stayed on the wrong pump after it was re-seated. Check the servo and the selector lever before choosing."
+      : "The pump selector could not be confirmed, so the inverter was never switched on. Check the Nano and the servo.";
+  }
+  const weak = text.match(/^ESP2_DEGRADED\s+PUMP_WEAK\|(\w+)\|levels=([\d.]+)\|by_rate=([\d.]+)/);
+  if (weak) {
+    return `The ${weak[1].toLowerCase()} pump moved ${weak[2]} L where its measured rate says ${weak[3]} L: under half. The run carried on. Check for a blocked filter, a half-shut valve or a worn pump, or re-measure its rate.`;
+  }
+  if (/^ESP2_DEGRADED\s+LEVEL_DISAGREE\b/.test(text)) {
+    return "During a fill the mixing tank's rise and the reservoir's drop disagreed. The run carried on; check both ultrasonics and the tank calibrations.";
   }
   const soil = text.match(/^SOIL_MISSING\s+(COL_[ABC])\|(\S+)\|raw=(-?\d+),(-?\d+)/);
   if (soil) {
@@ -4916,7 +4950,7 @@ function upNextBlockText() {
   if (actuationsAreOff()) reasons.push("Pumps and valves are off: none of this runs until they are switched back on.");
   if (d.webManual?.held === true) reasons.push("Manual/Test is open: nothing starts by itself until it is closed.");
   const reservoir = Number(liveData.sensors?.reservoirLevel);
-  if (hasValue(liveData.sensors?.reservoirLevel) && reservoir < 15) reasons.push("The reservoir is under 15 %: no column is watered until it is refilled.");
+  if (hasValue(liveData.sensors?.reservoirLevel) && reservoir < RIG_RES_LOW_PCT) reasons.push(`The reservoir is under ${RIG_RES_LOW_PCT} %: no column is watered until it is refilled.`);
   return reasons.join(" ");
 }
 
@@ -5893,7 +5927,7 @@ function renderPulseResult() {
   el.textContent = `${rawText(latest.status, "pending")} — ${detail || "waiting for ESP1"}`;
   // ESP1 of 15 Nov answers an unconfirmed servo move "completed"; from 16 Nov it is "failed".
   el.className = "control-result"
-    + (/NO FLOW|SERVO (NOT CONFIRMED|FAIL)/i.test(detail) || latest.status === "failed" || latest.status === "rejected" ? " error" : "");
+    + (/NO FLOW|NO LEVEL CHANGE|SERVO (NOT CONFIRMED|FAIL)/i.test(detail) || latest.status === "failed" || latest.status === "rejected" ? " error" : "");
 }
 
 /* ---- Pump selector switch (Manual/Test, 2026-11-16) -----------------------------------------------
@@ -5991,7 +6025,7 @@ document.querySelectorAll("#mtServoPanel .servo-option").forEach(button =>
 
 // Flow-meter table. Shares the sweep with the Diagnostics tab -- one DIAG_SWEEP fills both.
 const MT_FLOW_LABEL = {
-  FLOW_RESMIX: "Reservoir → mix", FLOW_MIXIRR: "Mix → column",
+  // web v.4: the reservoir → mix and mix → column meters are gone (the tank ultrasonics meter that water).
   FLOW_NUTA: "Nutrient A", FLOW_NUTB: "Nutrient B", FLOW_NUTC: "Nutrient C",
   FLOW_NUTD: "Nutrient D", FLOW_PHUP: "pH up", FLOW_PHDN: "pH down"
 };

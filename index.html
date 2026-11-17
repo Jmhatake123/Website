@@ -230,9 +230,9 @@
         <article class="panel reading-panel">
           <h3>Water<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the water readings" data-info-title="Water" data-info-text="The reservoir holds the plain water, and each batch is mixed in the mixing tank. Their levels come from ultrasonic sensors. pH and EC are measured in the mixing tank during a run, so between runs they show the last batch." data-help="help-tanks">i</button></h3>
           <dl class="reading-grid">
-            <div class="reading"><dt>Reservoir</dt><dd class="reading-value" id="reservoirLevel">Unavailable</dd><dd class="reading-note">Runs are blocked below 15 %</dd></div>
-            <div class="reading"><dt>Mixing tank</dt><dd class="reading-value" id="mixingLevel">Unavailable</dd><dd class="reading-note">From its level sensor</dd></div>
-            <div class="reading"><dt>Flow now</dt><dd class="reading-value" id="flowRate">Unavailable</dd><dd class="reading-note">0 while no pump runs</dd></div>
+            <div class="reading"><dt>Reservoir</dt><dd class="reading-value" id="reservoirLevel">Unavailable</dd><dd class="reading-note">Runs are blocked below 18 %</dd></div>
+            <div class="reading"><dt>Mixing tank</dt><dd class="reading-value" id="mixingLevel">Unavailable</dd><dd class="reading-note">From its ultrasonic sensor</dd></div>
+            <div class="reading"><dt>Reservoir refill</dt><dd class="reading-value" id="flowRate">Unavailable</dd><dd class="reading-note">Water coming into the reservoir</dd></div>
             <div class="reading"><dt>Mix tank pH</dt><dd class="reading-value" id="waterPH">Unavailable</dd><dd class="reading-note">Last batch</dd></div>
             <div class="reading"><dt>Mix tank EC</dt><dd class="reading-value" id="waterEC">Unavailable</dd><dd class="reading-note">Last batch</dd></div>
           </dl>
@@ -502,7 +502,7 @@
         </article>
 
         <article class="panel">
-          <h3>Timed test<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the timed test" data-info-title="Timed test" data-info-text="Runs one part for the seconds you set, then stops, and reports the flow it counted. That shows a dead pump, a blocked line or a dead flow sensor without going to the rig. Same choices as the LCD's Testing screen; Transfer runs as a fill, straight from the reservoir. pH pumps ask you to confirm first." data-help="help-pulse">i</button></h3>
+          <h3>Timed test<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the timed test" data-info-title="Timed test" data-info-text="Runs one part for the seconds you set, then stops, and reports what moved: the flow it counted for a nutrient or pH pump, or how far the mixing-tank level moved for Transfer and the column pushes. That shows a dead pump, a blocked line or a dead sensor without going to the rig. Same choices as the LCD's Testing screen; Transfer runs as a fill, straight from the reservoir. pH pumps ask you to confirm first." data-help="help-pulse">i</button></h3>
           <p class="hint">Runs one part briefly, then reports the flow it counted.</p>
           <div class="control-grid">
             <label>What to run<select id="pulseTarget">
@@ -791,7 +791,7 @@
         </details>
         <details class="help-item" id="help-what-blocks" data-for="all">
           <summary>Why didn't a column water today?</summary>
-          <p>Any one of these stops a scheduled run: the column is off; it is outside its watering times; it was already watered in this one (on the rig default, today); the soil isn't drier than Soil start %; the reservoir is under 15 %; actuations are disabled; a fault is held; someone is using Manual/Test or the LCD menu; the mixing tank needs checking; ESP1 has had no recent soil readings; or the column is resting for 30 minutes after repeated faults.</p>
+          <p>Any one of these stops a scheduled run: the column is off; it is outside its watering times; it was already watered in this one (on the rig default, today); the soil isn't drier than Soil start %; the reservoir is under 18 %; actuations are disabled; a fault is held; someone is using Manual/Test or the LCD menu; the mixing tank needs checking; ESP1 has had no recent soil readings; or the column is resting for 30 minutes after repeated faults.</p>
           <p>The Diagnostics tab's recent events and ESP1's SD log say which one it was.</p>
         </details>
         <details class="help-item" id="help-ph" data-for="all">
@@ -904,7 +904,7 @@
             <li><strong>Timed test</strong>: runs one pump or valve for 1–15 seconds and reports whether water moved.</li>
             <li><strong>Hold-to-run test</strong>: runs only while you hold the button, for up to 15 seconds. It starts 3–6 seconds after you press, and stops within 4 seconds of letting go.</li>
             <li><strong>Pump exercise</strong>: the rig's own short maintenance run of one pump.</li>
-            <li><strong>Flow meter check</strong>: reads all eight flow meters, to compare with a test.</li>
+            <li><strong>Flow meter check</strong>: reads the six flow meters (nutrients A–D, pH up and down), to compare with a test. The water itself is measured by the two tank ultrasonics.</li>
           </ul>
           <p>Leaving the tab hands the rig back to automatic. Nothing here works while the rig is locked.</p>
         </details>
@@ -969,7 +969,7 @@
         <details class="help-item" id="help-lockout" data-for="control"><summary>Actuations disabled (pumps and valves off)</summary><p>A standing stop: nothing moves, while sensors, logging and this website keep working. Controls' <strong>Pumps and valves</strong> switch sets it, and ESP1 shows its state as SAFE_MODE. It survives a restart, and lasts until someone switches pumps and valves back on. It is a different thing from the rig lock, which only locks the controls.</p></details>
         <details class="help-item" id="help-held" data-for="all"><summary>Held fault</summary><p>A serious problem during a run (no flow, power trouble, a dose that took too long) that pauses the run instead of ending it, so the water already in the mixing tank isn't lost. ESP1 waits for you to choose how to continue: see <em>Deal with a held fault</em>.</p></details>
         <details class="help-item" id="help-manual-mode" data-for="privileged"><summary>Manual mode</summary><p>While the Manual/Test tab is open, ESP1 keeps the rig out of automatic, so no scheduled run can start under your hands. It lasts while the page keeps asking, and someone at the LCD can take it back at any time.</p></details>
-        <details class="help-item" id="help-pulse" data-for="privileged"><summary>Timed test and hold-to-run test</summary><p>Two ways to switch one pump or valve on from Manual/Test: a <strong>timed test</strong> runs for the seconds you set and then reports the flow it counted; a <strong>hold-to-run test</strong> runs only while you keep the button pressed. ESP1 calls the timed test a pulse.</p></details>
+        <details class="help-item" id="help-pulse" data-for="privileged"><summary>Timed test and hold-to-run test</summary><p>Two ways to switch one pump or valve on from Manual/Test: a <strong>timed test</strong> runs for the seconds you set and then reports what moved (the flow it counted for a nutrient or pH pump, the mixing-tank level change for Transfer and the column pushes); a <strong>hold-to-run test</strong> runs only while you keep the button pressed. ESP1 calls the timed test a pulse.</p></details>
         <details class="help-item" id="help-servo-switch" data-for="privileged"><summary>Pump selector switch</summary><p>The transfer pump and the booster pump share the inverter. A servo on the Nano turns a switch that gives the inverter's power to one of them. On Manual/Test, <strong>Pump selector switch</strong> shows which pump it is on, and <strong>Transfer</strong> or <strong>Booster</strong> moves it there. ESP1 powers ESP2 up, ESP2 keeps the inverter off and checks that its AC is dead, then the Nano turns the servo, so no pump runs. It takes about 10 to 20 seconds, mostly ESP2 starting up, and the answer says whether the Nano confirmed the move. <strong>Selector is on</strong> is the side the Nano last confirmed, whatever moved it: every pump start in a run moves it too. If the lever doesn't follow the servo, the next pump run reports a SERVO_MISMATCH fault. Showing the side needs ESP1's firmware from 16 Nov 2026; moving it works from the 15 Nov firmware on ESP1, ESP2 and the Nano.</p></details>
         <details class="help-item" id="help-exercise" data-for="privileged"><summary>Pump exercise</summary><p>The rig runs each AC pump for a few seconds once it hasn't run for 2 days, so it doesn't seize between runs, and only while the rig is idle. The 2 days count from the pump's last run, or from ESP1's last restart. Turn it off if the tank is empty. Up next, on the Live dashboard, says when each is due (ESP1's firmware from 6 Nov 2026).</p></details>
         <details class="help-item" id="help-sweep" data-for="control"><summary>ESP2 sweep (reading ESP2's sensors)</summary><p>Powers ESP2 up for 10–120 seconds to read its own sensors (pH, EC, current, flow meters), then powers it down. Only when the rig is idle. <strong>Read ESP2's sensors</strong> on Diagnostics and <strong>Read the flow meters</strong> on Manual/Test both start one.</p></details>

@@ -16,10 +16,31 @@ Three controllers, split by role rather than duplicated logic:
   sends them on. No decisions, no actuators.
 - **ESP32 #1 (master)** — the single source of authority. Scheduling, fault classification, GSM
   alerts, logging, the on-device LCD UI, and everything this dashboard talks to.
-- **ESP32 #2 (actuator executor)** — drives the pumps and valves, counts flow, and enforces its own
-  local safety stops (dead-man release, overcurrent, mixing-tank hold) even if ESP1 goes silent.
+- **ESP32 #2 (actuator executor)** — drives the pumps and valves, meters the water and the doses, and
+  enforces its own local safety stops (dead-man release, overcurrent, mixing-tank hold) even if ESP1 goes
+  silent.
 
 Firmware source: https://github.com/JKyle-N/Smart-Irrigation
+
+**Firmware generation: web v.4 "pure ultrasonic" (2026-11-17).** The reservoir → mix and mix → column
+flow meters are gone: the water moved by the transfer and booster pumps is measured by the two tank
+ultrasonics (each with its own litres calibration), and, once measured on the LCD (Calibration → Rate
+…), by each pump's constant rate × its run time. The nutrient and pH pumps keep their flow meters. What
+the page shows differently:
+
+- The reservoir and mixing tank show litres beside the % (`sensors.reservoirLiters` /
+  `sensors.mixingLiters`, absent from older firmware), and may read over 100 %.
+- No run starts below **18 %** in the reservoir (was 15 %).
+- **Reservoir refill** is the Nano's reservoir inflow meter.
+- The flow meter check lists six meters (nutrients A–D, pH up and down).
+- A timed test of Transfer or a column push answers with the mixing-tank level change (`LEVEL OK +x L` /
+  `NO LEVEL CHANGE`).
+- Fault explanations for the v.4 texts: `FLOW_FAIL <stage>|NO_LEVEL_CHANGE|STALL|CAP|moved=…`,
+  `LEVEL_BLIND`, `SERVO_FAIL`, `ESP2_DEGRADED PUMP_WEAK` and `LEVEL_DISAGREE`. `LEVEL_BLIND` and
+  `SERVO_FAIL` are named in the held-fault banner. The pre-v.4 `FLOW_FAIL …|pulses=` text is still
+  explained.
+
+The page works with web v.3 firmware too (no litres shown).
 
 ## What the dashboard does
 
