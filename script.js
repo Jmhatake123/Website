@@ -6321,6 +6321,7 @@ function syncLogsListener() {
     logsRef.on("value", snapshot => {
       logsIndex = snapshot.val() || {};
       renderLogs();
+      renderMtLog();
     }, error => {
       logsDenied = true;
       logsRef = null;
@@ -6364,6 +6365,7 @@ function renderLogs() {
 
 async function downloadLog(day, button) {
   if (!db) return;
+  const label = button ? button.textContent : "Download";
   if (button) { button.disabled = true; button.textContent = "Downloading…"; }
   try {
     const snapshot = await db.ref(`logs/files/${day}`).once("value");
@@ -6380,21 +6382,83 @@ async function downloadLog(day, button) {
   } catch (error) {
     setText("logsNote", `${logDayLabel(day)}: download failed (${error.code || error.message || "unknown error"}).`);
   } finally {
-    if (button) { button.disabled = false; button.textContent = "Download"; }
+    if (button) { button.disabled = false; button.textContent = label; }
+    if (button?.id === "mtLogDownloadBtn") setText("mtLogResult", document.getElementById("logsNote")?.textContent || "");
   }
+}
+
+// Ask ESP1 to send one day's log (irrigation/logRequest). noteId = where to say what happened.
+function sendLogRequest(day, noteId) {
+  if (!db) return Promise.resolve(false);
+  return db.ref("irrigation/logRequest").set({ day, at: firebase.database.ServerValue.TIMESTAMP })
+    .then(() => {
+      setText(noteId, `Asked the rig for ${logDayLabel(day)}. It is sent as it goes (about a minute per megabyte); ESP1 checks every 10 seconds.`);
+      return true;
+    })
+    .catch(error => {
+      setText(noteId, error.code === "PERMISSION_DENIED"
+        ? "Not sent: this account may not ask (operators, Sub-operators and 1-hour access can), or you asked less than 5 seconds ago."
+        : `Not sent: ${error.code || error.message || "unknown error"}.`);
+      return false;
+    });
 }
 
 function requestLogUpload() {
   const value = document.getElementById("logDay")?.value || "";
   const parts = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!db || !parts) { setText("logsNote", "Pick a day first."); return; }
-  const day = Number(parts[1] + parts[2] + parts[3]);
-  db.ref("irrigation/logRequest").set({ day, at: firebase.database.ServerValue.TIMESTAMP })
-    .then(() => setText("logsNote", `Asked the rig for ${logDayLabel(day)}. It appears in the list as it is sent (about a minute per megabyte); ESP1 checks every 10 seconds.`))
-    .catch(error => setText("logsNote", error.code === "PERMISSION_DENIED"
-      ? "Not sent: this account may not ask (operators, Sub-operators and 1-hour access can), or you asked less than 5 seconds ago."
-      : `Not sent: ${error.code || error.message || "unknown error"}.`));
+  sendLogRequest(Number(parts[1] + parts[2] + parts[3]), "logsNote");
 }
+
+/* Manual/Test > SD card log (2026-11-17, user: "a button to update the CSV, especially if I want the logs any time in the
+ * morning ... when there is no current / the system is idle"). Today's log, on demand, only while ESP1 is reporting, idle,
+ * with no run and no pump, valve or mixer on. ESP1 sends it as far as it is written (partial); Download joins it. */
+let mtLogAskedAt = 0;
+
+function todayLogDay() {
+  const now = new Date(serverNow());
+  return Number(`${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`);
+}
+
+function mtLogBlockReason() {
+  if (!deviceIsFresh()) return "ESP1 isn't reporting, so it can't be asked.";
+  const state = liveData.system?.state || "";
+  if (!["IDLE_STATE", "SAFE_MODE"].includes(state)) return `Only while the rig is idle (it reports ${state || "nothing"}).`;
+  if (liveData.system?.masterWorkOrderActive || liveData.diagnostics?.system?.workOrderActive) return "Only while no run is in progress.";
+  const a = liveData.actuators || {};
+  if (a.transferRunning || a.boosterRunning || a.mixerRunning) return "Only while no pump is running.";
+  if (liveData.diagnostics?.actuator?.pumpTestActive) return "Only while no pump test is running.";
+  return "";
+}
+
+function renderMtLog() {
+  const update = document.getElementById("mtLogUpdateBtn");
+  const download = document.getElementById("mtLogDownloadBtn");
+  if (!update || !download) return;
+  const day = todayLogDay();
+  const entry = logsIndex[String(day)];
+  const state = entry?.state || "";
+  const block = mtLogBlockReason();
+  const sending = state === "uploading" || (mtLogAskedAt && serverNow() - mtLogAskedAt < 30000 && state !== "done");
+  update.disabled = Boolean(block) || sending || !canAccessPrivilegedTabs();
+  update.title = block || (sending ? "Being sent now" : "Ask ESP1 to send today's log so far");
+  download.disabled = state !== "done";
+  setDeviceStatus("mtLogState",
+    state === "done" ? (entry.partial ? "SENT (SO FAR)" : "SENT") : state === "uploading" ? "SENDING" : state === "failed" ? "FAILED"
+      : state === "missing" ? "NOT ON CARD" : sending ? "ASKED" : "NOT SENT",
+    state === "done" ? "active" : state === "uploading" || sending ? "warn" : state === "failed" ? "danger" : "off");
+  if (block && !sending) setText("mtLogResult", block);
+  else if (entry && !sending) setText("mtLogResult", `Today's log: ${logStateText(entry)}.`);
+}
+
+document.getElementById("mtLogUpdateBtn")?.addEventListener("click", () => {
+  const block = mtLogBlockReason();
+  if (block) { setText("mtLogResult", block); return; }
+  sendLogRequest(todayLogDay(), "mtLogResult").then(ok => { if (ok) { mtLogAskedAt = serverNow(); renderMtLog(); } });
+});
+document.getElementById("mtLogDownloadBtn")?.addEventListener("click", event => {
+  downloadLog(String(todayLogDay()), event.currentTarget);
+});
 document.getElementById("logRequestBtn")?.addEventListener("click", requestLogUpload);
 document.getElementById("logsList")?.addEventListener("click", event => {
   const button = event.target.closest("button[data-log-day]");
@@ -6422,6 +6486,7 @@ setInterval(() => {
   setText("liveAge", liveAgeText());   // the age moves every second, now that reports come every few seconds
   syncViewerTouch();                   // start / stop telling ESP1 someone is watching (sign-in, approval, tab hidden)
   syncLogsListener();                  // the SD card logs list, for the accounts that may see it
+  renderMtLog();                       // Manual/Test > SD card log: idle-only button, today's state
   updateForceArmed();
   renderUpNext();             // the clock moves on: a watering time opens or closes, the day turns over
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;

@@ -589,6 +589,22 @@
           <p id="mtSweepResult" class="control-result" aria-live="polite"></p>
           <div id="mtFlowGrid" class="diagnostics-grid"><p class="muted">No sweep has run in this session.</p></div>
         </article>
+
+        <!-- 2026-11-17 (user): today's SD card log on demand, e.g. any time in the morning -- only while the rig is idle. -->
+        <article class="panel" id="mtLogPanel">
+          <div class="panel-heading">
+            <div>
+              <h3>SD card log (CSV)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the SD card log" data-info-title="SD card log" data-info-text="Asks ESP1 to send today's log from its SD card as far as it is written, so you can download it here at any time of day. Only while the rig is idle and nothing is running. A megabyte takes about a minute. Older days are on the Diagnostics tab." data-help="help-logs">i</button></h3>
+              <p>Sends today's log so far, then download it here.</p>
+            </div>
+            <span id="mtLogState" class="device-status off">NOT SENT</span>
+          </div>
+          <div class="control-grid">
+            <button id="mtLogUpdateBtn" type="button">Update today's log</button>
+            <button id="mtLogDownloadBtn" type="button" disabled>Download today's log</button>
+          </div>
+          <p id="mtLogResult" class="control-result" aria-live="polite"></p>
+        </article>
       </div>
     </section>
 
