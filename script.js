@@ -4607,7 +4607,19 @@ function explainFaultCode(code) {
   }
   const weak = text.match(/^ESP2_DEGRADED\s+PUMP_WEAK\|(\w+)\|levels=([\d.]+)\|by_rate=([\d.]+)/);
   if (weak) {
-    return `The ${weak[1].toLowerCase()} pump moved ${weak[2]} L where its measured rate says ${weak[3]} L: under half. The run carried on. Check for a blocked filter, a half-shut valve or a worn pump, or re-measure its rate.`;
+    return `The ${weak[1].toLowerCase()} pump moved ${weak[2]} L where its run time says ${weak[3]} L: under half. The run carried on (the check after the water settles tops the tank up). Check for a blocked filter, a half-shut valve or a worn pump, or the pump's rate on the LCD (Calibration).`;
+  }
+  // web v.4 from 17 Nov 2026: a fill is timed by the transfer pump's run time, then checked on the mixing tank once the
+  // water has settled (about a minute) and topped up when more than 3 L short.
+  const fillShort = text.match(/^ESP2_DEGRADED\s+FILL_SHORT\|goal=([\d.]+)\|measured=([\d.]+)\|topups=(\d+)/);
+  if (fillShort) {
+    return `After the transfer and ${fillShort[3]} top-up run${fillShort[3] === "1" ? "" : "s"}, the mixing tank held ${fillShort[2]} L of the ${fillShort[1]} L planned: still more than 3 L short. The run carried on with what was there. Check the reservoir, the transfer pump and its filter, or the Rate Transfer setting on the LCD.`;
+  }
+  if (/^ESP2_DEGRADED\s+FILL_NOT_STEADY\b/.test(text)) {
+    return "After the transfer, the mixing tank's level did not settle within two and a half minutes; ESP2 measured it anyway. Check for a leak, a valve letting water through, or a noisy ultrasonic reading.";
+  }
+  if (/^ESP2_DEGRADED\s+FILL_SETTLE_BLIND\b/.test(text)) {
+    return "The mixing tank's ultrasonic gave no reading after the transfer, so the fill could not be checked. The run carried on with the run-time estimate (the water total is marked as estimated). Check the Nano and the sensor.";
   }
   const jump = text.match(/^ESP2_DEGRADED\s+LEVEL_JUMP\|(FILL|DRAIN)\|moved=([\d.]+)\|s=([\d.]+)/);
   if (jump) {

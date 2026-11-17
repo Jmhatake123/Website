@@ -44,6 +44,10 @@ the page shows differently:
   tank is held, not finished), `ESP2_DEGRADED LEVEL_JUMP` (a level "done" faster than the pump can move
   water is ignored) and `ESP2_DEGRADED FLOW_NOISE` (a nutrient meter's noise burst is left out of the dose)
   are explained in words.
+- From 17 Nov 2026 (later the same day) a fill is timed by the transfer pump's run time from the inverter switch-on,
+  then checked on the mixing tank after about a minute of settling and topped up when more than 3 L short; a delivery
+  runs until the mixing tank is under 5 % and 10 s more. `ESP2_DEGRADED FILL_SHORT`, `FILL_NOT_STEADY` and
+  `FILL_SETTLE_BLIND` are explained in words, and `PUMP_WEAK` now compares with the run time.
 
 The page works with web v.3 firmware too (no litres shown).
 
