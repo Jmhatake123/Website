@@ -589,22 +589,7 @@
           <p id="mtSweepResult" class="control-result" aria-live="polite"></p>
           <div id="mtFlowGrid" class="diagnostics-grid"><p class="muted">No sweep has run in this session.</p></div>
         </article>
-
-        <!-- 2026-11-17 (user): today's SD card log on demand, e.g. any time in the morning -- only while the rig is idle. -->
-        <article class="panel" id="mtLogPanel">
-          <div class="panel-heading">
-            <div>
-              <h3>SD card log (CSV)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the SD card log" data-info-title="SD card log" data-info-text="Asks ESP1 to send today's log from its SD card as far as it is written, so you can download it here at any time of day. Only while the rig is idle and nothing is running. A megabyte takes about 2–3 minutes. Older days are on the Diagnostics tab." data-help="help-logs">i</button></h3>
-              <p>Sends today's log so far, then download it here.</p>
-            </div>
-            <span id="mtLogState" class="device-status off">NOT SENT</span>
-          </div>
-          <div class="control-grid">
-            <button id="mtLogUpdateBtn" type="button">Update today's log</button>
-            <button id="mtLogDownloadBtn" type="button" disabled>Download today's log</button>
-          </div>
-          <p id="mtLogResult" class="control-result" aria-live="polite"></p>
-        </article>
+        <!-- The SD card log panel that was here (17 Nov 2026) is merged into Diagnostics > SD card logs (18 Nov 2026). -->
       </div>
     </section>
 
@@ -652,14 +637,19 @@
         <div id="rawEsp2Grid" class="diagnostics-grid"><p class="muted">No sweep has run in this session.</p></div>
       </article>
 
-      <!-- SD card logs (2026-11-17): the daily CSV from ESP1's SD card, through Firebase (Supabase expired). -->
+      <!-- SD card logs (2026-11-17): the daily CSV from ESP1's SD card, through Firebase (Supabase expired). Since 18 Nov
+           2026 also where today's log is fetched: the separate Manual/Test panel for it was merged in here. -->
       <article id="logsPanel" class="panel logs-panel" hidden>
-        <div class="panel-heading"><div><h3>SD card logs (CSV)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the SD card logs" data-info-title="SD card logs" data-info-text="ESP1 writes everything it does to a CSV file on its SD card, one file a day. Each finished day is sent here by itself after midnight; any day still on the card, today included up to now, can be fetched with Upload from the rig. Firebase keeps the last 14 days. The logs hold SMS texts and phone numbers, so only operators, Sub-operators and 1-hour access can see them." data-help="help-logs">i</button></h3>
-          <p class="hint">Download a day's log, or ask the rig to send one.</p></div></div>
+        <div class="panel-heading">
+          <div><h3>SD card logs (CSV)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the SD card logs" data-info-title="SD card logs" data-info-text="ESP1 writes everything it does to a CSV file on its SD card, one file a day. Each finished day is sent here by itself after midnight. To get one now, today's included as far as it is written, pick the day (today is picked already) and press Upload from the rig, then Download it from the list. Asking only works while the rig is idle and nothing is running. A megabyte takes about 2–3 minutes. Firebase keeps the last 14 days. The logs hold SMS texts and phone numbers, so only operators, Sub-operators and 1-hour access can see them." data-help="help-logs">i</button></h3>
+          <p class="hint">Fetch a day's log from the rig, today's included, then download it.</p></div>
+          <span id="logTodayState" class="device-status off">TODAY: NOT SENT</span>
+        </div>
         <div class="control-grid">
           <label>Day<input id="logDay" type="date"></label>
           <button id="logRequestBtn" type="button">Upload from the rig</button>
         </div>
+        <p id="logRequestBlocked" class="field-note" hidden></p>
         <p id="logsNote" class="control-result" aria-live="polite"></p>
         <ul id="logsList" class="logs-list"><li class="muted">Waiting for the list.</li></ul>
       </article>
@@ -772,7 +762,7 @@
       </article>
 
       <article class="panel">
-        <h3>Restore factory settings<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About restoring factory settings" data-info-title="Restore factory settings" data-info-text="Puts every column's mode, targets, watering times and ESP1's own name for it, and the thresholds, back to the firmware's starting values. Keeps calibration, which columns are on, and the WiFi setup. Only while the rig is idle." data-help="help-restore">i</button></h3>
+        <h3>Restore factory settings<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About restoring factory settings" data-info-title="Restore factory settings" data-info-text="Puts every column's mode, Operation and day plan (back to Automatic, no plan), targets, watering times and ESP1's own name for it, and the thresholds, back to the firmware's starting values. Keeps calibration, which columns are on, and the WiFi setup. Only while the rig is idle." data-help="help-restore">i</button></h3>
         <p class="hint">Back to the firmware's starting values. <strong>This can't be undone.</strong></p>
         <button id="sysRestoreDefaultsBtn" class="danger" type="button">Restore factory settings…</button>
         <p id="sysRestoreResult" class="control-result" aria-live="polite"></p>
@@ -821,7 +811,7 @@
         </details>
         <details class="help-item" id="help-what-blocks" data-for="all">
           <summary>Why didn't a column water today?</summary>
-          <p>Any one of these stops a scheduled run: the column is off; it is outside its watering times; it was already watered in this one (on the rig default, today); the soil isn't drier than Soil start %; the reservoir is under 18 %; actuations are disabled; a fault is held; someone is using Manual/Test or the LCD menu; the mixing tank needs checking; ESP1 has had no recent soil readings; or the column is resting for 30 minutes after repeated faults.</p>
+          <p>Any one of these stops a scheduled run: the column is off; it is in <strong>Manual</strong> that day (its Operation, or its day plan); it is outside its watering times; it was already watered in this one (on the rig default, today); the soil isn't drier than Soil start %; the reservoir is under 18 %; actuations are disabled; a fault is held; someone is using Manual/Test or the LCD menu; the mixing tank needs checking; ESP1 has had no recent soil readings; or the column is resting for 30 minutes after repeated faults.</p>
           <p>The Diagnostics tab's recent events and ESP1's SD log say which one it was.</p>
         </details>
         <details class="help-item" id="help-ph" data-for="all">
@@ -830,7 +820,7 @@
         </details>
         <details class="help-item" id="help-forced-vs-schedule" data-for="control">
           <summary>What does a forced run skip?</summary>
-          <p>A forced run ignores the watering times, the soil reading and the once-in-each-time limit, though one that runs inside a column's watering time counts as that time's watering. It never skips safety: ESP1 still refuses it if actuations are disabled, a fault is held, the reservoir is too low, another run or test is going, or the mixing tank needs checking.</p>
+          <p>A forced run ignores the watering times, a Manual day, the soil reading and the once-in-each-time limit, though one that runs inside a column's watering time counts as that time's watering. It never skips safety: ESP1 still refuses it if actuations are disabled, a fault is held, the reservoir is too low, another run or test is going, or the mixing tank needs checking.</p>
         </details>
         <details class="help-item" id="help-valves" data-for="control">
           <summary>Why is there no button for a single valve?</summary>
@@ -854,6 +844,23 @@
         <details class="help-item" id="help-rename" data-for="zones">
           <summary>Rename a column</summary>
           <p>Press <strong>Rename</strong> beside the column's name on its card, type the new name (up to 40 characters) and press <strong>Save name</strong>. Everyone who signs in sees the new name. It is kept on this website only: the LCD and SMS keep ESP1's own name for the column.</p>
+        </details>
+        <details class="help-item" id="help-operation" data-for="all">
+          <summary>Run a column by hand (Manual), and plan Manual or Automatic days</summary>
+          <p>Every column has an <strong>Operation</strong>:</p>
+          <ul>
+            <li><strong>Automatic</strong> (the usual): ESP1 waters the column on its watering times when the soil is drier than Soil start %, and adds nutrients when it is short of them.</li>
+            <li><strong>Manual</strong>: readings only. ESP1 starts no scheduled run for the column, so you water or fertigate it yourself with <strong>Water a column now</strong> on the Controls tab (or Force Run on the LCD). Its soil readings keep coming, and its other settings stay as they are.</li>
+          </ul>
+          <p>To change it, and to plan single days:</p>
+          <ol>
+            <li>Open <strong>Zone profiles</strong> and press <strong>Edit settings</strong> on the column's card.</li>
+            <li>Under <strong>Operation</strong>, pick the default for every day.</li>
+            <li>In the <strong>Day plan</strong> calendar, click a day to change that date only: once for <strong>Manual</strong>, twice for <strong>Automatic</strong>, a third time to go back to the default. Use the arrows for the next month. You can plan today and about two months ahead.</li>
+            <li>Check the <strong>You changed</strong> line, then press <strong>Save to rig</strong>.</li>
+          </ol>
+          <p>ESP1 keeps the plan itself and follows it by its own clock, from midnight to midnight, so it works with this website closed. The plan then shows under the column's readings: Manual days in amber, Automatic days in green, and a day you set carries its word. <strong>Up next</strong> on the Live dashboard says when a column is Manual, and the LCD's column page shows <strong>MAN</strong>. A run that has already started still finishes on a Manual day. Restore factory settings puts every column back to Automatic with no plan.</p>
+          <p>Needs ESP1's firmware from 18 Nov 2026; with older firmware the card doesn't offer it.</p>
         </details>
         <details class="help-item" id="help-column-onoff" data-for="zones">
           <summary>Turn a column on or off</summary>
@@ -1004,10 +1011,10 @@
         <details class="help-item" id="help-exercise" data-for="privileged"><summary>Pump exercise</summary><p>The rig runs each AC pump for a few seconds once it hasn't run for 2 days, so it doesn't seize between runs, and only while the rig is idle. The 2 days count from the pump's last run, or from ESP1's last restart. Turn it off if the tank is empty. Up next, on the Live dashboard, says when each is due (ESP1's firmware from 6 Nov 2026).</p></details>
         <details class="help-item" id="help-sweep" data-for="control"><summary>ESP2 sweep (reading ESP2's sensors)</summary><p>Powers ESP2 up for 10–120 seconds to read its own sensors (pH, EC, current, flow meters), then powers it down. Only when the rig is idle. <strong>Read ESP2's sensors</strong> on Diagnostics and <strong>Read the flow meters</strong> on Manual/Test both start one.</p></details>
         <details class="help-item" id="help-raw" data-for="control"><summary>Readings before conversion</summary><p>The sensors' own numbers, before ESP1 turns them into percentages and units: soil probe counts, tank distances in cm, and the NPK probe's registers. A sensor stuck at its limit shows here even when the converted reading looks normal. A reading older than 5 minutes is marked STALE.</p></details>
-        <details class="help-item" id="help-logs" data-for="privileged"><summary>SD card logs (CSV)</summary><p>ESP1 writes everything it does to a CSV file on its SD card, one file a day (timestamp, source, event type, detail). Each finished day is sent to this website by itself after midnight. <strong>Upload from the rig</strong> on the Diagnostics tab asks for any day still on the card, today included as far as it is written; a megabyte takes about a minute. <strong>Download</strong> saves the file to this computer. Firebase keeps the last 14 days; older days stay on the SD card only. (ESP1's firmware of 17 Nov 2026; before that the logs went to Supabase.)</p></details>
+        <details class="help-item" id="help-logs" data-for="privileged"><summary>SD card logs (CSV)</summary><p>ESP1 writes everything it does to a CSV file on its SD card, one file a day (timestamp, source, event type, detail). Each finished day is sent to this website by itself after midnight. <strong>Upload from the rig</strong> on the Diagnostics tab asks for any day still on the card, today included as far as it is written (today is picked already); a megabyte takes about 2–3 minutes. It only asks while the rig is idle and nothing is running, because the upload shares ESP1's memory and connection with its live report. <strong>TODAY</strong> beside the panel's title says how far today's log has got. <strong>Download</strong> saves the file to this computer. An upload that stops half way (ESP1 gives up after 15 minutes) says so; ask again. Firebase keeps the last 14 days; older days stay on the SD card only. (ESP1's firmware of 17 Nov 2026; before that the logs went to Supabase.)</p></details>
         <details class="help-item" id="help-events" data-for="control"><summary>Recent events on the rig</summary><p>The last 12 notable things ESP1 logged: faults, runs starting and their results, tests from the website or the LCD, refused requests and SMS traffic. Routine housekeeping is left out. The full history is in ESP1's daily log on its SD card; this list starts again when ESP1 restarts.</p></details>
         <details class="help-item" id="help-snapshot" data-for="all"><summary>Snapshot (live data)</summary><p>ESP1 sends this website a full report. While a page is open and on screen, ESP1 sends one every 4 seconds, or every 2 seconds during a run, and the age at the top says <strong>live</strong>. With nobody watching, it sends one every minute, or every 20 seconds during a run. <strong>Refresh</strong> at the top asks ESP1 for a report straight away and says how long it took to answer. If no report arrives for about 2 minutes, the page says ESP1 isn't reporting and turns off the controls that need it. (Live pace and Refresh: ESP1's firmware of 17 Nov 2026.)</p></details>
-        <details class="help-item" id="help-restore" data-for="privileged"><summary>Restore factory settings (Restore Defaults)</summary><p>Puts every column's mode, targets, watering times and ESP1's own name for it, the thresholds, and the AC voltage and current limits, back to the firmware's starting values. It keeps calibration, which columns are on, and the WiFi setup, and the website's own names and crop profiles aren't touched. Only when the rig is idle; it can't be undone.</p></details>
+        <details class="help-item" id="help-restore" data-for="privileged"><summary>Restore factory settings (Restore Defaults)</summary><p>Puts every column's mode, Operation and day plan (back to Automatic, no plan), targets, watering times and ESP1's own name for it, the thresholds, and the AC voltage and current limits, back to the firmware's starting values. It keeps calibration, which columns are on, and the WiFi setup, and the website's own names and crop profiles aren't touched. Only when the rig is idle; it can't be undone.</p></details>
         <details class="help-item" id="help-access" data-for="all"><summary>Accounts and what each can do</summary><p><strong>Pending</strong> (new), <strong>rejected</strong> and <strong>restricted</strong> accounts see only a page with a button to ask for approval or to be unrestricted. <strong>Blocked</strong> accounts can't use the site at all. <strong>Approved</strong> accounts can look at the Live dashboard, Zone profiles and Help. With <strong>zone editing</strong> they can change the column cards, and with <strong>control</strong> they can use the Controls tab, Diagnostics and the Emergency stop; each is asked for and given separately. <strong>Sub-operators</strong> and <strong>1-hour access</strong> have all of that, plus Manual/Test, System, the rig lock and crop profiles. <strong>Operators</strong> manage the accounts.</p></details>
         <details class="help-item" id="help-grants" data-for="privileged"><summary>1-hour access and Sub-operator</summary><p>Ways for an operator to open Manual/Test and System, and the rig lock, to an approved account: <strong>1-hour access</strong> ends by itself after an hour, and <strong>Sub-operator</strong> lasts until an operator removes it. Restricting, blocking or rejecting the account ends both at once.</p></details>
       </div>

@@ -252,6 +252,50 @@ body.takeover > .sidebar, body.takeover > .main-content { display: none; }
 .zone-changes.error { border-left-color: var(--danger); color: var(--danger); }
 .lacking-nutrient { color: var(--danger) !important; }
 
+/* Operation + day plan (18 Nov 2026): a month calendar, in Edit settings (buttons) and under the readings (cells).
+   Manual is amber, the page's colour for "nothing runs by itself here"; Automatic is the success green, faint. A day set
+   in the plan gets a solid edge and its word; today gets the accent ring. Days outside the plan are greyed. */
+.plan-fieldset .plan-edit { margin-bottom: 10px; }
+.plan-view { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.plan-view[hidden] { display: none; }
+.plan-view-head h4 { display: flex; align-items: center; margin: 0 0 4px; font-size: 1rem; }
+.plan-next { margin: 0 0 10px; color: var(--muted); font-size: .88rem; line-height: 1.45; }
+.plan-next strong { color: var(--text); }
+.plan-none { margin: 0; color: var(--muted); font-size: .88rem; line-height: 1.45; }
+.plan-cal { max-width: 460px; }
+.plan-cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.plan-month { font-weight: 600; }
+button.plan-nav { width: 34px; min-width: 34px; min-height: 34px; padding: 0; font-size: 1.1rem; line-height: 1; }
+.plan-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.plan-dow { padding-bottom: 2px; color: var(--muted); font-size: .7rem; font-weight: 600; text-align: center; text-transform: uppercase; }
+.plan-day { display: grid; place-items: center; align-content: center; gap: 1px; min-width: 0; min-height: 44px; padding: 3px 2px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); color: var(--text); font-weight: 600; }
+button.plan-day { min-height: 44px; transition: border-color .15s ease, background .15s ease; }
+button.plan-day:hover:not(:disabled) { transform: none; border-color: var(--accent); }
+.plan-num { font-size: .86rem; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.plan-tag { min-height: .8em; font-size: .6rem; font-weight: 700; letter-spacing: .02em; line-height: 1; text-transform: uppercase; }
+.plan-day.is-auto { background: rgb(40 199 142 / .08); }
+.plan-day.is-manual { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); background: rgb(242 174 73 / .16); }
+.plan-day.is-marked.is-auto { border: 2px solid var(--success); }
+.plan-day.is-marked.is-manual { border: 2px solid var(--warning); background: rgb(242 174 73 / .28); }
+.plan-day.is-marked.is-auto .plan-tag { color: var(--success); }
+.plan-day.is-marked.is-manual .plan-tag { color: var(--warning); }
+.plan-day.is-today { outline: 2px solid var(--accent); outline-offset: 1px; }
+.plan-day.is-out { background: transparent; color: var(--muted); opacity: .45; }
+.plan-blank { min-height: 44px; }
+.plan-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 10px 0 0; color: var(--muted); font-size: .8rem; line-height: 1.4; }
+.plan-legend-note { flex-basis: 100%; }
+.plan-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; border: 2px solid var(--border); vertical-align: middle; }
+.plan-swatch.is-manual { border-color: var(--warning); background: rgb(242 174 73 / .28); }
+.plan-swatch.is-auto { border-color: var(--success); background: rgb(40 199 142 / .08); }
+/* A phone's calendar cell is ~40 px wide: the day's word shrinks rather than being cut off. */
+.plan-tag { max-width: 100%; overflow: hidden; }
+@media (max-width: 600px) {
+  .plan-grid { gap: 3px; }
+  .plan-day { padding: 3px 1px; }
+  .plan-tag { font-size: .5rem; letter-spacing: 0; }
+}
+
 /* ON/OFF switch. A real button with role="switch", so it is keyboard- and screen-reader-operable; its
    position follows what ESP1 reports, not the click, until ESP1 confirms the change. */
 .switch { position: relative; width: 52px; min-width: 52px; height: 30px; min-height: 0; padding: 0; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-muted); }

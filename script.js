@@ -2518,6 +2518,123 @@ function windowPairs(list) {
   return pairs.length ? pairs : null;
 }
 
+/* ---- Operation and day plan (2026-11-18, user request) -----------------------------------------------------------------
+ * Automatic: a column waters on its watering times, as before. Manual: readings only. ESP1 starts no scheduled run for the
+ * column, and the operator waters or fertigates it with "Water a column now" (forced runs still work). Each column has a
+ * default Operation plus a day plan of single days that override it: in Edit settings a month calendar, where a click
+ * cycles a day default -> Manual -> Automatic -> default. ESP1 keeps both (run_plan.h, firmware of 18 Nov 2026) and follows
+ * them by its own clock, so the plan works with this page closed. It publishes, per column: operation (the default),
+ * operationToday, and plan, one character a day from planFrom (ESP1's today): '-' default, 'M' Manual, 'A' Automatic.
+ * SET_COLUMN takes {operation, plan, planFrom}. Older firmware publishes none of it, and the page doesn't offer it. */
+const PLAN_DAYS = 62;                       // RUN_PLAN_DAYS in the firmware: today and the next 61 days
+const OPERATION_TEXT = {
+  AUTOMATIC: "Automatic: waters on its watering times when the soil is dry",
+  MANUAL: "Manual: readings only. No scheduled runs; water it with Water a column now"
+};
+const OPERATION_SHORT = { AUTOMATIC: "Automatic", MANUAL: "Manual" };
+let zoneCardsPlan = false;                  // whether the cards were last built with the Operation parts
+const planViewMonth = {};                   // column id -> the month (yyyymm01) its plan calendar shows
+
+function ymdOfDate(date) {
+  return date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+}
+function validYmd(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n)) return false;
+  const y = Math.floor(n / 10000), m = Math.floor(n / 100) % 100, d = n % 100;
+  if (y < 2000 || y > 2099 || m < 1 || m > 12 || d < 1) return false;
+  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+// Whole days, counted in UTC so a daylight-saving change in the viewer's own time zone can't skip or repeat a date.
+function ymdToDayNumber(ymd) {
+  const n = Number(ymd);
+  return Math.round(Date.UTC(Math.floor(n / 10000), Math.floor(n / 100) % 100 - 1, n % 100) / 86400000);
+}
+function dayNumberToYmd(day) {
+  const d = new Date(day * 86400000);
+  return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
+}
+function ymdAddDays(ymd, days) { return dayNumberToYmd(ymdToDayNumber(ymd) + days); }
+function monthOfYmd(ymd) { return Math.floor(Number(ymd) / 100) * 100 + 1; }   // yyyymm01
+function ymdLabel(ymd) {                     // "Fri 20 Nov", the same form Up next uses
+  const n = Number(ymd);
+  const date = new Date(Math.floor(n / 10000), Math.floor(n / 100) % 100 - 1, n % 100);
+  return `${date.toLocaleDateString([], { weekday: "short" })} ${date.getDate()} ${date.toLocaleDateString([], { month: "short" })}`;
+}
+// ESP1's date: a plan's days are its days. The browser's own date only while ESP1's clock can't be read.
+function rigTodayYmd() { return ymdOfDate(rigNow() || new Date(serverNow())); }
+function planSupported() {
+  return Object.values(liveData.sensors?.zones || {}).some(z => z?.operation === "AUTOMATIC" || z?.operation === "MANUAL");
+}
+// {yyyymmdd: "M" | "A"} for the marked days of a plan text that starts at fromYmd; null without a usable text.
+function planMarksFrom(text, fromYmd) {
+  if (typeof text !== "string" || !validYmd(fromYmd)) return null;
+  const marks = {};
+  [...text.slice(0, PLAN_DAYS)].forEach((ch, i) => { if (ch === "M" || ch === "A") marks[ymdAddDays(fromYmd, i)] = ch; });
+  return marks;
+}
+// The text ESP1 takes, from today: one character a day, trailing defaults cut off, so "" means no plan at all.
+function planTextFrom(marks, todayYmd) {
+  let text = "";
+  for (let i = 0; i < PLAN_DAYS; i++) text += marks?.[ymdAddDays(todayYmd, i)] || "-";
+  return text.replace(/-+$/, "");
+}
+// What applies on a day: that day's mark, else the column's default.
+function operationOn(s, ymd) {
+  const mark = s.plan?.[ymd];
+  return mark === "M" ? "MANUAL" : mark === "A" ? "AUTOMATIC" : s.operation;
+}
+// The marked days from today on, in order.
+function plannedDays(marks, todayYmd) {
+  const days = [];
+  for (let i = 0; i < PLAN_DAYS; i++) {
+    const ymd = ymdAddDays(todayYmd, i);
+    if (marks?.[ymd]) days.push(ymd);
+  }
+  return days;
+}
+
+// One month of a column's day plan as a 7-column grid, Sunday first. editable: each day is a button (Edit settings);
+// otherwise plain cells (under the readings). A day is drawn as what applies then: amber Manual, green Automatic; a day
+// set in the plan carries its word and a stronger edge, the rest follow the default. Days before today or past the
+// plan's reach are greyed and can't be changed.
+const PLAN_WEEK_START = Date.UTC(2026, 10, 1);   // 1 Nov 2026 was a Sunday
+function planCalendarHtml(id, { month, marks, defaultOp, today, editable }) {
+  const y = Math.floor(month / 10000), m = Math.floor(month / 100) % 100;
+  const firstDay = ymdToDayNumber(month);
+  const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const lead = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  const todayN = ymdToDayNumber(today), lastN = todayN + PLAN_DAYS - 1;
+  const canBack = month > monthOfYmd(today), canOn = month < monthOfYmd(dayNumberToYmd(lastN));
+  const title = new Date(y, m - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" });
+  const nav = (dir, ok, words) => `<button type="button" class="plan-nav" data-plan-nav="${dir}" data-col="${id}"${ok ? "" : " disabled"} aria-label="${words}">${dir < 0 ? "‹" : "›"}</button>`;
+  const dows = Array.from({ length: 7 }, (_, i) => new Date(PLAN_WEEK_START + i * 86400000)
+    .toLocaleDateString([], { weekday: "short", timeZone: "UTC" }));
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(`<span class="plan-blank" aria-hidden="true"></span>`);
+  for (let d = 1; d <= dim; d++) {
+    const n = firstDay + d - 1;
+    const ymd = dayNumberToYmd(n);
+    const inRange = n >= todayN && n <= lastN;
+    const mark = inRange ? marks?.[ymd] || "" : "";
+    const op = mark === "M" ? "MANUAL" : mark === "A" ? "AUTOMATIC" : defaultOp;
+    const cls = ["plan-day", inRange ? (op === "MANUAL" ? "is-manual" : "is-auto") : "is-out",
+                 mark ? "is-marked" : "", n === todayN ? "is-today" : ""].filter(Boolean).join(" ");
+    const tag = mark === "M" ? "Manual" : mark === "A" ? "Auto" : "";
+    const words = `${ymdLabel(ymd)}${n === todayN ? " (today)" : ""}: ${inRange ? `${OPERATION_SHORT[op] || "unknown"}${mark ? ", set in the plan" : ", the default"}` : "outside the plan"}`;
+    const body = `<span class="plan-num">${d}</span><span class="plan-tag">${tag}</span>`;
+    cells.push(editable
+      ? `<button type="button" class="${cls}" data-plan-day="${ymd}" data-col="${id}"${inRange ? "" : " disabled"} aria-label="${escapeHtml(words)}" title="${escapeHtml(words)}">${body}</button>`
+      : `<span class="${cls}" role="img" aria-label="${escapeHtml(words)}" title="${escapeHtml(words)}">${body}</span>`);
+  }
+  return `<div class="plan-cal${editable ? " editable" : ""}">
+      <div class="plan-cal-head">${nav(-1, canBack, "Previous month")}<span class="plan-month">${escapeHtml(title)}</span>${nav(1, canOn, "Next month")}</div>
+      <div class="plan-grid">${dows.map(w => `<span class="plan-dow">${escapeHtml(w)}</span>`).join("")}${cells.join("")}</div>
+      <p class="plan-legend"><span class="plan-swatch is-manual"></span>Manual <span class="plan-swatch is-auto"></span>Automatic
+        <span class="plan-legend-note">A day with a word on it is set in the plan; the others follow the default (${escapeHtml(OPERATION_SHORT[defaultOp] || "unknown")}).</span></p>
+    </div>`;
+}
+
 // What ESP1 has for a column right now.
 function zoneSettings(id) {
   const z = liveData.sensors?.zones?.[id] || {};
@@ -2532,7 +2649,10 @@ function zoneSettings(id) {
     windows: windowPairs(z.windows),
     runsToday: numberOrNull(z.runsToday),
     fedToday: z.fedToday === true,
-    targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, numberOrNull(z[f.key])]))
+    targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, numberOrNull(z[f.key])])),
+    // Operation + day plan (ESP1 from 18 Nov 2026; null from older firmware).
+    operation: z.operation === "AUTOMATIC" || z.operation === "MANUAL" ? z.operation : null,
+    plan: planMarksFrom(z.plan, z.planFrom)
   };
   if (!s.windows && s.ws !== null && s.we !== null) s.windows = [[s.ws, s.we]];
   // ESP1 applies a SET_COLUMN all at once or not at all, so a completed one is exactly what it now has.
@@ -2553,7 +2673,12 @@ function zoneSettings(id) {
       }
       if (hasValue(p.schedMode)) s.sched = Number(p.schedMode);
       TARGET_FIELDS.forEach(f => { if (hasValue(p[f.key])) s.targets[f.key] = Number(p[f.key]); });
+      if (p.operation === "AUTOMATIC" || p.operation === "MANUAL") s.operation = p.operation;
+      if (typeof p.plan === "string") s.plan = planMarksFrom(p.plan, hasValue(p.planFrom) ? Number(p.planFrom) : rigTodayYmd());
     });
+  // What applies today, by ESP1's date. ESP1 also publishes it (operationToday); worked out here so a confirmed change
+  // shows before the next report does.
+  s.operationToday = s.operation ? operationOn(s, rigTodayYmd()) : null;
   // On the default window ESP1 reports the default, whatever own times it has kept; on its own times, those.
   if (s.sched === 0 && DEFAULT_WINDOWS[id]) s.windows = [DEFAULT_WINDOWS[id]];
   else if (s.sched === 1 && s.ownWindows) s.windows = s.ownWindows;
@@ -2616,15 +2741,30 @@ function renderZoneSummary(zone) {
   setText(`zoneDoes${id}`, s.mode ? MODE_TEXT[s.mode] : "Unavailable");
   const runs = s.sched === 1 && s.windows ? s.windows.length : 1;
   setText(`zoneWhen${id}`, s.sched === null ? "Unavailable"
-    : `${scheduleText(id, s.sched, s.windows)}, ${runs > 1 ? "at most once in each" : "once a day"}, when the soil is drier than Soil start %`);
+    : `${scheduleText(id, s.sched, s.windows)}, ${runs > 1 ? "at most once in each" : "once a day"}, when the soil is drier than Soil start %` +
+      (s.operation === "MANUAL" ? ". Only on days planned Automatic" : ""));
+  // Operation (18 Nov 2026): the default, and today's when the day plan says otherwise.
+  const planned = s.operation ? plannedDays(s.plan, rigTodayYmd()).length : 0;
+  setText(`zoneOps${id}`, !s.operation ? "Unavailable"
+    : OPERATION_TEXT[s.operation] +
+      (s.operationToday !== s.operation ? `. Today: ${OPERATION_SHORT[s.operationToday]}, from the day plan` : "") +
+      (planned ? `. ${planned} day${planned === 1 ? "" : "s"} planned` : ""));
+  renderPlanView(id, s);
   // How far through the day it is. Only ESP1 from 5 Nov 2026 reports it. "Done" rather than "watered": ESP1 also
   // closes the rest of the day on a STOP reply or a lost fault. A time that passed while the soil was wet stays open.
   const today = document.getElementById(`zoneToday${id}`);
   if (today) {
     const done = s.runsToday === null ? null : Math.min(s.runsToday, runs);
     const shown = done !== null && s.sched !== null && !(s.known && !s.enabled);
-    today.hidden = !shown;
-    if (shown) {
+    const manualDay = s.operationToday === "MANUAL" && !(s.known && !s.enabled);
+    today.hidden = !shown && !manualDay;
+    if (manualDay) {
+      // A Manual day: nothing scheduled, so "x of y watering times done" would only mislead. What reached the column
+      // (forced runs) still counts.
+      const tally = dayTallyText(liveData.sensors?.zones?.[id]?.today);
+      today.hidden = false;
+      today.textContent = `Manual today: ESP1 starts no scheduled run.${tally ? ` ${tally}` : ""}`;
+    } else if (shown) {
       // What reached the column today, scheduled and forced, from ESP1 from 6 Nov 2026 (zones.today). Older firmware
       // only says how many of the watering times are done.
       const tally = dayTallyText(liveData.sensors?.zones?.[id]?.today);
@@ -2640,6 +2780,108 @@ function renderZoneSummary(zone) {
   if (offNote) offNote.hidden = !(s.known && !s.enabled);
   renderZonePower(id, s);
   if (zoneDrafts[id]) renderZoneChanges(id);
+}
+
+/* ---- Day plan views (18 Nov 2026) ---- */
+// Under a column's readings: its plan as ESP1 has it. Rebuilt only when what it shows changes, so a month picked with
+// the arrows stays put between reports, and nothing flickers every few seconds.
+const planViewKeys = {};
+function renderPlanView(id, s = zoneSettings(id)) {
+  const box = document.getElementById(`planView${id}`);
+  if (!box) return;
+  // Hidden while the column's editor is open: its own calendar is right beside it, and this one would say "press Edit".
+  if (!s.operation || (s.known && !s.enabled) || zoneDrafts[id]) { box.hidden = true; planViewKeys[id] = ""; return; }
+  const today = rigTodayYmd();
+  const days = plannedDays(s.plan, today);
+  const lastMonth = monthOfYmd(ymdAddDays(today, PLAN_DAYS - 1));
+  let month = planViewMonth[id] || monthOfYmd(today);
+  if (month < monthOfYmd(today) || month > lastMonth) month = monthOfYmd(today);
+  planViewMonth[id] = month;
+  const marks = s.plan || {};
+  const key = JSON.stringify([s.operation, today, month, days.map(d => `${d}${marks[d]}`), hasZoneEditAccess()]);
+  if (key === planViewKeys[id]) return;
+  planViewKeys[id] = key;
+  box.hidden = false;
+  if (!days.length && s.operation === "AUTOMATIC") {
+    box.innerHTML = `<p class="plan-none">Automatic every day, with no day plan.${hasZoneEditAccess() ? " To plan Manual days, press Edit settings." : ""}</p>`;
+    return;
+  }
+  // Today, and the next day that differs from it, in words above the calendar.
+  const todayOp = operationOn(s, today);
+  let change = "No change planned.";
+  for (let i = 1; i < PLAN_DAYS; i++) {
+    const ymd = ymdAddDays(today, i);
+    const op = operationOn(s, ymd);
+    if (op !== todayOp) { change = `Next change: ${ymdLabel(ymd)}, ${OPERATION_SHORT[op]}.`; break; }
+  }
+  box.innerHTML = `<div class="plan-view-head"><h4>Day plan<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the day plan" data-info-title="Day plan" data-info-text="Which days this column runs Automatic and which Manual, as ESP1 has it. Manual means readings only: no scheduled run, you water it with Water a column now. Change it in Edit settings." data-help="help-operation">i</button></h4>` +
+    `<p class="plan-next">Today: <strong>${OPERATION_SHORT[todayOp]}</strong>. ${escapeHtml(change)}</p></div>` +
+    planCalendarHtml(id, { month, marks, defaultOp: s.operation, today, editable: false });
+}
+
+// Inside Edit settings: the draft's plan, where a click changes a day.
+function renderPlanEditor(id) {
+  const d = zoneDrafts[id];
+  const box = document.getElementById(`cfgPlan${id}`);
+  if (!d || !box) return;
+  const today = rigTodayYmd();
+  const lastMonth = monthOfYmd(ymdAddDays(today, PLAN_DAYS - 1));
+  if (!d.planMonth || d.planMonth < monthOfYmd(today) || d.planMonth > lastMonth) d.planMonth = monthOfYmd(today);
+  box.innerHTML = planCalendarHtml(id, { month: d.planMonth, marks: d.plan, defaultOp: d.operation || "AUTOMATIC", today, editable: true });
+  const clear = document.getElementById(`cfgPlanClear${id}`);
+  if (clear) clear.disabled = !plannedDays(d.plan, today).length;
+}
+
+// default -> Manual -> Automatic -> default (the user's choice, 18 Nov 2026).
+const PLAN_CYCLE = { "": "M", M: "A", A: "" };
+function cyclePlanDay(id, ymd) {
+  const d = zoneDrafts[id];
+  if (!d) return;
+  const next = PLAN_CYCLE[d.plan[ymd] || ""];
+  if (next) d.plan[ymd] = next; else delete d.plan[ymd];
+  renderPlanEditor(id);
+  renderZoneChanges(id);
+  document.querySelector(`#cfgPlan${id} [data-plan-day="${ymd}"]`)?.focus();
+}
+
+function shiftMonth(month, step) {
+  const date = new Date(Date.UTC(Math.floor(month / 10000), Math.floor(month / 100) % 100 - 1 + step, 1));
+  return date.getUTCFullYear() * 10000 + (date.getUTCMonth() + 1) * 100 + 1;
+}
+
+// One listener for every plan calendar: the cards are rebuilt often, so nothing is bound to their buttons.
+document.addEventListener("click", event => {
+  const day = event.target.closest("button[data-plan-day]");
+  if (day) {
+    if (!day.disabled) cyclePlanDay(day.dataset.col, Number(day.dataset.planDay));
+    return;
+  }
+  const nav = event.target.closest("button[data-plan-nav]");
+  if (!nav || nav.disabled) return;
+  const id = nav.dataset.col;
+  const step = Number(nav.dataset.planNav);
+  if (nav.closest(".plan-edit") && zoneDrafts[id]) {
+    zoneDrafts[id].planMonth = shiftMonth(zoneDrafts[id].planMonth, step);
+    renderPlanEditor(id);
+    document.querySelector(`#cfgPlan${id} [data-plan-nav="${step}"]`)?.focus();
+  } else {
+    planViewMonth[id] = shiftMonth(planViewMonth[id] || monthOfYmd(rigTodayYmd()), step);
+    renderPlanView(id);
+    document.querySelector(`#planView${id} [data-plan-nav="${step}"]`)?.focus();
+  }
+});
+
+// The plan's changes in words, for the editor's "You changed ..." line.
+function planChangeWords(before, after, today) {
+  const changed = [];
+  for (let i = 0; i < PLAN_DAYS; i++) {
+    const ymd = ymdAddDays(today, i);
+    const a = before?.[ymd] || "", b = after?.[ymd] || "";
+    if (a !== b) changed.push(`${ymdLabel(ymd)} ${b === "M" ? "Manual" : b === "A" ? "Automatic" : "back to the default"}`);
+  }
+  if (!plannedDays(after, today).length) return "the day plan, cleared";
+  const shown = changed.slice(0, 6).join(", ");
+  return `the day plan: ${shown}${changed.length > 6 ? ` and ${changed.length - 6} more days` : ""}`;
 }
 
 /* ---- ON/OFF switch ---- */
@@ -2716,7 +2958,11 @@ function openZoneEditor(id) {
     wins: Array.from({ length: MAX_RUNS_PER_DAY }, (_, w) => own && s.windows[w] ? s.windows[w].map(minutesToHhmm) : ["", ""]),
     targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, s.targets[f.key] === null ? "" : String(s.targets[f.key])])),
     saveName: "",
-    setupsOpen: false
+    setupsOpen: false,
+    // Operation + day plan (18 Nov 2026): the plan from today on, as ESP1 has it.
+    operation: s.operation || "AUTOMATIC",
+    plan: Object.fromEntries(plannedDays(s.plan, rigTodayYmd()).map(ymd => [ymd, s.plan[ymd]])),
+    planMonth: monthOfYmd(rigTodayYmd())
   };
   renderZonesUI();
   document.querySelector(`#zoneForm${id} input`)?.focus();
@@ -2733,8 +2979,10 @@ function fillZoneForm(id) {
   const d = zoneDrafts[id];
   const form = document.getElementById(`zoneForm${id}`);
   if (!d || !form) return;
+  form.querySelectorAll(`input[name="cfgOps${id}"]`).forEach(radio => { radio.checked = radio.value === d.operation; });
   form.querySelectorAll(`input[name="cfgMode${id}"]`).forEach(radio => { radio.checked = radio.value === d.mode; });
   form.querySelectorAll(`input[name="cfgSched${id}"]`).forEach(radio => { radio.checked = radio.value === d.sched; });
+  renderPlanEditor(id);
   const runs = document.getElementById(`cfgRuns${id}`);
   if (runs) runs.value = String(d.runs);
   for (let w = 0; w < MAX_RUNS_PER_DAY; w++) fillWindowRow(id, w);
@@ -2776,6 +3024,8 @@ function readZoneForm(id) {
   const d = zoneDrafts[id];
   const form = document.getElementById(`zoneForm${id}`);
   if (!d || !form) return;
+  const operation = form.querySelector(`input[name="cfgOps${id}"]:checked`)?.value || d.operation;
+  if (operation !== d.operation) { d.operation = operation; renderPlanEditor(id); }   // the default colours every unset day
   d.mode = form.querySelector(`input[name="cfgMode${id}"]:checked`)?.value || d.mode;
   const sched = form.querySelector(`input[name="cfgSched${id}"]:checked`)?.value ?? d.sched;
   for (let w = 0; w < MAX_RUNS_PER_DAY; w++) {
@@ -2815,6 +3065,20 @@ function zoneEditPlan(id) {
   const payload = { col: id };
   const words = [];
   const problems = [];
+  // Operation + day plan (18 Nov 2026), only to firmware that has them. The plan goes as a whole, from ESP1's today.
+  if (planSupported()) {
+    if (d.operation && d.operation !== s.operation) {
+      payload.operation = d.operation;
+      words.push(`operation, from ${s.operation ? OPERATION_SHORT[s.operation] : "unknown"} to ${OPERATION_SHORT[d.operation]}`);
+    }
+    const today = rigTodayYmd();
+    const after = planTextFrom(d.plan, today);
+    if (after !== planTextFrom(s.plan, today)) {
+      payload.plan = after;
+      payload.planFrom = today;
+      words.push(planChangeWords(s.plan, d.plan, today));
+    }
+  }
   if (d.mode && d.mode !== s.mode) {
     payload.mode = d.mode;
     words.push(`what it does, from "${s.mode ? MODE_TEXT[s.mode] : "unknown"}" to "${MODE_TEXT[d.mode]}"`);
@@ -2916,6 +3180,8 @@ function saveColumnSettings(id) {
     targetN: d.targets.targetN, targetP: d.targets.targetP, targetK: d.targets.targetK, targetPH: d.targets.targetPH
   };
   if (own) snapshot.windows = d.wins.slice(0, d.runs).map(([a, b]) => ({ from: a, to: b }));
+  // The Operation travels with a setup; the day plan doesn't, because its dates belong to now, not to the setup.
+  if (planSupported() && d.operation) snapshot.operation = d.operation;
   db.ref(`irrigation/config/zones/${id}/savedSettings`).push(snapshot)
     .then(() => {
       if (zoneDrafts[id]) zoneDrafts[id].saveName = "";
@@ -2931,6 +3197,7 @@ function loadSavedSetup(zone, key) {
   const chosen = zone.savedSettings?.[key];
   const d = zoneDrafts[zone.id];
   if (!chosen || !d) return;
+  if (chosen.operation === "AUTOMATIC" || chosen.operation === "MANUAL") d.operation = chosen.operation;
   if (chosen.mode === "AUTO" || chosen.mode === "IRRIGATION_ONLY") d.mode = chosen.mode;
   if (["0", "1"].includes(String(chosen.schedMode))) d.sched = String(chosen.schedMode);
   if (d.sched === "1") {
@@ -2984,6 +3251,10 @@ function renderZonesUI() {
   const canEdit = hasZoneEditAccess();
   const multi = multiRunSupported();
   zoneCardsMultiRun = multi;
+  // Operation + day plan only for firmware that has them (18 Nov 2026). The plan views are built fresh below.
+  const planOn = planSupported();
+  zoneCardsPlan = planOn;
+  Object.keys(planViewKeys).forEach(id => delete planViewKeys[id]);
   activeZones.forEach(zone => {
     const id = zone.id;
     const block = document.createElement("article");
@@ -3021,6 +3292,8 @@ function renderZonesUI() {
 
     const summary = `
         <dl class="zone-summary">
+          ${planOn ? `<dt>Operation${info("Operation", "Automatic waters on its watering times. Manual is readings only: ESP1 starts no scheduled run, and you water it with Water a column now. The day plan can change it for single days.", "help-operation")}</dt>
+          <dd id="zoneOps${id}">Unavailable</dd>` : ""}
           <dt>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</dt>
           <dd id="zoneDoes${id}">Unavailable</dd>
           <dt>When it runs${info("When it runs", "The times of day this column may be watered: at most once in each, and only when its soil is dry enough.", "help-window")}</dt>
@@ -3034,6 +3307,16 @@ function renderZonesUI() {
 
     const form = `
         <form id="zoneForm${id}" class="zone-form" novalidate>
+          ${planOn ? `<fieldset>
+            <legend>Operation${info("Operation", "Automatic waters on its watering times. Manual is readings only: ESP1 starts no scheduled run, and you water or fertigate it yourself with Water a column now. This is the default for every day; the day plan below changes single days.", "help-operation")}</legend>
+            <label class="choice"><input type="radio" name="cfgOps${id}" value="AUTOMATIC">Automatic: waters on its watering times when the soil is dry</label>
+            <label class="choice"><input type="radio" name="cfgOps${id}" value="MANUAL">Manual: readings only, no scheduled runs</label>
+          </fieldset>
+          <fieldset class="plan-fieldset">
+            <legend>Day plan${info("Day plan", "Click a day to set it for that date only: once for Manual, twice for Automatic, a third time to go back to the default above. Up to about two months ahead, by ESP1's own clock.", "help-operation")}</legend>
+            <div id="cfgPlan${id}" class="plan-edit"></div>
+            <button type="button" id="cfgPlanClear${id}" class="secondary small">Clear the day plan</button>
+          </fieldset>` : ""}
           <fieldset>
             <legend>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</legend>
             <label class="choice"><input type="radio" name="cfgMode${id}" value="AUTO">Water + nutrients when the soil needs them</label>
@@ -3119,6 +3402,7 @@ function renderZonesUI() {
             ${reading("NPK probe moisture", `npkMoist${id}`, "", "The NPK probe's own moisture reading. It counts toward Soil moisture when the two agree.", "help-moisture", "Counts toward soil moisture when it agrees")}
             ${reading("Soil temperature", `soilTemp${id}`, "", "Root-zone temperature, from the 7-in-1 probe.", "", "Root zone")}
           </dl>
+          ${planOn ? `<div class="plan-view" id="planView${id}" hidden></div>` : ""}
         </section>
         <section class="zone-does" aria-label="Column ${id}: what ESP1 does with it">
           <div class="zone-section-head"><h4>What ESP1 does with it</h4></div>
@@ -3156,6 +3440,12 @@ function renderZonesUI() {
         block.querySelector(`#cfgCancel${id}`)?.addEventListener("click", () => closeZoneEditor(id));
         block.querySelector(`#cfgFromCrop${id}`)?.addEventListener("click", () => fillTargetsFromCrop(zone));
         block.querySelector(`#cfgSaveSettingsBtn${id}`)?.addEventListener("click", () => saveColumnSettings(id));
+        block.querySelector(`#cfgPlanClear${id}`)?.addEventListener("click", () => {
+          if (!zoneDrafts[id]) return;
+          zoneDrafts[id].plan = {};
+          renderPlanEditor(id);
+          renderZoneChanges(id);
+        });
         const setups = block.querySelector(`#zoneSetups${id}`);
         if (setups) {
           setups.open = Boolean(draft.setupsOpen);
@@ -4100,7 +4390,8 @@ function updateDashboard() {
   updateRigDrawing();
   // The column editor offers several watering times a day only to firmware that has them, and the first snapshot
   // usually lands after the cards are built.
-  if (multiRunSupported() !== zoneCardsMultiRun) renderZonesUI();
+  // The same for the Operation and day plan, from ESP1 from 18 Nov 2026.
+  if (multiRunSupported() !== zoneCardsMultiRun || planSupported() !== zoneCardsPlan) renderZonesUI();
   updateZoneReadings();
 
   renderDiagnostics();
@@ -4963,7 +5254,11 @@ function upNextItems(now) {
     const span = ([a, b]) => `${minutesToHhmm(a)}–${minutesToHhmm(b)}`;
     const started = s.windows.filter(([a]) => a <= nowMin).length;
     const done = s.runsToday === null ? 0 : s.runsToday;
-    s.windows.forEach(w => {
+    // A Manual day (18 Nov 2026): ESP1 skips the column's watering times, so they are left out and the day says why.
+    const manualOn = day => s.operation !== null && operationOn(s, ymdOfDate(day)) === "MANUAL";
+    const manualNote = "Manual: no scheduled watering. Water it with Water a column now.";
+    if (manualOn(today)) items.push({ day: today, at: -1, time: "All day", what: `Column ${id}`, note: manualNote });
+    else s.windows.forEach(w => {
       const [a, b] = w;
       // ESP1 counts both ends as inside a window (windowAt() in its main.cpp), so 12:00–13:00 is still open at 13:00.
       if (done >= s.windows.length || b < nowMin) return;           // the day is done, or this time is over
@@ -4971,7 +5266,8 @@ function upNextItems(now) {
       if (open && done >= started) return;                          // it has watered in this one already
       items.push({ day: today, at: open ? nowMin : a, time: span(w), what: `Column ${id}`, note: open ? `Open now. ${ifDry}.` : `${ifDry}.`, open });
     });
-    s.windows.forEach(w => items.push({ day: tomorrow, at: w[0], time: span(w), what: `Column ${id}`, note: `${ifDry}.` }));
+    if (manualOn(tomorrow)) items.push({ day: tomorrow, at: -1, time: "All day", what: `Column ${id}`, note: manualNote });
+    else s.windows.forEach(w => items.push({ day: tomorrow, at: w[0], time: span(w), what: `Column ${id}`, note: `${ifDry}.` }));
   });
   if (forceArmedInfo) {
     const start = new Date(now.getTime() + Math.max(0, forceArmedInfo.left) * 1000);
@@ -6333,15 +6629,16 @@ function syncLogsListener() {
   if (panel) panel.hidden = !want;
   const dayInput = document.getElementById("logDay");
   if (dayInput && !dayInput.value) {
-    const now = new Date(serverNow());
-    dayInput.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // The rig's own date (its log files are named by it), so "today" here is ESP1's today.
+    const day = String(todayLogDay());
+    dayInput.value = `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
   }
   if (want && !logsRef && !logsDenied) {
     logsRef = db.ref("logs/index");
     logsRef.on("value", snapshot => {
       logsIndex = snapshot.val() || {};
       renderLogs();
-      renderMtLog();
+      renderLogRequest();
     }, error => {
       logsDenied = true;
       logsRef = null;
@@ -6358,9 +6655,13 @@ function logStateText(entry) {
   const at = Number(entry?.at || 0);
   const when = at ? `, ${agoText(Math.max(0, serverNow() - at))}` : "";
   switch (entry?.state) {
-    case "done":
-      return `${(Number(entry.size || 0) / 1024).toFixed(0)} KB${entry.partial ? " (the day so far)" : ""}, sent${when}`;
-    case "uploading": return `Being sent from the rig${when}…`;
+    case "done": {
+      const kb = Number(entry.size || 0) / 1024;
+      return `${kb > 0 && kb < 1 ? "Under 1" : kb.toFixed(0)} KB${entry.partial ? " (the day so far)" : ""}, sent${when}`;
+    }
+    case "uploading": return logUploadStalled(entry)
+      ? `Stopped while being sent${when}. Ask again with Upload from the rig`
+      : `Being sent from the rig${when}…`;
     case "missing":   return `Not on the rig's SD card${when}`;
     case "failed":    return `Sending failed${when}; ESP1 tries again`;
     default:          return rawText(entry?.state, "Unknown");
@@ -6390,7 +6691,8 @@ async function downloadLog(day, button) {
   try {
     const snapshot = await db.ref(`logs/files/${day}`).once("value");
     const pieces = snapshot.val() || {};
-    const keys = Object.keys(pieces).sort();
+    // Pieces are 0000, 0001, ...: joined in number order, whatever form Firebase hands the list back in.
+    const keys = Object.keys(pieces).sort((a, b) => Number(a) - Number(b));
     if (!keys.length) { setText("logsNote", `${logDayLabel(day)}: no data in Firebase. Use Upload from the rig.`); return; }
     const text = keys.map(key => String(pieces[key] ?? "")).join("");
     const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
@@ -6403,7 +6705,6 @@ async function downloadLog(day, button) {
     setText("logsNote", `${logDayLabel(day)}: download failed (${error.code || error.message || "unknown error"}).`);
   } finally {
     if (button) { button.disabled = false; button.textContent = label; }
-    if (button?.id === "mtLogDownloadBtn") setText("mtLogResult", document.getElementById("logsNote")?.textContent || "");
   }
 }
 
@@ -6423,24 +6724,31 @@ function sendLogRequest(day, noteId) {
     });
 }
 
-function requestLogUpload() {
-  const value = document.getElementById("logDay")?.value || "";
-  const parts = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!db || !parts) { setText("logsNote", "Pick a day first."); return; }
-  sendLogRequest(Number(parts[1] + parts[2] + parts[3]), "logsNote");
+/* Fetching a day on demand. Merged 18 Nov 2026: today's log used to have its own panel on Manual/Test (user, 17 Nov: "a
+ * button to update the CSV, especially if I want the logs any time in the morning ... when the system is idle"), and its
+ * rule now covers every request from here: only while ESP1 is reporting, idle, with no run and no pump, valve or mixer
+ * on, because the upload shares ESP1's memory and its one connection with the live report. ESP1 sends a day as far as it
+ * is written (partial); Download joins the pieces. */
+let logAskedAt = 0, logAskedDay = 0;
+// ESP1 gives one upload FB_LOG_JOB_MAX_MS (15 min) and then drops it, leaving the index at "uploading" for good. (The
+// firmware of 17 Nov afternoon left 3 and 4 Nov like that.) A minute more, so a slow last piece isn't called stopped.
+const LOG_UPLOAD_GIVE_UP_MS = 16 * 60000;
+
+function logUploadStalled(entry) {
+  return entry?.state === "uploading" && serverNow() - Number(entry.at || 0) > LOG_UPLOAD_GIVE_UP_MS;
 }
 
-/* Manual/Test > SD card log (2026-11-17, user: "a button to update the CSV, especially if I want the logs any time in the
- * morning ... when there is no current / the system is idle"). Today's log, on demand, only while ESP1 is reporting, idle,
- * with no run and no pump, valve or mixer on. ESP1 sends it as far as it is written (partial); Download joins it. */
-let mtLogAskedAt = 0;
-
+// The rig's date: its log files are named by its own clock. The browser's date only while ESP1's can't be read.
 function todayLogDay() {
-  const now = new Date(serverNow());
-  return Number(`${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`);
+  return ymdOfDate(rigNow() || new Date(serverNow()));
 }
 
-function mtLogBlockReason() {
+function selectedLogDay() {
+  const parts = (document.getElementById("logDay")?.value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return parts ? Number(parts[1] + parts[2] + parts[3]) : 0;
+}
+
+function logRequestBlockReason() {
   if (!deviceIsFresh()) return "ESP1 isn't reporting, so it can't be asked.";
   const state = liveData.system?.state || "";
   if (!["IDLE_STATE", "SAFE_MODE"].includes(state)) return `Only while the rig is idle (it reports ${state || "nothing"}).`;
@@ -6451,35 +6759,50 @@ function mtLogBlockReason() {
   return "";
 }
 
-function renderMtLog() {
-  const update = document.getElementById("mtLogUpdateBtn");
-  const download = document.getElementById("mtLogDownloadBtn");
-  if (!update || !download) return;
-  const day = todayLogDay();
+// A request for `day` is on its way: asked in the last 30 s, or ESP1 is sending it now.
+function logDayBeingSent(day) {
   const entry = logsIndex[String(day)];
-  const state = entry?.state || "";
-  const block = mtLogBlockReason();
-  const sending = state === "uploading" || (mtLogAskedAt && serverNow() - mtLogAskedAt < 30000 && state !== "done");
-  update.disabled = Boolean(block) || sending || !canAccessPrivilegedTabs();
-  update.title = block || (sending ? "Being sent now" : "Ask ESP1 to send today's log so far");
-  download.disabled = state !== "done";
-  setDeviceStatus("mtLogState",
-    state === "done" ? (entry.partial ? "SENT (SO FAR)" : "SENT") : state === "uploading" ? "SENDING" : state === "failed" ? "FAILED"
-      : state === "missing" ? "NOT ON CARD" : sending ? "ASKED" : "NOT SENT",
-    state === "done" ? "active" : state === "uploading" || sending ? "warn" : state === "failed" ? "danger" : "off");
-  if (block && !sending) setText("mtLogResult", block);
-  else if (entry && !sending) setText("mtLogResult", `Today's log: ${logStateText(entry)}.`);
+  if (entry?.state === "uploading" && !logUploadStalled(entry)) return true;
+  return logAskedDay === day && serverNow() - logAskedAt < 30000 && entry?.state !== "done";
 }
 
-document.getElementById("mtLogUpdateBtn")?.addEventListener("click", () => {
-  const block = mtLogBlockReason();
-  if (block) { setText("mtLogResult", block); return; }
-  sendLogRequest(todayLogDay(), "mtLogResult").then(ok => { if (ok) { mtLogAskedAt = serverNow(); renderMtLog(); } });
-});
-document.getElementById("mtLogDownloadBtn")?.addEventListener("click", event => {
-  downloadLog(String(todayLogDay()), event.currentTarget);
-});
+function renderLogRequest() {
+  const button = document.getElementById("logRequestBtn");
+  if (!button) return;
+  const day = selectedLogDay();
+  const block = logRequestBlockReason();
+  const sending = Boolean(day) && logDayBeingSent(day);
+  button.disabled = Boolean(block) || sending || !canAccessPrivilegedTabs();
+  button.title = block || (sending ? "Being sent now" : "Ask ESP1 to send this day's log");
+  const blocked = document.getElementById("logRequestBlocked");
+  if (blocked) { blocked.hidden = !block; blocked.textContent = block; }
+  // Today's log at a glance (what the Manual/Test panel showed).
+  const today = todayLogDay();
+  const entry = logsIndex[String(today)];
+  const state = entry?.state || "";
+  const stalled = logUploadStalled(entry);
+  const asked = logDayBeingSent(today);
+  setDeviceStatus("logTodayState", `TODAY: ${
+      state === "done" ? (entry.partial ? "SENT (SO FAR)" : "SENT")
+    : state === "uploading" ? (stalled ? "STOPPED" : "SENDING")
+    : state === "failed" ? "FAILED" : state === "missing" ? "NOT ON CARD" : asked ? "ASKED" : "NOT SENT"}`,
+    state === "done" ? "active" : (state === "uploading" && !stalled) || asked ? "warn" : state === "failed" || stalled ? "danger" : "off");
+}
+
+function requestLogUpload() {
+  const day = selectedLogDay();
+  if (!db || !day) { setText("logsNote", "Pick a day first."); return; }
+  const block = logRequestBlockReason();
+  if (block) { setText("logsNote", block); return; }
+  sendLogRequest(day, "logsNote").then(ok => {
+    if (!ok) return;
+    logAskedAt = serverNow(); logAskedDay = day;
+    renderLogRequest();
+  });
+}
+
 document.getElementById("logRequestBtn")?.addEventListener("click", requestLogUpload);
+document.getElementById("logDay")?.addEventListener("change", renderLogRequest);
 document.getElementById("logsList")?.addEventListener("click", event => {
   const button = event.target.closest("button[data-log-day]");
   if (button) downloadLog(button.dataset.logDay, button);
@@ -6506,7 +6829,7 @@ setInterval(() => {
   setText("liveAge", liveAgeText());   // the age moves every second, now that reports come every few seconds
   syncViewerTouch();                   // start / stop telling ESP1 someone is watching (sign-in, approval, tab hidden)
   syncLogsListener();                  // the SD card logs list, for the accounts that may see it
-  renderMtLog();                       // Manual/Test > SD card log: idle-only button, today's state
+  renderLogRequest();                  // Diagnostics > SD card logs: idle-only request, today's state
   updateForceArmed();
   renderUpNext();             // the clock moves on: a watering time opens or closes, the day turns over
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;

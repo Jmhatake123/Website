@@ -49,6 +49,16 @@ the page shows differently:
   runs until the mixing tank is under 5 % and 10 s more. `ESP2_DEGRADED FILL_SHORT`, `FILL_NOT_STEADY` and
   `FILL_SETTLE_BLIND` are explained in words, and `PUMP_WEAK` now compares with the run time.
 
+From 18 Nov 2026 each column has an **Operation**: **Automatic** (waters on its watering times, as before) or
+**Manual** (readings only: ESP1 starts no scheduled run, and the operator waters or fertigates it with a forced run).
+Edit settings has the default plus a **day plan** calendar: click a day to make that date Manual, Automatic, or back
+to the default, up to about two months ahead. ESP1 keeps the plan (`run_plan.h`) and follows it by its own clock,
+publishing `sensors.zones.<id>.operation`, `operationToday`, `plan` (one character a day: `-` default, `M`, `A`)
+and `planFrom` (its date); `SET_COLUMN` takes `{operation, plan, planFrom}`. The plan shows under the column's
+readings, and Up next says when a column is Manual. Firmware without it doesn't publish those fields, and the page
+then leaves the feature out. The same day, the Manual/Test tab's SD card log panel was merged into Diagnostics → SD
+card logs (today's state, idle-only requests, a stalled upload now says it stopped).
+
 The page works with web v.3 firmware too (no litres shown).
 
 ## What the dashboard does
