@@ -6300,7 +6300,7 @@ function finishRefresh(answered, message) {
 document.getElementById("refreshBtn")?.addEventListener("click", requestRefresh);
 
 /* ---- SD card logs (2026-11-17: the Supabase upload expired; the daily CSV now comes through Firebase) ---------------
- * ESP1 puts each day under logs/files/<yyyymmdd>/<nnnn> (pieces of ~12 KB) with logs/index/<yyyymmdd> saying how far it
+ * ESP1 puts each day under logs/files/<yyyymmdd>/<nnnn> (pieces of ~6 KB; 12 KB before 17 Nov evening) with logs/index/<yyyymmdd> saying how far it
  * got. The list follows logs/index live; Download joins the pieces into the CSV; "Upload from the rig" writes
  * irrigation/logRequest, which ESP1 polls every 10 s. Operators and the privileged tier only (the rules agree). */
 let logsRef = null, logsIndex = {}, logsDenied = false;
@@ -6395,7 +6395,7 @@ function sendLogRequest(day, noteId) {
   if (!db) return Promise.resolve(false);
   return db.ref("irrigation/logRequest").set({ day, at: firebase.database.ServerValue.TIMESTAMP })
     .then(() => {
-      setText(noteId, `Asked the rig for ${logDayLabel(day)}. It is sent as it goes (about a minute per megabyte); ESP1 checks every 10 seconds.`);
+      setText(noteId, `Asked the rig for ${logDayLabel(day)}. It is sent as it goes (about 2–3 minutes per megabyte); ESP1 checks every 10 seconds.`);
       return true;
     })
     .catch(error => {
