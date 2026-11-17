@@ -5172,7 +5172,7 @@ function submitForceRun(event) {
 
   const columns = document.getElementById("forceColumns")?.value || "";
   if (!["A", "B", "C", "AB"].includes(columns)) { show("Choose a destination column. Nothing was sent."); return; }
-  if (forceColumnsDisabled(columns)) { show("ESP1 reports that destination as disabled. Nothing was sent."); return; }
+  if (forceColumnsDisabled(columns)) { show("That column is switched off on ESP1 (for example with \"Turn OFF column\" in the LCD's cancel menu). Switch it on in its column settings first. Nothing was sent."); return; }
 
   const liters = Number(document.getElementById("forceLiters")?.value);
   if (!Number.isFinite(liters) || liters <= 0 || liters > FORCE_MAX_LITERS) {
