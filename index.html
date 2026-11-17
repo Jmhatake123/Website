@@ -151,6 +151,19 @@
       <button type="button" id="unlockBtn" hidden>Unlock the rig</button>
     </section>
 
+    <!-- Tank check (18 Nov 2026, ESP1's diagnostics.tankCheck): after a run is lost (ESP1 restarted mid-run), every
+         scheduled run waits until someone has looked at the mixing tank. Same confirm as SMS TANKCHECK,OK and the LCD
+         row; see renderTankCheck() in script.js. -->
+    <section id="tankCheckBanner" class="lock-banner" hidden aria-live="polite">
+      <div>
+        <h2>Scheduled runs are waiting: check the mixing tank<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the tank check" data-info-title="Tank check" data-info-text="When a run is lost part way, for example ESP1 restarted in the middle of it, the mixing tank may still hold that run's water and ESP1 no longer knows how much. Until someone has looked, ESP1 starts no scheduled run. Forced runs aren't held back, and starting one confirms it too." data-help="help-tank-check">i</button></h2>
+        <p id="tankCheckDetail" class="lock-detail">--</p>
+        <p class="lock-detail">Look at the mixing tank. If it still holds water, send it to its column first (a booster test on Manual/Test). Then confirm here, by SMS TANKCHECK,OK, or at the rig (Settings, TankCheck).</p>
+        <p id="tankCheckResult" class="control-result" aria-live="polite"></p>
+      </div>
+      <button type="button" id="tankCheckBtn" hidden>I've checked the tank</button>
+    </section>
+
     <!-- Fault / lockout banner. Sits above the tabs so it is visible whichever view is open: a held
          fault or an actuation lockout is not a "diagnostics tab" concern. Hidden until ESP1 reports
          one. -->
@@ -420,6 +433,9 @@
               <input id="forceDelay" type="number" min="0" max="300" step="1" value="30">
             </label>
           </div>
+          <!-- A column switched off on ESP1 can't be picked above; this offers to switch it on, as the LCD's Force Run
+               does by itself (18 Nov 2026). Filled by syncForceColumnOptions() in script.js. -->
+          <div id="forceOffCols" class="force-off" hidden></div>
           <fieldset class="dose-fieldset">
             <legend>Nutrients (mL, up to 500 each). Leave at 0 for plain water</legend>
             <div class="force-row">
@@ -518,8 +534,10 @@
               <option value="nutA">Nutrient A pump</option>
               <option value="nutB">Nutrient B pump</option>
               <option value="nutC">Nutrient C pump</option>
-              <!-- No Nutrient D option: CLAUDE.md LOCKED "Nutrient dosing" -- P14/GPIO25 is wired but
-                   UNUSED, do not drive it. -->
+              <!-- Nutrient D (18 Nov 2026): the owner opened it on 16 Nov (LCD Testing row "Nut D", relay P12, and its own
+                   flow calibration), overriding the old "Nut D unused" rule. ESP1's pulseRowForTarget() takes nutD. Runs
+                   still never dose it: only these tests and the LCD's calibration drive it. -->
+              <option value="nutD">Nutrient D pump (test only)</option>
               <option value="phUp">pH UP pump (corrosive)</option>
               <option value="phDn">pH DOWN pump (corrosive)</option>
             </select></label>
@@ -542,6 +560,7 @@
             <button type="button" class="hold-btn" data-hold-target="nutA">Nutrient A pump</button>
             <button type="button" class="hold-btn" data-hold-target="nutB">Nutrient B pump</button>
             <button type="button" class="hold-btn" data-hold-target="nutC">Nutrient C pump</button>
+            <button type="button" class="hold-btn" data-hold-target="nutD">Nutrient D pump</button>
             <button type="button" class="hold-btn danger" data-hold-target="phUp">pH UP pump (corrosive)</button>
             <button type="button" class="hold-btn danger" data-hold-target="phDn">pH DOWN pump (corrosive)</button>
           </div>
@@ -702,8 +721,9 @@
       </article>
 
       <article class="panel">
-        <h3>Watering thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the watering thresholds" data-info-title="Watering thresholds" data-info-text="Soil start % decides when a column is dry enough to water. Fertigation gap decides how far short of its target a nutrient must be before ESP1 adds nutrients. They apply to every column. ESP1 doesn't report its current values, so fill in each one every time. The firmware's defaults are Soil start 35 % and Fertigation gap 30." data-help="help-soil-start">i</button></h3>
-        <p class="hint">For every column. Fill in each one every time.</p>
+        <h3>Watering thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the watering thresholds" data-info-title="Watering thresholds" data-info-text="Soil start % decides when a column is dry enough to water. Fertigation gap decides how far short of its target a nutrient must be before ESP1 adds nutrients. They apply to every column. ESP1 from 18 Nov 2026 shows its current values here (Now on ESP1); fill in both every time you send. The firmware's defaults are Soil start 35 % and Fertigation gap 30." data-help="help-soil-start">i</button></h3>
+        <dl class="now-list"><dt>Now on ESP1</dt><dd id="sysThreshNow">Unavailable</dd></dl>
+        <p class="hint">For every column. Fill in both every time you send.</p>
         <div class="control-grid">
           <label>Soil start % (water when the soil is drier than this)<input id="sysThreshStart" type="number" min="0" max="100" step="1"></label>
           <label id="sysThreshStopLabel">Soil stop % (older firmware only; must be above start)<input id="sysThreshStop" type="number" min="0" max="100" step="1"></label>
@@ -934,6 +954,15 @@
           <p><strong>Ask me again in 2 minutes</strong> only dims the banner for now; the fault stays held until someone chooses. While the rig is locked these choices are off, so unlock it first.</p>
           <p>If a no-flow fault keeps coming back, the banner suggests Release tank, because resuming would only stop again. On the 4th hold of the same fault in a row, ESP1 cancels the run itself and rests that column for 30 minutes.</p>
         </details>
+        <details class="help-item" id="help-tank-check" data-for="all">
+          <summary>Confirm a tank check (scheduled runs are waiting)</summary>
+          <p>When a run is lost part way (for example ESP1 restarted in the middle of it), the mixing tank may still hold that run's water, and ESP1 no longer knows how much. So it starts no scheduled run until someone has looked at the tank. An amber banner at the top of every tab says so, with the reason.</p>
+          <ol>
+            <li>Look at the mixing tank. If it still holds water, send it to its column first: a booster test on Manual/Test, or a forced run.</li>
+            <li>Press <strong>I've checked the tank</strong> in the banner (accounts with control access, while the rig is idle). SMS <strong>TANKCHECK,OK</strong> or the LCD's <strong>Settings, TankCheck</strong> do the same.</li>
+          </ol>
+          <p>Forced runs aren't held back by it, and starting one confirms it too. Confirming doesn't change what ESP2 thinks is in the tank. Needs ESP1's firmware from 18 Nov 2026 for the website part; older firmware only takes the SMS and the LCD.</p>
+        </details>
         <details class="help-item" id="help-test-pump" data-for="privileged">
           <summary>Test a pump or valve</summary>
           <p>Open <strong>Manual/Test</strong> (operators, and accounts an operator has given access) and press <strong>Proceed</strong>. The rig leaves automatic while you are there.</p>
@@ -987,7 +1016,7 @@
         <details class="help-item" id="help-controllers" data-for="all"><summary>ESP1, ESP2 and the Nano</summary><p><strong>ESP1</strong> is the main controller: it decides, keeps the schedule, logs, sends texts and talks to this website. <strong>ESP2</strong> runs the pumps and valves and measures the water; ESP1 powers it up only when something needs to run. The <strong>Nano</strong> reads the soil, air, light and tank sensors. <strong>Restart a board</strong> on Controls restarts one of them; the LCD calls this Reboot.</p></details>
         <details class="help-item" id="help-tanks" data-for="all"><summary>Reservoir and mixing tank</summary><p>The <strong>reservoir</strong> holds the plain water. The <strong>transfer pump</strong> moves water from it into the <strong>mixing tank</strong>, where nutrients are added and stirred by the <strong>mixer</strong>. The <strong>booster pump</strong> then sends the batch to a column.</p><p>Both levels come from ultrasonic sensors, as a % and in litres (the mixer standing in the mixing tank is taken out). A fill runs the transfer pump for the time the litres need, then lets the water settle for about a minute and measures the mixing tank; more than 3 L short, it tops up. A delivery runs the booster until the mixing tank is under 5 %, then 10 seconds more. A tank with no reading says why: no echo, echo line stuck, out of range, too few good pings, or not pinging.</p></details>
         <details class="help-item" id="help-irrigation" data-for="all"><summary>Irrigation and fertigation</summary><p><strong>Irrigation</strong> is plain water. <strong>Fertigation</strong> is water with nutrients mixed in, followed by a plain-water flush.</p></details>
-        <details class="help-item" id="help-nutrients" data-for="all"><summary>Nutrients A, B and C</summary><p>The three nutrient pumps, one stock solution each: A is nitrogen (N), B is phosphorus (P), C is potassium (K). A fourth pump (D) is wired but not used.</p></details>
+        <details class="help-item" id="help-nutrients" data-for="all"><summary>Nutrients A, B and C</summary><p>The three nutrient pumps, one stock solution each: A is nitrogen (N), B is phosphorus (P), C is potassium (K). A fourth pump, <strong>D</strong>, has its own pump and flow meter: it can be tested on Manual/Test and calibrated on the LCD, but no run doses it.</p></details>
         <details class="help-item" id="help-npk" data-for="all"><summary>N, P, K, ppm and targets</summary><p>Nitrogen, phosphorus and potassium in the soil, in ppm (parts per million, the same as mg/kg), as read by the column's 7-in-1 probe. A column's <strong>targets</strong> are the levels ESP1 aims for; it adds nutrients when a reading falls short by the Fertigation gap.</p></details>
         <details class="help-item" id="help-moisture" data-for="all"><summary>Soil moisture and NPK probe moisture</summary><p><strong>Soil moisture</strong> is the column's main reading, from its two moisture probes, blended with the NPK probe's own moisture when the two agree. ESP1 compares it with Soil start % to decide when to water. <strong>NPK probe moisture</strong> is the NPK probe's reading on its own.</p></details>
         <details class="help-item" id="help-soil-ec" data-for="all"><summary>Soil EC and soil pH</summary><p><strong>Soil EC</strong> is how many dissolved nutrients the soil holds, in µS/cm: higher means richer. <strong>Soil pH</strong> is how acidic (under 7) or alkaline (over 7) the soil is. Both come from the 7-in-1 probe.</p></details>

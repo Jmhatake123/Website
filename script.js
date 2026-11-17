@@ -76,6 +76,8 @@
  *                        acAmpLastAgeMs once a pump has run; older firmware rejects it as "not a remotely safe
  *                        control". Refused while someone has Settings > AC Current open on the LCD.
  *   RESTORE_DEFAULTS   {}   idle-only; runs the same reset function the LCD's Restore Defaults does
+ *   TANK_CHECK_OK      {}   (ESP1 from 18 Nov 2026) confirms the mixing tank was checked, as SMS TANKCHECK,OK does;
+ *                        only while idle. ESP1 publishes the check as diagnostics.tankCheck {needed, why}.
  *   CLEAR_BATT_SWITCH  {}   clears a latched battery-switch fault; privileged tier only. Dormant while
  *                        the firmware builds with SECONDARY_BATT_ENABLED 0.
  *   LCD_LOCK           { action: "lock"|"unlock" }   the rig lock: ESP1's own Lock Screen flag, published as
@@ -2222,7 +2224,7 @@ const OFFLINE_CONFIRM_TYPES = new Set(["ENABLE_ACTUATIONS", "RECOVER", "ESTOP_RE
 const sentCommands = new Map();
 const COMMAND_END_STATUSES = new Set(["completed", "failed", "rejected", "withdrawn"]);
 // Their effect only reaches the rest of the page in ESP1's next scheduled snapshot.
-const SHOWN_IN_NEXT_REPORT = new Set(["EMERGENCY_STOP", "ESTOP_RECOVER", "ENABLE_ACTUATIONS", "DISABLE_ACTUATIONS", "SET_COLUMN", "SET_EXERCISE", "SET_CLOCK", "RESTORE_DEFAULTS", "CLEAR_BATT_SWITCH"]);
+const SHOWN_IN_NEXT_REPORT = new Set(["EMERGENCY_STOP", "ESTOP_RECOVER", "ENABLE_ACTUATIONS", "DISABLE_ACTUATIONS", "SET_COLUMN", "SET_EXERCISE", "SET_CLOCK", "RESTORE_DEFAULTS", "CLEAR_BATT_SWITCH", "TANK_CHECK_OK"]);
 
 // ESP1 answers CANCEL_FORCE with "armed forced run cancelled" even if the run started a moment before, and the
 // run carries on. A cancel takes up to 3 s to be picked up, so this is easy to hit near the end of a countdown.
@@ -2412,6 +2414,7 @@ function activitySummary(type, payload) {
     case "SET_AC_AMP":         return `AC current limits: ${ampsFromTenthsText(p.aMin10)}–${ampsFromTenthsText(p.aMax10)} A`;
     case "RESTORE_DEFAULTS":   return "Restored factory settings";
     case "CLEAR_BATT_SWITCH":  return "Cleared the battery switch fault";
+    case "TANK_CHECK_OK":      return "Confirmed the mixing tank was checked";
     case "LCD_LOCK":           return p.action === "unlock" ? "Unlocked the rig" : "Locked the rig";
     default:                   return type;
   }
@@ -2653,7 +2656,10 @@ function zoneSettings(id) {
     targets: Object.fromEntries(TARGET_FIELDS.map(f => [f.key, numberOrNull(z[f.key])])),
     // Operation + day plan (ESP1 from 18 Nov 2026; null from older firmware).
     operation: z.operation === "AUTOMATIC" || z.operation === "MANUAL" ? z.operation : null,
-    plan: planMarksFrom(z.plan, z.planFrom)
+    plan: planMarksFrom(z.plan, z.planFrom),
+    // Why a due column is passed over (ESP1 from 18 Nov 2026): resting after repeated faults, or the day closed.
+    restMin: numberOrNull(z.restMin),
+    skippedToday: z.skippedToday === true
   };
   if (!s.windows && s.ws !== null && s.we !== null) s.windows = [[s.ws, s.we]];
   // ESP1 applies a SET_COLUMN all at once or not at all, so a completed one is exactly what it now has.
@@ -2775,6 +2781,14 @@ function renderZoneSummary(zone) {
         : (runs === 1 ? (done ? "Done for today." : "Not watered so far today.") : `Today: ${done} of ${runs} watering times done.`);
       today.textContent = tally + progress +
         (s.fedToday && s.mode === "AUTO" && done < runs ? " Nutrients already went in today, so the rest of today's waterings are plain water." : "");
+    }
+    // Why ESP1 is passing a due column over (firmware of 18 Nov 2026), ahead of the rest of the line.
+    const passed = s.known && !s.enabled ? ""
+      : s.skippedToday ? "Skipped for the rest of today: a STOP reply or a lost fault closed the day."
+      : s.restMin ? `Resting ${s.restMin} more min after repeated faults: no scheduled run until then.` : "";
+    if (passed) {
+      today.textContent = `${passed}${today.hidden ? "" : ` ${today.textContent}`}`;
+      today.hidden = false;
     }
   }
   setText(`zoneTargets${id}`, targetsText(s.targets));
@@ -3619,7 +3633,8 @@ function updateMoistureGauge(zone) {
     crop.style.display = hasValue(target) ? "" : "none";
     if (hasValue(target)) placeGaugeTick(crop, Number(target));
   }
-  setText(`soilStartNote${zone.id}`, `Waters below ${start} %${start === 35 ? "" : " (as last sent)"}`);
+  const reported = hasValue(liveData.system?.soilStartPct);
+  setText(`soilStartNote${zone.id}`, `Waters below ${start} %${reported || start === 35 ? "" : " (as last sent)"}`);
 }
 
 /* ---- Crop profiles: the library panel under the columns (2026-11-05) -------------------------------------------
@@ -4305,6 +4320,8 @@ function updateRigDrawing() {
 // ESP1 doesn't report its Soil start %, so this is the last value sent from this website (in the commands still
 // listed), or the firmware's default.
 function soilStartPercent() {
+  // ESP1 from 18 Nov 2026 reports its own value; before that, the last one this page sent, or the firmware's default.
+  if (hasValue(liveData.system?.soilStartPct)) return Number(liveData.system.soilStartPct);
   const sent = commandData
     .filter(c => c.type === "SET_THRESH" && c.status === "completed" && hasValue(c.payload?.thStart))
     .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
@@ -4413,6 +4430,7 @@ function updateDashboard() {
   renderExercise();
   renderManualHold();
   updateFaultBanner();
+  renderTankCheck();
   updateForceArmed();
   renderUpNext();
   updateSystemTab();
@@ -4447,7 +4465,42 @@ function syncForceColumnOptions() {
     if (option.textContent !== label) option.textContent = label;
   });
   if (select.selectedOptions[0]?.disabled) select.value = "";
+  syncForceOffColumns();
 }
+
+// The columns ESP1 reports switched off, each with a way to switch it on from here (18 Nov 2026). The LCD's Force Run
+// switches a chosen OFF column on by itself; here it is a separate, confirmed step, because switching a column on also
+// restarts its schedule. Needs zone editing, the same as the column's own switch.
+let forceOffKey = "";
+function syncForceOffColumns() {
+  const box = document.getElementById("forceOffCols");
+  if (!box) return;
+  const off = ["A", "B", "C"].filter(id => liveData.sensors?.zones?.[id]?.enabled === false);
+  const canSwitch = hasZoneEditAccess();
+  const key = `${off.join("")}|${canSwitch}`;
+  if (key === forceOffKey) return;
+  forceOffKey = key;
+  box.hidden = !off.length;
+  if (!off.length) { box.innerHTML = ""; return; }
+  const names = off.length === 1 ? `Column ${off[0]} is` : `Columns ${off.join(" and ")} are`;
+  box.innerHTML = `<p>${names} switched off on ESP1, so ${off.length === 1 ? "it" : "they"} can't be picked.` +
+    (canSwitch ? " Switch one on here, then pick it once ESP1 confirms (a few seconds)."
+               : " Switching a column on needs access to edit zone profiles.") + "</p>" +
+    (canSwitch ? `<div class="force-off-actions">${off.map(id => `<button type="button" class="secondary small" data-force-enable="${id}">Switch column ${id} on</button>`).join("")}</div>` : "");
+}
+
+document.getElementById("forceOffCols")?.addEventListener("click", event => {
+  const button = event.target.closest("button[data-force-enable]");
+  if (!button) return;
+  const id = button.dataset.forceEnable;
+  const result = resultLine("forceRunResult");
+  if (!confirmEnableColumn(id)) { result("Nothing was sent."); return; }
+  sendFromPanel(result, "SET_COLUMN", { col: id, enabled: 1 }).then(key => {
+    if (!key) return;
+    zonePowerSent[id] = key;            // the column's own switch on Zone profiles shows "Sending…" too
+    logActivity(`Switched column ${id} on (for a forced run)`);
+  });
+});
 
 // The Timed pulses list says the same about its push-to-column targets. The choice itself is left alone,
 // because this list has no empty entry to fall back to; the Run pulse button refuses it instead.
@@ -4537,6 +4590,44 @@ const GSM_REGISTRATION_TEXT = {
 
 /* Diagnostics summary (round 2, 2026-11-05): what ESP1 reports as wrong, in words, worst first, before the item-by-item
  * details. Only what ESP1 publishes: it can't see what ESP1 doesn't check. */
+// Why ESP1 last started (system.bootReason, esp_reset_reason() in its firmware of 18 Nov 2026), in words.
+const BOOT_REASON_TEXT = {
+  POWER_ON: "a power loss or switch-on", BROWNOUT: "a supply dip (brown-out)", SOFTWARE: "a restart by itself or on request",
+  PANIC: "a crash", TASK_WDT: "the watchdog (a stuck task)", INT_WDT: "the watchdog (interrupts)", WDT: "the watchdog",
+  EXT_PIN: "the reset button", DEEPSLEEP: "waking from sleep", OTHER: "an unknown cause"
+};
+function bootText() {
+  const s = liveData.system || {};
+  if (!s.bootReason) return "Not reported by this firmware";
+  const words = BOOT_REASON_TEXT[s.bootReason] || s.bootReason;
+  // uptimeS is as of the report; the report's own age is added so it keeps counting between reports.
+  const up = hasValue(s.uptimeS)
+    ? Number(s.uptimeS) * 1000 + Math.max(0, serverNow() - Number(liveData.meta?.updatedAt || serverNow())) : null;
+  return `${up !== null ? `${formatAge(up)} ago, after ` : "After "}${words} (${s.bootReason})`;
+}
+
+// The calibration ESP1 reports (diagnostics.calibration, firmware of 18 Nov 2026), as Diagnostics card groups.
+function calibrationGroups(c) {
+  const num = (v, d, unit) => hasValue(v) ? numberText(v, d, unit) : "Unavailable";
+  const r = c.rates || {}, k = c.flowK || {}, t = c.tanks || {}, p = c.probes || {};
+  // A pump's line: litres a minute plus what it moves at the start; 0 = never measured, so ESP1 uses its built-in line.
+  const line = (rate, start) => Number(rate) > 0
+    ? `${numberText(rate, 2, "L/min")}${hasValue(start) ? `, ${numberText(start, 2, "L")} at the start` : ""}`
+    : "Not measured: the built-in line";
+  const nut = i => hasValue(r.nutMlpm?.[i]) ? `${numberText(r.nutMlpm[i], 1, "mL/min")}${r.nutMeasured?.[i] ? "" : " (default)"}` : "Unavailable";
+  return [
+    ["Calibration: pumps (set on the LCD)", [["Transfer pump", line(r.transferLpm, r.transferStartL)], ["Booster pump", line(r.boosterLpm, r.boosterStartL)],
+      ["Nutrient A pump", nut(0)], ["Nutrient B pump", nut(1)], ["Nutrient C pump", nut(2)]]],
+    ["Calibration: flow meters (pulses per litre)", [["Nutrient A", num(k.nutA, 0)], ["Nutrient B", num(k.nutB, 0)], ["Nutrient C", num(k.nutC, 0)],
+      ["Nutrient D", num(k.nutD, 0)], ["pH up", num(k.phUp, 0)], ["pH down", num(k.phDn, 0)], ["Reservoir refill scale", num(k.reservoirScale, 3)]]],
+    ["Calibration: tanks and probes", [["Reservoir sensor, empty / full", `${num(t.resEmptyCm, 1, "cm")} / ${num(t.resFullCm, 1, "cm")}`],
+      ["Mixing tank sensor, empty / full", `${num(t.mixEmptyCm, 1, "cm")} / ${num(t.mixFullCm, 1, "cm")}`],
+      ["pH probe (slope, offset)", `${num(p.phM, 6)}, ${num(p.phB, 3)}`], ["EC probe (slope, offset)", `${num(p.ecM, 6)}, ${num(p.ecB, 3)}`],
+      ["Mixer current sensor zero", num(p.acs712Zero, 3, "V")],
+      ["Air offsets (temp, humidity, light)", `${num(p.tempOff, 1, "°C")}, ${num(p.humOff, 1, "%")}, ${num(p.luxOff, 0, "lux")}`]]]
+  ];
+}
+
 function healthItems() {
   const d = liveData.diagnostics || {};
   if (!Object.keys(d).length) return [];
@@ -4562,6 +4653,15 @@ function healthItems() {
   if (d.power?.batteryCritical) add("bad", "The battery is critically low.");
   else if (d.power?.batteryLow) add("warn", "The battery is low.");
   if (liveData.system?.battSwitchFault === true) add("warn", "A battery switch fault is latched, so the inverter can't be used. Clear it on the System tab after checking the hold-up.");
+  // ESP1 from 18 Nov 2026: the tank check, and how often it has started today.
+  if (d.tankCheck?.needed === true) add("bad", "The mixing tank must be checked: ESP1 starts no scheduled run until someone confirms it. Use the banner at the top of the page.");
+  const boots = Number(liveData.system?.bootsToday || 0);
+  if (boots >= 3) {
+    const reason = liveData.system?.bootReason;
+    const power = reason === "POWER_ON" || reason === "BROWNOUT";
+    add("warn", `ESP1 has started ${boots} times today; the last start was ${BOOT_REASON_TEXT[reason] || "for an unknown reason"}.` +
+      (power ? " Repeated power restarts point at its supply: give ESP1 and the SMS modem a steady 5 V supply of at least 2 A, with a large capacitor at the modem." : ""));
+  }
   if (d.gsm?.simReady === false) add("warn", "The SIM card isn't ready, so SMS alerts can't be sent.");
   else if (d.gsm?.networkRegistered === false) add("warn", "The SMS modem isn't on the mobile network, so SMS alerts can't be sent right now.");
   if (Number(d.firebase?.attempts || 0) > 0 && d.firebase?.lastUploadOk === false) add("warn", "ESP1's last upload to this website failed. It retries by itself.");
@@ -4569,7 +4669,8 @@ function healthItems() {
   if (!items.length) add("ok", "Everything ESP1 checks looks fine.");
   const lastFault = d.system?.lastFault;
   if (lastFault && lastFault !== "none" && !f.held) {
-    add("", `The last fault ESP1 recorded was ${lastFault}${d.system?.lastFaultTime ? ` at ${d.system.lastFaultTime}` : ""}. It is over; it stays here as a record.`);
+    const words = faultInfoText(lastFault);
+    add("", `The last fault ESP1 recorded was ${lastFault}${d.system?.lastFaultTime ? ` at ${d.system.lastFaultTime}` : ""}${words ? ` (${words.replace(/\.$/, "")})` : ""}. It is over; it stays here as a record.`);
   }
   return items;
 }
@@ -4600,12 +4701,12 @@ function renderDiagnostics() {
   const current = deviceIsFresh();
   const diagnosticsAvailable = Object.keys(d).length > 0;
   const groups = [
-    ["ESP1's report", [["Report", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : liveData.system.firmware ? String(liveData.system.firmware) : isV3Firmware() ? "web v.3 (or web v.4 before 17 Nov)" : "Older than web v.3"], ["Report size", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"]]],
+    ["ESP1's report", [["Report", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : liveData.system.firmware ? String(liveData.system.firmware) : isV3Firmware() ? "web v.3 (or web v.4 before 17 Nov)" : "Older than web v.3"], ["Report size", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"], ["Last start", bootText()], ["Starts today", hasValue(liveData.system?.bootsToday) ? String(liveData.system.bootsToday) : "Not reported by this firmware"]]],
     ["Wi-Fi", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Signal strength", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm` : "Unavailable"]]],
     ["Link to this website (Firebase)", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
     ["ThingSpeak graphs", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
     ["Log upload", [["Goes to", d.logUpload?.target === "firebase" ? "Firebase (SD card logs, below)" : d.logUpload?.target === "supabase" || (!d.logUpload && d.supabase?.configured) ? "Supabase" : "Not configured"], ["Upload", booleanText(d.logUpload ? d.logUpload.busy : d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay) : "No completed upload"]]],
-    ["Runs and faults", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Run waiting to start", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")], ["Rig lock", booleanText(d.system?.lcdLocked, "Locked", "Unlocked")]]],
+    ["Runs and faults", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Run waiting to start", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rawText(d.system?.lastFaultTime, "None")], ["Rig lock", booleanText(d.system?.lcdLocked, "Locked", "Unlocked")], ["Tank check", !d.tankCheck ? "Not reported by this firmware" : d.tankCheck.needed ? "Needed: scheduled runs wait" : "Not needed"]]],
     ["ESP2 (pumps and valves)", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last reply", agoText(d.esp2?.lastResponseAgeMs)]]],
     ["Nano (sensors)", [["Last reading", agoText(d.nano?.lastSampleAgeMs)], ["Air", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
     ["Clock, SD card and power sensors", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")], ["Main battery INA226", v3Only(booleanText(d.peripherals?.mainInaOk, "In use", "Not in use"))], ["ACS758 fallback", v3Only(booleanText(d.peripherals?.batteryAdsOk, "OK", "Not OK"))], ["Solar INA226", v3Only(booleanText(d.peripherals?.solarSensorOk, "OK", "Not answering"))], ["Secondary INA226", v3Only(booleanText(d.peripherals?.secondaryBatterySensorOk, "OK", "Not answering"))]]],
@@ -4621,6 +4722,8 @@ function renderDiagnostics() {
     container.appendChild(message);
   } else {
     groups.forEach(([title, rows]) => container.appendChild(diagnosticGroup(title, rows)));
+    // What the LCD's Calibration menu has set (ESP1 from 18 Nov 2026), read-only: calibrating needs someone at the rig.
+    if (d.calibration) calibrationGroups(d.calibration).forEach(([title, rows]) => container.appendChild(diagnosticGroup(title, rows)));
   }
 
   const eventBox = document.getElementById("diagnosticEvents");
@@ -4639,6 +4742,16 @@ function renderDiagnostics() {
     meta.textContent = `${rawText(event.at, "time unavailable")} · ${rawText(event.source)} · ${rawText(event.type)}`;
     detail.textContent = rawText(event.detail);
     row.append(meta, detail);
+    // A fault in words, from ESP1's own alert table (18 Nov 2026). Only for faults: other events carry codes too.
+    if (/^(FAULT|SMS_ERR|REJECT)$/i.test(String(event.type || ""))) {
+      const words = faultInfoText(event.detail);
+      if (words) {
+        const explain = document.createElement("p");
+        explain.className = "event-explain";
+        explain.textContent = words;
+        row.appendChild(explain);
+      }
+    }
     eventBox.appendChild(row);
   });
 }
@@ -5048,7 +5161,126 @@ function explainFaultCode(code) {
     const why = { TIMEOUT: "the sensor never responded — check its power/wiring", BADADDR: "a different device answered — check the Modbus address", BADLEN: "the reply was the wrong length", BADCRC: "the reply failed its checksum — consistent with bus noise/EMI" }[reason] || reason;
     return `${col} fertigated as irrigation-only this cycle because its NPK probe reading was invalid (${why}).`;
   }
+  // Every other code: ESP1's own headline and advice (18 Nov 2026), so nothing shows as a bare code.
+  return faultInfoText(text);
+}
+
+/* ESP1's alert table (SMS_FAULTS in its main.cpp, web v.4 of 17 Nov 2026), word for word: each fault code's headline
+ * and what to do, the same words its SMS alerts use. Added 18 Nov 2026: 26 of these 52 codes had no words anywhere on
+ * this page and showed as bare codes. Keep in step with the firmware's table when a code is added there. */
+const FAULT_INFO = {
+  FLOW_FAIL:            ["Tank level not moving, pump stopped", "Check pump, valves, tank sensors"],
+  ESP2_ERROR:           ["Pump controller stopped the run", "Check the pump controller board"],
+  LEVEL_BLIND:          ["Tank level sensor not reading", "Check the mixing tank ultrasonic"],
+  SERVO_FAIL:           ["Pump selector failed or stuck", "Check the servo and its switch"],
+  BATT_SWITCH_FAIL:     ["Switch to backup battery failed", "Check the backup battery and relay"],
+  INVERTER_FAIL:        ["Inverter gave no AC power", "Check the inverter and its wiring"],
+  PWR_FAIL:             ["Pump power fault, pump stopped", "Check pump, wiring and AC supply"],
+  SAFE_STOP:            ["Safety stop", "Check the mixer and pumps"],
+  DOSE_TIMEOUT:         ["Nutrient pump ran too long", "Prime the nutrient line"],
+  MIX_OVERFLOW:         ["Mixing tank overfilling", "Pumps stopped. Check tank, clear on LCD"],
+  ESP2_DONE_TIMEOUT:    ["Pump controller never finished", "All stopped. Check tank, clear on LCD"],
+  BATTERY_CRITICAL:     ["Main battery critically low", "All stopped. Charge it, clear on LCD"],
+  ESTOP_KEPT:           ["Emergency stop kept after restart", "Clear it on the LCD to resume"],
+  ESP2_RESTARTED:       ["Pump controller restarted", ""],
+  ESP2_SILENCE:         ["Pump controller not answering", "Restarting it automatically"],
+  ESP2_COMM_LOST:       ["Lost link to pump controller", "Retrying every 20 min. Check wiring"],
+  ESP2_NO_READY:        ["Pump controller did not start", "Check its power and wiring"],
+  ESP2_DEGRADED:        ["Pump controller disabled a part", "Run continues. Check it after"],
+  PCF_FAIL:             ["Relay board not responding", "Check the relay board wiring"],
+  COL_MISMATCH:         ["Column is off on pump controller", "Skipped today. Match column settings"],
+  NANO_GARBAGE:         ["Sensor board sending bad data", "Check the sensor board wiring"],
+  NANO_RESET:           ["Sensor board was restarted", ""],
+  NANO_SILENCE:         ["Sensor board not answering", "Check its power and wiring"],
+  SELF_RESET:           ["Main controller restarting itself", "Max once a day. Check if it repeats"],
+  NET_STALL:            ["Internet task stuck", "Website paused. Watering not affected"],
+  RTC_MISSING:          ["Clock module not found", ""],
+  RTC_INVALID:          ["Clock time is wrong", ""],
+  SERVO_MISMATCH:       ["Wrong pump ran, retrying", "Check the pump selector servo"],
+  LEVEL_HIGH:           ["Mixing tank full before target", "Run goes on. Check tank litres cal"],
+  RES_EMPTY:            ["Water reservoir ran dry", "Refill it. Run went on with less water"],
+  RES_LOW:              ["Water reservoir is low", "Refill the reservoir"],
+  TANK_CHECK:           ["Check the mixing tank", "Runs wait. Then text TANKCHECK,OK"],
+  EC_FAIL:              ["Mixed batch EC out of range", "Batch still given. Check dosing"],
+  PH_FAIL:              ["Mixed batch pH out of range", "Batch still given. Check pH probe"],
+  DOSE_BATCH_LOW:       ["Batch too small to dose", "Watering only. Check volume settings"],
+  DOSE_CARRY:           ["Dosed batch went to other column", ""],
+  THRESH_NO_FERT:       ["Soil start % too low to fertilize", "Only watering will run. Raise it"],
+  RESUME_NO_REPLY:      ["No answer to your resume", "Still on hold. Check link, try again"],
+  WO_OVERSIZE:          ["Run command too long, not sent", "Run skipped. Check column settings"],
+  FORCE_ABORT:          ["Manual run cancelled", ""],
+  MANUAL_REVOKED:       ["Website control ended", "The operator at the rig took over"],
+  SENSOR_FAIL:          ["Sensor not working", "Check its wiring"],
+  SOIL_MISSING:         ["Soil moisture reading missing", "Check that column's soil probes"],
+  NPK_FAULT:            ["NPK sensor not reading", "Watering only. Check NPK sensor"],
+  BATTERY_LOW:          ["Main battery low", "Check charging and the solar panel"],
+  BATT2_LOW:            ["Backup battery low", "AC pumps blocked until it charges"],
+  BATT2_CRIT:           ["Backup battery critically low", "Charge the backup battery"],
+  BATT_SWITCH_RESET:    ["Battery switch reset the boards", ""],
+  BATT_SWITCH_FAULT:    ["Battery switching locked", "AC pumps blocked. Clear on LCD, web or text BATTSW,CLEAR (auto in 24h)"],
+  MAIN_BATT_CRIT:       ["Main battery critically low", ""],
+  BACKUP_EXHAUSTED:     ["Backup battery used up", ""],
+  BACKUP_SWITCH_FAILED: ["Switch to backup failed", ""]
+};
+// The first known code in a fault text: "MAJ|SENSOR_FAIL|INA226", "ESP2_DEGRADED PUMP_WEAK|..." and the like.
+function faultCodeIn(text) {
+  return String(text || "").split(/[|\s,]+/).find(token => Object.prototype.hasOwnProperty.call(FAULT_INFO, token)) || "";
+}
+/* ---- Tank check (18 Nov 2026) ----------------------------------------------------------------------------------------
+ * ESP1 from 18 Nov 2026 publishes diagnostics.tankCheck = {needed, why}. While needed, it starts no scheduled run until
+ * someone confirms the mixing tank: here (TANK_CHECK_OK, control accounts, idle only), SMS TANKCHECK,OK, or the LCD. */
+const TANK_CHECK_WHY = {
+  ESP1_RESET_DURING_RUN: "ESP1 restarted in the middle of a run, so the mixing tank may still hold that run's water.",
+  CARRIED_OVER_RESTART: "It was already waiting before ESP1's last restart."
+};
+function tankCheckBlockReason() {
+  if (!hasControlAccess()) return "Confirming needs control access. Ask an operator, or send SMS TANKCHECK,OK from the owner's phone.";
+  if (!firebaseConnected) return "This browser is offline.";
+  if (!deviceIsFresh()) return "ESP1 isn't reporting, so it can't be told. Use SMS TANKCHECK,OK or the LCD.";
+  if (rigLocked()) return LOCKED_TITLE;
+  if (liveData.system?.state !== "IDLE_STATE") return "Only while the rig is idle: ESP1 refuses it during a run or a test.";
   return "";
+}
+function renderTankCheck() {
+  const banner = document.getElementById("tankCheckBanner");
+  if (!banner) return;
+  const check = liveData.diagnostics?.tankCheck;
+  const needed = check?.needed === true;
+  banner.hidden = !needed || !currentUserIsSignedIn() || !isApprovedUser();
+  if (banner.hidden) return;
+  const why = TANK_CHECK_WHY[check.why] || (check.why ? `ESP1's reason: ${check.why}.` : "");
+  setText("tankCheckDetail", `ESP1 starts no scheduled run until someone has looked at the mixing tank. ${why}`);
+  const button = document.getElementById("tankCheckBtn");
+  if (!button) return;
+  const block = tankCheckBlockReason();
+  button.hidden = !hasControlAccess();
+  const sent = latestCommandOfType("TANK_CHECK_OK");
+  const waiting = sent && ["queued", "received"].includes(sent.status);
+  button.disabled = Boolean(block) || Boolean(waiting);
+  button.title = block || (waiting ? "Waiting for ESP1." : "");
+  const result = document.getElementById("tankCheckResult");
+  if (result && block && !waiting && (!sent || serverNow() - Number(sent.updatedAt || sent.requestedAt || 0) > 60000)) {
+    result.textContent = block;
+    result.className = "control-result";
+  }
+}
+document.getElementById("tankCheckBtn")?.addEventListener("click", () => {
+  const block = tankCheckBlockReason();
+  const show = resultLine("tankCheckResult");
+  if (block) { show(block, true); return; }
+  if (!confirm("Have you looked at the mixing tank, and sent any water left in it to its column? Scheduled runs start again once ESP1 has this.")) {
+    show("Nothing was sent.");
+    return;
+  }
+  sendFromPanel(show, "TANK_CHECK_OK", {});
+});
+
+// "Mixing tank overfilling. Pumps stopped. Check tank, clear on LCD." or "" when no code is known.
+function faultInfoText(text) {
+  const code = faultCodeIn(text);
+  if (!code) return "";
+  const [what, todo] = FAULT_INFO[code];
+  return todo ? `${what}. ${todo}.` : `${what}.`;
 }
 
 function updateFaultBanner() {
@@ -5271,13 +5503,17 @@ function upNextItems(now) {
     const manualOn = day => s.operation !== null && operationOn(s, ymdOfDate(day)) === "MANUAL";
     const manualNote = "Manual: no scheduled watering. Water it with Water a column now.";
     if (manualOn(today)) items.push({ day: today, at: -1, time: "All day", what: `Column ${id}`, note: manualNote });
+    // The day closed by a STOP reply or a lost fault (ESP1 from 18 Nov 2026): nothing more today.
+    else if (s.skippedToday) items.push({ day: today, at: -1, time: "Rest of today", what: `Column ${id}`, note: "Skipped: a STOP reply or a lost fault closed the day." });
     else s.windows.forEach(w => {
       const [a, b] = w;
       // ESP1 counts both ends as inside a window (windowAt() in its main.cpp), so 12:00–13:00 is still open at 13:00.
       if (done >= s.windows.length || b < nowMin) return;           // the day is done, or this time is over
       const open = a <= nowMin;
       if (open && done >= started) return;                          // it has watered in this one already
-      items.push({ day: today, at: open ? nowMin : a, time: span(w), what: `Column ${id}`, note: open ? `Open now. ${ifDry}.` : `${ifDry}.`, open });
+      // Resting after repeated faults (ESP1 from 18 Nov 2026): a time inside the rest is passed over until it ends.
+      const rest = s.restMin && (open || a < nowMin + s.restMin) ? ` Resting about ${s.restMin} more min after repeated faults first.` : "";
+      items.push({ day: today, at: open ? nowMin : a, time: span(w), what: `Column ${id}`, note: (open ? `Open now. ${ifDry}.` : `${ifDry}.`) + rest, open });
     });
     if (manualOn(tomorrow)) items.push({ day: tomorrow, at: -1, time: "All day", what: `Column ${id}`, note: manualNote });
     else s.windows.forEach(w => items.push({ day: tomorrow, at: w[0], time: span(w), what: `Column ${id}`, note: `${ifDry}.` }));
@@ -5325,6 +5561,7 @@ function upNextBlockText() {
   else if (d.fault?.held) reasons.push("A fault is held: none of this runs until someone chooses how to continue.");
   if (actuationsAreOff()) reasons.push("Pumps and valves are off: none of this runs until they are switched back on.");
   if (d.webManual?.held === true) reasons.push("Manual/Test is open: nothing starts by itself until it is closed.");
+  if (d.tankCheck?.needed === true) reasons.push("The mixing tank must be checked first: no column is watered by the schedule until someone confirms it (the banner at the top).");
   const reservoir = Number(liveData.sensors?.reservoirLevel);
   if (hasValue(liveData.sensors?.reservoirLevel) && reservoir < RIG_RES_LOW_PCT) reasons.push(`The reservoir is under ${RIG_RES_LOW_PCT} %: no column is watered until it is refilled.`);
   return reasons.join(" ");
@@ -5470,6 +5707,7 @@ const PANEL_COMMAND_RESULTS = [
   ["SET_AC_AMP", "sysAcAmpResult"],
   ["RESTORE_DEFAULTS", "sysRestoreResult"],
   ["CLEAR_BATT_SWITCH", "sysBattSwitchResult"],
+  ["TANK_CHECK_OK", "tankCheckResult"],
   ["REBOOT", "rebootResult"],
   ["LCD_LOCK", "sysLockResult"],
   [["ENABLE_ACTUATIONS", "DISABLE_ACTUATIONS"], "actResult"]
@@ -5860,6 +6098,17 @@ function updateSystemTab() {
   setText("sysBattSwitchStrikes", v3Only(rawText(system.battSwitchStrikes)));
   const stopLabel = document.getElementById("sysThreshStopLabel");
   if (stopLabel) stopLabel.hidden = isV3Firmware();
+  // The thresholds as ESP1 has them (firmware of 18 Nov 2026), and as the starting values of empty boxes.
+  const known = hasValue(system.soilStartPct) && hasValue(system.fertGap);
+  setText("sysThreshNow", known
+    ? `Soil start ${Number(system.soilStartPct)} %, Fertigation gap ${Number(system.fertGap)} mg/kg`
+    : "Not reported by this firmware (ESP1 reports them from its firmware of 18 Nov 2026)");
+  if (known) {
+    [["sysThreshStart", system.soilStartPct], ["sysThreshGap", system.fertGap]].forEach(([id, value]) => {
+      const box = document.getElementById(id);
+      if (box && !box.value && document.activeElement !== box) box.value = String(Number(value));
+    });
+  }
   updateAcVoltPanel(system);
   updateAcAmpPanel(system);
 }
@@ -6271,7 +6520,8 @@ function setManualTestArmed(on) {
 // Dosing pumps run at roughly PUMP_FLOWRATE_MLPM (50 mL/min) in the firmware, so a pulse dispenses a
 // real, if small, volume. Say so before it is run -- especially for the pH pumps, which dispense
 // corrosive adjuster into the tank.
-const MT_DOSING = { nutA: 1, nutB: 1, nutC: 1, phUp: 1, phDn: 1 };   // no nutD -- see index.html
+// nutD since 18 Nov 2026: the owner opened Nutrient D on 16 Nov (LCD Testing, flow calibration); see index.html.
+const MT_DOSING = { nutA: 1, nutB: 1, nutC: 1, nutD: 1, phUp: 1, phDn: 1 };
 function updatePulseNote() {
   const t = document.getElementById("pulseTarget")?.value || "";
   const s = Number(document.getElementById("pulseSeconds")?.value || 0);
@@ -6847,6 +7097,7 @@ setInterval(() => {
   renderUpNext();             // the clock moves on: a watering time opens or closes, the day turns over
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;
   updateFaultBanner();
+  renderTankCheck();                   // its button follows freshness and the rig's state
 }, 1000);
 
 /* Info icons ------------------------------------------------------------------------------------

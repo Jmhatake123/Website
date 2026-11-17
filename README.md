@@ -59,6 +59,15 @@ readings, and Up next says when a column is Manual. Firmware without it doesn't 
 then leaves the feature out. The same day, the Manual/Test tab's SD card log panel was merged into Diagnostics → SD
 card logs (today's state, idle-only requests, a stalled upload now says it stopped).
 
+Firmware parity (18 Nov 2026, later): Manual/Test can test **Nutrient D** (the owner opened it on 16 Nov; it is still
+never dosed by a run). Every one of ESP1's 52 alert codes now shows in plain words (its own SMS headline and advice) in
+Recent events, the fault banner and Diagnostics. A column switched off on ESP1 can be switched on from the forced-run
+form. With ESP1's firmware of 18 Nov 2026 the page also shows: a **tank check** banner (scheduled runs wait until
+someone confirms the mixing tank, with an "I've checked the tank" button → `TANK_CHECK_OK`); ESP1's last start reason
+and starts today (`system.bootReason`, `bootsToday`, `uptimeS`); the watering thresholds as ESP1 has them
+(`system.soilStartPct`, `fertGap`); the LCD's calibration values, read-only (`diagnostics.calibration`); and why a due
+column is passed over (`zones.<id>.restMin`, `skippedToday`). Older firmware just shows "not reported".
+
 The page works with web v.3 firmware too (no litres shown).
 
 ## What the dashboard does

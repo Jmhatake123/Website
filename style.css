@@ -485,6 +485,11 @@ label[hidden] { display: none; }
 /* The page background colour for the text keeps the contrast in both themes: dark on the light dark-theme amber,
    light on the deep light-theme one (navy on that was hard to read). */
 .force-form button[type="submit"] { border-color: var(--warning); background: var(--warning); color: var(--bg); }
+/* Columns switched off on ESP1, under the forced-run column picker (18 Nov 2026). */
+.force-off { padding: 10px 12px; border-left: 3px solid var(--warning); border-radius: 8px; background: var(--surface-muted); }
+.force-off[hidden] { display: none; }
+.force-off p { margin: 0; color: var(--text); font-size: .88rem; line-height: 1.45; }
+.force-off-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .dose-fieldset { display: grid; gap: 14px; margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
 .dose-fieldset legend { padding: 0 7px; color: var(--muted); font-size: .88rem; font-weight: 600; }
 .pump-lamps { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-top: 16px; }
@@ -542,6 +547,8 @@ button.secondary { background: transparent; color: var(--muted); font-weight: 60
 .event-row.receipt { border-left-color: var(--accent); }
 .event-row.reject, .event-row.resp { border-left-color: var(--warning); }
 .event-row.gsm { border-left-color: var(--muted); }
+/* A fault's plain words under its code (ESP1's own alert table, 18 Nov 2026). Body font, not the code's monospace. */
+.event-row .event-explain { margin: 2px 0 0; color: var(--text); font-size: .84rem; line-height: 1.4; }
 
 dialog { width: min(540px, calc(100% - 32px)); padding: 28px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 dialog::backdrop { background: rgb(0 0 0 / .7); }
