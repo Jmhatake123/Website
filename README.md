@@ -139,6 +139,25 @@ The page works with web v.3 firmware too (no litres shown).
     it (and delete a type-less row, which is only ever ESP1's late answer to a deleted row). A stop is accepted when
     ESP1's report is under 3 minutes old **or** `payload.proof` names a row ESP1 answered under 3 minutes ago (only the
     device account writes those statuses). Tests: `npm run test:rules-emu` (53), `npm run test:link` (12).
+- **19 Nov 2026, second round** (the owner's list):
+  - **Auto stage** (Complete mode, each column card under Compared with): **Start auto stage (Day 1)** makes today day 1
+    of the stage picked; the stage then moves on by itself by each stage's **Days** in the crop profile (0 skips a stage)
+    and stays on the last one until **End** or another crop; **Pause** / **Resume** stop and carry on the count. Locked
+    until every stage of that crop has its Days. Website only: `irrigation/config/zones/{id}/autoStage = {crop, from,
+    start, pausedOn, pausedDays, by, at}`; `autoStageState()` works the stage out by the rig's date, `zoneCrop()` returns
+    it, and a page with zone editing writes it to the column's `stage` when it moves on (`syncAutoStages()`).
+  - **Website title** (System tab, **the operator and the backup operator only**): the name and the line under it at
+    the top left, for everyone (`irrigation/config/site = {name, sub, updatedAt, updatedBy}`; the rules refuse anyone
+    else). **Back to the original** removes it.
+  - **Download today's log** (Diagnostics, SD card logs): what the website already holds for the rig's today, never a
+    request to the rig. ESP1 Plan B (`..\ESP1_PlanB`, not flashed) keeps it there by itself, only the new lines, every hour
+    and after a run or a fault (index `sync: "auto"`).
+  - **Pumps and valves:** *"The schedule, forced runs and tests can run."* In Simple mode an animated picture
+    (`#sActCard`: pump, valve, sprinkler, plant; on / off / sending / unknown) and a bigger switch.
+  - Soil moisture lines: the tick is **Default** (was "Same as the System tab"). Complete mode no longer shows "Saved on
+    ESP1 (its reply: …)" under a column card; Simple mode says "Saved on the rig.".
+  - Rules: `config/site` and `config/zones/$zone/autoStage` (shape only). Tests: `npm run test:features` (18),
+    `npm run test:rules-emu` (56). The full reference: `..\Website_Reference_FINAL.md`.
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
   once a report is one interval plus at least 5 s late (`deviceDelayMs()`: over 60 s at the 30 s pace, over 120 s
