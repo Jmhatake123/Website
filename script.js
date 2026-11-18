@@ -208,6 +208,9 @@ let firebaseLinkRef = null;
 let firebaseLinkSeen = false;       // has this page connected yet? Until then, "not connected" is just loading
 let firebaseConnected = true;       // this browser's own link to Firebase, which says nothing about ESP1
 let lastKnownFresh = false;         // whether the page last drew ESP1 as reporting (see syncFreshness())
+let lastKnownDelayed = false;       // ...and whether it drew its reports as late (deviceDelayMs(), 18 Nov 2026)
+let firebaseDownSince = 0;          // when this browser lost Firebase (0 = connected), for nudgeFirebaseReconnect()
+let lastReconnectNudge = 0;
 let liveRef = null;
 let commandsRef = null;
 let zonesRef = null;
@@ -373,6 +376,18 @@ function deviceIsFresh() {
   return Boolean(stamp) && serverNow() - stamp < Math.max(refreshMs * 2 + 15000, 90000);
 }
 
+// How late ESP1's report is (18 Nov 2026, the owner: "very realtime connection"): 0 while it is on time, else its age.
+// ESP1 reports every meta.refreshMs (1 s while a page like this one watches, on the firmware of 18 Nov b and later;
+// 20 / 60 s otherwise), so a report older than one more interval, and at least 5 s more, is late. Only while
+// deviceIsFresh(): past that the page says ESP1 has stopped reporting.
+function deviceDelayMs() {
+  const stamp = Number(liveData.meta?.updatedAt || 0);
+  if (!stamp || !deviceIsFresh()) return 0;
+  const refreshMs = Number(liveData.meta?.refreshMs || 60000);
+  const age = Math.max(0, serverNow() - stamp);
+  return age > refreshMs + Math.max(refreshMs, 5000) ? age : 0;
+}
+
 // The stops (2026-11-06, the owner's choice): Emergency stop, switching pumps and valves off, and Cancel forced run
 // are never queued while ESP1 isn't reading the queue. A stop waiting there fires whenever ESP1 next reads it, which
 // can be hours later and into a different situation, while the page looks as if the rig has been told. So while ESP1
@@ -508,11 +523,13 @@ function setDeviceStatus(id, text, tone = "off") {
   element.className = `device-status ${tone}`;
 }
 
+// connected: true, false, or "delayed" (18 Nov 2026: connected, but ESP1's reports are late; see deviceDelayMs()).
 function setConnection(connected, label) {
+  const delayed = connected === "delayed";
   const dot = document.getElementById("connectionDot");
-  if (dot) dot.style.backgroundColor = connected ? "var(--success)" : "var(--danger)";
+  if (dot) dot.style.backgroundColor = delayed ? "var(--warning)" : connected ? "var(--success)" : "var(--danger)";
   setText("connectionStatus", label);
-  setDeviceStatus("sideConnection", connected ? "LIVE SNAPSHOT" : "NOT LIVE", connected ? "active" : "off");
+  setDeviceStatus("sideConnection", delayed ? "DELAYED" : connected ? "LIVE SNAPSHOT" : "NOT LIVE", delayed ? "warn" : connected ? "active" : "off");
 }
 
 /* Toast notifications (2026-09-10) -- a popup layer on top of (not instead of) setCommandStatus()'s
@@ -1085,6 +1102,7 @@ function attachDatabaseListeners() {
     if (up) firebaseLinkSeen = true;
     if (!firebaseLinkSeen) return;
     firebaseConnected = up;
+    firebaseDownSince = up ? 0 : (firebaseDownSince || Date.now());
     syncConnection();
     syncControlAvailability();
   });
@@ -1094,6 +1112,7 @@ function attachDatabaseListeners() {
   liveRef.on("value", snapshot => {
     liveData = snapshot.val() || {};
     lastKnownFresh = deviceIsFresh();
+    lastKnownDelayed = deviceDelayMs() > 0;
     updateDashboard();
     setText("liveAge", liveAgeText());
     syncConnection();
@@ -1169,6 +1188,8 @@ function syncConnection() {
   if (!databaseListenersAttached || databaseAccessDenied) return;
   if (!firebaseConnected) { setConnection(false, "This browser has lost its connection"); return; }
   const fresh = deviceIsFresh();
+  // No running age here: the top bar's own line (liveAge) already counts the seconds.
+  if (fresh && deviceDelayMs()) { setConnection("delayed", "Connected, but ESP1's reports are late"); return; }
   setConnection(fresh, fresh ? "Live system connected" : "Waiting for a current ESP1 snapshot");
 }
 
@@ -1177,9 +1198,12 @@ function syncConnection() {
 // stayed open.
 function syncFreshness() {
   const fresh = deviceIsFresh();
-  if (fresh === lastKnownFresh) return;
+  const delayed = deviceDelayMs() > 0;
+  if (fresh === lastKnownFresh && delayed === lastKnownDelayed) return;
+  const freshChanged = fresh !== lastKnownFresh;
   lastKnownFresh = fresh;
-  updateDashboard();
+  lastKnownDelayed = delayed;
+  if (freshChanged) updateDashboard();   // late but current: the numbers stand, only the connection line changes
   syncConnection();
 }
 
@@ -4589,6 +4613,32 @@ function renderHealthSummary() {
   });
 }
 
+// What a Wi-Fi signal means for ESP1's reports (18 Nov 2026; dBm, nearer 0 is stronger). The secure uploads start to
+// fail below about -70; on 17 Nov the rig sat at -75 to -90 and about one upload in three failed some mornings.
+function wifiQualityText(rssi) {
+  const v = Number(rssi);
+  if (!Number.isFinite(v) || v >= 0) return "";
+  if (v >= -60) return " (excellent)";
+  if (v >= -67) return " (good)";
+  if (v >= -72) return " (fair: reports may sometimes be late)";
+  if (v >= -80) return " (weak: reports will often be late or fail)";
+  return " (very weak: expect drop-outs)";
+}
+
+// ESP1's link health (firmware of 18 Nov 2026 c): reports sent and failed, new TLS sessions (each one a pause of a second
+// or two) and its free memory, all since its last start. "Not reported" on older firmware.
+function linkHealthRows(fb) {
+  if (!fb || !hasValue(fb.failures)) return [["Link health", "Not reported by this firmware (needs web v.4 of 18 Nov 2026 c)"]];
+  const attempts = Number(fb.attempts || 0), failures = Number(fb.failures || 0);
+  const failedPct = attempts > 0 ? ` (${(failures * 100 / attempts).toFixed(failures * 100 / attempts < 10 ? 1 : 0)}% failed)` : "";
+  const kb = value => `${Math.round(Number(value) / 1024)} KB`;
+  return [
+    ["Reports since start", attempts > 0 ? `${attempts - failures} of ${attempts} sent${failedPct}` : "None yet"],
+    ["New connections since start", hasValue(fb.handshakes) ? String(fb.handshakes) : "Unavailable"],
+    ["Free memory", hasValue(fb.freeHeap) ? `${kb(fb.freeHeap)}${hasValue(fb.maxAllocHeap) ? `, largest block ${kb(fb.maxAllocHeap)}` : ""}` : "Unavailable"]
+  ];
+}
+
 function renderDiagnostics() {
   renderHealthSummary();
   const container = document.getElementById("diagnosticsGrid");
@@ -4599,8 +4649,8 @@ function renderDiagnostics() {
   const diagnosticsAvailable = Object.keys(d).length > 0;
   const groups = [
     ["ESP1's report", [["Report", current ? "Current" : "Stale or unavailable"], ["Received", snapshotAgeText()], ["ESP1 state", liveData.system?.state || "Unavailable"], ["Firmware", !liveData.system ? "Unavailable" : liveData.system.firmware ? String(liveData.system.firmware) : isV3Firmware() ? "web v.3 (or web v.4 before 17 Nov)" : "Older than web v.3"], ["Report size", liveData.meta?.docUsed ? `${liveData.meta.docUsed} / ${liveData.meta.docCapacity} B` : "Unavailable"], ["Last start", bootText()], ["Starts today", hasValue(liveData.system?.bootsToday) ? String(liveData.system.bootsToday) : "Not reported by this firmware"]]],
-    ["Wi-Fi", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Signal strength", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm` : "Unavailable"]]],
-    ["Link to this website (Firebase)", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")]]],
+    ["Wi-Fi", [["Wi-Fi enabled", booleanText(d.network?.wifiEnabled, "Enabled", "Disabled")], ["Wi-Fi link", booleanText(d.network?.wifiConnected, "Connected", "Disconnected")], ["Signal strength", hasValue(d.network?.wifiRssi) ? `${d.network.wifiRssi} dBm${wifiQualityText(d.network.wifiRssi)}` : "Unavailable"]]],
+    ["Link to this website (Firebase)", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")], ...linkHealthRows(d.firebase)]],
     ["ThingSpeak graphs", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
     ["Log upload", [["Goes to", d.logUpload?.target === "firebase" ? "Firebase (SD card logs, below)" : d.logUpload?.target === "supabase" || (!d.logUpload && d.supabase?.configured) ? "Supabase" : "Not configured"], ["Upload", booleanText(d.logUpload ? d.logUpload.busy : d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay) : "No completed upload"]]],
     ["Runs and faults", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Run waiting to start", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rigTimeText(rawText(d.system?.lastFaultTime, "None"))], ["Rig lock", booleanText(d.system?.lcdLocked, "Locked", "Unlocked")], ["Tank check", !d.tankCheck ? "Not reported by this firmware" : d.tankCheck.needed ? "Needed: scheduled runs wait" : "Not needed"]]],
@@ -6764,7 +6814,8 @@ contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () 
 
 /* ---- Live viewing and Refresh (2026-11-17, user: "a very realtime website, and a refresh button") --------------------
  * While this page is open and on screen it tells ESP1 someone is watching (irrigation/viewer/at, every VIEWER_TOUCH_MS);
- * ESP1 then reports every 2 s during a run and every 4 s otherwise, instead of every 20 / 60 s, and goes back to that
+ * ESP1 then reports every second (firmware of 18 Nov 2026 b and later; 17 Nov's: every 2 s during a run and every 4 s
+ * otherwise), instead of every 20 / 60 s, and goes back to that
  * pace about 45 s after the last touch. Refresh asks for a report now (irrigation/viewer/refreshAt) and says how long
  * ESP1 took to answer. An older ESP1 ignores the node: the page then simply keeps the old pace. */
 const VIEWER_TOUCH_MS = 15000;
@@ -6796,6 +6847,26 @@ function syncViewerTouch() {
 }
 document.addEventListener("visibilitychange", syncViewerTouch);
 
+/* Quick reconnect (18 Nov 2026, the owner: "very realtime connection"). While its connection keeps failing, the Firebase
+ * SDK waits longer and longer between attempts (x1.3 each time, up to 5 minutes), so on patchy mobile data a page could
+ * stay offline for minutes after the network was back. Once this page has been offline for RECONNECT_NUDGE_MS while on
+ * screen, the attempt is restarted at once, and again every RECONNECT_NUDGE_MS at most, so a slow attempt still has time
+ * to finish. Coming back to the front also restarts it, 2 s later, if the SDK hasn't reconnected by itself by then. */
+const RECONNECT_NUDGE_MS = 20000;
+function nudgeFirebaseReconnect(onReturn) {
+  if (!db || !databaseListenersAttached || firebaseConnected || !firebaseDownSince) return;
+  if (document.visibilityState !== "visible" || navigator.onLine === false) return;
+  const now = Date.now();
+  if (now - lastReconnectNudge < (onReturn ? 5000 : RECONNECT_NUDGE_MS)) return;
+  if (!onReturn && now - firebaseDownSince < RECONNECT_NUDGE_MS) return;
+  lastReconnectNudge = now;
+  db.goOffline();   // drops the waiting attempt and its growing delay...
+  db.goOnline();    // ...and starts a new one now
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") setTimeout(() => nudgeFirebaseReconnect(true), 2000);
+});
+
 function refreshStatusText(text, clearAfterMs) {
   const status = document.getElementById("refreshStatus");
   if (!status) return;
@@ -6819,6 +6890,7 @@ function requestRefresh() {
   liveRef?.once("value").then(snapshot => {
     liveData = snapshot.val() || {};
     lastKnownFresh = deviceIsFresh();
+    lastKnownDelayed = deviceDelayMs() > 0;
     updateDashboard();
     setText("liveAge", liveAgeText());
     syncConnection();
@@ -7056,6 +7128,7 @@ setInterval(() => {
   syncFreshness();
   setText("liveAge", liveAgeText());   // the age moves every second, now that reports come every few seconds
   syncViewerTouch();                   // start / stop telling ESP1 someone is watching (sign-in, approval, tab hidden)
+  nudgeFirebaseReconnect(false);       // offline a while on screen: don't wait out the SDK's growing delay (18 Nov 2026)
   syncLogsListener();                  // the SD card logs list, for the accounts that may see it
   renderLogRequest();                  // Diagnostics > SD card logs: idle-only request, today's state
   updateForceArmed();
@@ -7563,6 +7636,7 @@ function renderSimpleDashboard() {
   // The chips: the controller's link, solar and battery.
   const link = !stamp ? { tone: "wait", icon: "si-wifi", text: databaseListenersAttached ? "No report yet" : "Connecting…" }
     : !firebaseConnected ? { tone: "bad", icon: "si-unlink", text: "This browser is offline" }
+    : fresh && deviceDelayMs() ? { tone: "warn", icon: "si-wifi", text: "Delayed" }   // 18 Nov 2026; the age is below it
     : fresh ? { tone: "ok", icon: "si-wifi", text: "Connected" }
     : { tone: "bad", icon: "si-unlink", text: `Not reporting (${formatAge(serverNow() - stamp)})` };
   sTone("sChipLink", link.tone);
