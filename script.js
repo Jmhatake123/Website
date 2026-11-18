@@ -282,7 +282,7 @@ function startAutoStage(zone) {
   const path = autoStagePath(crop, stage.key);
   const plan = path.map((p, i) => `${p.stage.name} ${p.days} day${p.days === 1 ? "" : "s"}${i === path.length - 1 ? " (then stays)" : ""}`).join(" → ");
   if (!confirm(`Start auto stage for column ${zone.id} (${cropLabel(crop)})? Today is day 1 of ${stage.name}.\n\n${plan}\n\nThe stage then changes by itself. Pause or End it any time.`)) return;
-  const autoStage = { crop: crop.key, from: stage.key, start: rigTodayYmd(), pausedOn: 0, pausedDays: 0, by: myDisplayName() || "Operator", at: firebase.database.ServerValue.TIMESTAMP };
+  const autoStage = { crop: crop.key, from: stage.key, start: rigTodayYmd(), pausedOn: 0, pausedDays: 0, by: (myDisplayName() || "Unknown").slice(0, 60), at: firebase.database.ServerValue.TIMESTAMP };
   writeAutoStage(zone, autoStage, { stage: stage.key }, `Column ${zone.id}: auto stage started (${cropLabel(crop)}, day 1 of ${stage.name})`);
 }
 
