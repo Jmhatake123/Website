@@ -142,12 +142,9 @@
   </div>
 
   <aside class="sidebar">
-    <div class="complete-only">
-      <p class="eyebrow">CIT-U EE</p>
-      <h2>Smart<br>Irrigation</h2>
-    </div>
-    <!-- Simple mode's brand (18 Nov 2026), after the owner's sample design: the farm's name with a sprout mark. -->
-    <div class="s-brand simple-only">
+    <!-- The brand (18 Nov 2026), after the owner's sample design: the farm's name with a sprout mark. Both modes share the
+         design since the owner's second round that day; Complete mode only adds detail. -->
+    <div class="s-brand">
       <svg class="s-brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
         <path class="s-brand-leaf" d="M24 40c0-12 6-21 18-24-1 13-7 22-18 24z"/>
         <path class="s-brand-leaf2" d="M24 40C23 30 17 23 6 22c1 10 7 17 18 18z"/>
@@ -166,7 +163,7 @@
          User Management; Manual/Test, System and Diagnostics are Complete-mode tabs (.complete-tab, hidden in Simple by
          CSS on top of the account checks above). Each tab carries an icon and a short label for Simple mode. -->
     <nav class="tabs" aria-label="Dashboard sections">
-      <button type="button" class="tab active" data-view="dashboard"><svg class="si tab-icon" aria-hidden="true"><use href="#si-home"/></svg><span class="complete-only">Live dashboard</span><span class="simple-only">Dashboard</span></button>
+      <button type="button" class="tab active" data-view="dashboard"><svg class="si tab-icon" aria-hidden="true"><use href="#si-home"/></svg>Dashboard</button>
       <button type="button" class="tab" data-view="zones"><svg class="si tab-icon" aria-hidden="true"><use href="#si-sprout"/></svg>Zone profiles</button>
       <button type="button" class="tab" data-view="manual"><svg class="si tab-icon" aria-hidden="true"><use href="#si-controls"/></svg>Controls</button>
       <button type="button" class="tab complete-tab" data-view="manualtest" id="manualtestTab" hidden><svg class="si tab-icon" aria-hidden="true"><use href="#si-tools"/></svg>Manual/Test</button>
@@ -187,7 +184,7 @@
       <span id="sideLock" class="device-status off">UNKNOWN</span>
     </div>
     <button type="button" id="contributorsBtn" class="link-button">Contributors &amp; project</button>
-    <svg class="s-side-art simple-only" viewBox="0 0 240 150" preserveAspectRatio="xMinYMax meet" aria-hidden="true" focusable="false">
+    <svg class="s-side-art" viewBox="0 0 240 150" preserveAspectRatio="xMinYMax meet" aria-hidden="true" focusable="false">
       <path class="s-art-leaf1" d="M14 150C10 108 30 72 78 54c-4 46-24 78-64 96z"/>
       <path class="s-art-leaf2" d="M52 150c6-34 30-58 70-64-8 34-30 56-70 64z"/>
       <path class="s-art-leaf3" d="M-6 150c-2-30 8-52 34-66 2 30-10 52-34 66z"/>
@@ -278,8 +275,8 @@
     </section>
 
     <header class="topbar">
-      <!-- Simple mode's header art (18 Nov 2026): a quiet farm landscape behind the title, drawn here, decorative only. -->
-      <svg class="s-topbar-art simple-only" viewBox="0 0 720 140" preserveAspectRatio="xMaxYMax slice" aria-hidden="true" focusable="false">
+      <!-- The header art (18 Nov 2026): a quiet farm landscape behind the title, drawn here, decorative only. -->
+      <svg class="s-topbar-art" viewBox="0 0 720 140" preserveAspectRatio="xMaxYMax slice" aria-hidden="true" focusable="false">
         <defs>
           <linearGradient id="sSkyGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="s-sky-top"/><stop offset="1" class="s-sky-bottom"/></linearGradient>
           <linearGradient id="sArtFade" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".45" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></linearGradient>
@@ -296,15 +293,15 @@
         </g>
       </svg>
       <div class="topbar-title">
-        <p class="eyebrow complete-only">Pinamungahan Automated Farm</p>
-        <h1><span class="complete-only">ESP1 live operations</span><span class="simple-only">Smart Irrigation Dashboard</span></h1>
-        <p class="s-subtitle simple-only">Watch and control the watering and feeding of the farm.</p>
+        <h1>Smart Irrigation Dashboard</h1>
+        <p class="s-subtitle"><span class="simple-only">Watch and control the watering and feeding of the farm.</span><span class="complete-only">Every reading and control of the rig, live from ESP1.</span></p>
       </div>
       <div class="topbar-actions">
         <span class="connection-status"><i id="connectionDot" class="online-dot"></i><span id="connectionStatus">Firebase not configured</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About connection status" data-info-title="Connection status" data-info-text="Whether this browser is connected to Firebase, and whether ESP1 has reported recently.">i</button></span>
-        <span id="currentUserEmail" class="muted complete-only" hidden></span>
+        <!-- Kept for the scripts that fill it; the account chip below shows who is signed in (both modes). -->
+        <span id="currentUserEmail" class="muted s-visually-hidden" hidden></span>
         <span id="refreshStatus" class="refresh-status muted" aria-live="polite"></span>
-        <button id="refreshBtn" type="button" title="Ask ESP1 for a fresh report now" hidden><svg class="si simple-only" aria-hidden="true"><use href="#si-refresh"/></svg><span class="refresh-label">Refresh</span></button>
+        <button id="refreshBtn" type="button" title="Ask ESP1 for a fresh report now" hidden><svg class="si" aria-hidden="true"><use href="#si-refresh"/></svg><span class="refresh-label">Refresh</span></button>
         <!-- Simple / Complete (18 Nov 2026): a two-option switch, saved in this browser only (localStorage "uiMode").
              A radio group: Tab reaches the chosen option, the arrow keys move between the two. See initModeSwitch(). -->
         <div class="mode-switch" id="modeSwitch" role="radiogroup" aria-label="Display mode">
@@ -312,16 +309,23 @@
           <button type="button" role="radio" class="mode-option" id="modeComplete" data-mode-choice="complete" aria-checked="false" tabindex="-1"><svg class="si" aria-hidden="true"><use href="#si-grid"/></svg><span>Complete</span></button>
         </div>
         <button id="theme-toggle" type="button"><svg class="si theme-icon-sun" aria-hidden="true"><use href="#si-sun"/></svg><svg class="si theme-icon-moon" aria-hidden="true"><use href="#si-moon"/></svg><span class="theme-label">Dark theme</span></button>
-        <span id="accountBadge" class="s-account simple-only" hidden aria-hidden="true"></span>
-        <button id="logoutBtn" type="button" title="Sign out" hidden><svg class="si simple-only" aria-hidden="true"><use href="#si-logout"/></svg><span class="logout-label">Sign out</span></button>
+        <!-- Who is signed in (18 Nov 2026, the owner: "show the user account name"): the account's name from its record, its
+             first letter as the avatar, the address in the tooltip. Filled by syncAccountBadge(), always as text. -->
+        <span id="accountChip" class="s-account-chip" hidden>
+          <span id="accountBadge" class="s-account" aria-hidden="true"></span>
+          <span class="s-account-words"><span class="s-account-hello">Signed in</span><strong id="accountName" class="s-account-name"></strong></span>
+        </span>
+        <button id="logoutBtn" type="button" title="Sign out" hidden><svg class="si" aria-hidden="true"><use href="#si-logout"/></svg><span class="logout-label">Sign out</span></button>
       </div>
     </header>
 
     <section class="view active" id="dashboard">
-      <!-- SIMPLE MODE dashboard (18 Nov 2026). Read-only: it shows ESP1's latest report in plain words and sends nothing.
-           Filled by renderSimpleDashboard() in script.js from the same liveData as the Complete dashboard below, and it
-           says "unknown" whenever deviceIsFresh() does. The diagram is built by buildSimpleDiagram(). -->
-      <div class="s-dash simple-only" id="simpleDashboard">
+      <!-- THE DASHBOARD (18 Nov 2026; both modes since the owner's second round the same day). Read-only: it shows ESP1's
+           latest report and sends nothing. Filled by renderSimpleDashboard() and updateDashboard() in script.js, and it says
+           "unknown" whenever deviceIsFresh() does. Simple mode shows the cards; Complete mode adds every detail inside the same
+           cards (.complete-only): the run's steps and pump lamps, the full Up next list, every reading and Recent commands.
+           The system picture is built by buildSimpleDiagram(). -->
+      <div class="s-dash" id="simpleDashboard">
         <div class="s-row s-row-top">
           <article class="s-card s-status" id="sStatus" data-tone="wait" role="status" aria-live="polite">
             <span class="s-status-icon" aria-hidden="true"><svg class="si"><use id="sStatusIconUse" href="#si-clock"/></svg></span>
@@ -338,7 +342,7 @@
           <div class="s-chips">
             <div class="s-chip" id="sChipLink" data-tone="wait">
               <svg class="si s-chip-icon" aria-hidden="true"><use id="sLinkIconUse" href="#si-wifi"/></svg>
-              <span><span class="s-chip-label">Controller</span><strong id="sLinkText">Connecting…</strong></span>
+              <span><span class="s-chip-label">Controller</span><strong id="sLinkText">Connecting…</strong><span class="s-chip-sub" id="sLinkAge"></span></span>
             </div>
             <div class="s-chip" id="sChipSolar" data-tone="solar">
               <svg class="si s-chip-icon" aria-hidden="true"><use href="#si-solar"/></svg>
@@ -358,7 +362,7 @@
               <h3>Reservoir <span class="s-sub">(main water tank)</span></h3>
               <p class="s-big"><span id="sResPct" class="s-roll">--</span><span class="s-stale-tag" hidden>last known</span></p>
               <p class="s-note" id="sResLitres">No reading yet</p>
-              <div class="s-bar" id="sResBar" role="progressbar" aria-label="Reservoir water level" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+              <div class="s-bar" id="sResBar" role="progressbar" aria-label="Reservoir water level" aria-valuemin="0" aria-valuemax="100"><span></span><i class="s-bar-mark" id="sResMark" aria-hidden="true"></i></div>
               <p class="s-hint" id="sResHint">Watering pauses below 18 %, so the pumps never run dry.</p>
             </div>
           </article>
@@ -375,17 +379,17 @@
           <article class="s-card s-soil" id="sSoil">
             <h3><svg class="si" aria-hidden="true"><use href="#si-sprout"/></svg>Soil moisture <span class="s-sub">(planting columns)</span></h3>
             <div class="s-soil-cols">
-              <div class="s-col" id="sColA" data-tone="none"><span class="s-col-name">Column A</span><span class="s-col-crop" id="sColCropA"></span><span class="s-col-pct s-roll" id="sColPctA">--</span><span class="s-pill" id="sColStateA">No reading</span><span class="s-stale-tag" id="sColStaleA" hidden>last known</span></div>
-              <div class="s-col" id="sColB" data-tone="none"><span class="s-col-name">Column B</span><span class="s-col-crop" id="sColCropB"></span><span class="s-col-pct s-roll" id="sColPctB">--</span><span class="s-pill" id="sColStateB">No reading</span><span class="s-stale-tag" id="sColStaleB" hidden>last known</span></div>
-              <div class="s-col" id="sColC" data-tone="none"><span class="s-col-name">Column C</span><span class="s-col-crop" id="sColCropC"></span><span class="s-col-pct s-roll" id="sColPctC">--</span><span class="s-pill" id="sColStateC">No reading</span><span class="s-stale-tag" id="sColStaleC" hidden>last known</span></div>
+              <div class="s-col" id="sColA" data-tone="none"><span class="s-col-name" id="sColNameA">Column A</span><span class="s-col-crop" id="sColCropA"></span><span class="s-col-pct s-roll" id="sColPctA">--</span><span class="s-pill" id="sColStateA">No reading</span><span class="s-stale-tag" id="sColStaleA" hidden>last known</span></div>
+              <div class="s-col" id="sColB" data-tone="none"><span class="s-col-name" id="sColNameB">Column B</span><span class="s-col-crop" id="sColCropB"></span><span class="s-col-pct s-roll" id="sColPctB">--</span><span class="s-pill" id="sColStateB">No reading</span><span class="s-stale-tag" id="sColStaleB" hidden>last known</span></div>
+              <div class="s-col" id="sColC" data-tone="none"><span class="s-col-name" id="sColNameC">Column C</span><span class="s-col-crop" id="sColCropC"></span><span class="s-col-pct s-roll" id="sColPctC">--</span><span class="s-pill" id="sColStateC">No reading</span><span class="s-stale-tag" id="sColStaleC" hidden>last known</span></div>
             </div>
-            <p class="s-hint" id="sSoilHint">A column is watered when its soil is drier than Soil start %.</p>
+            <p class="s-hint" id="sSoilHint">A column is watered when its soil is drier than its Soil start.</p>
           </article>
         </div>
 
         <article class="s-card s-diagram" aria-labelledby="sDiagramTitle">
           <div class="s-card-head">
-            <h3 id="sDiagramTitle"><svg class="si" aria-hidden="true"><use href="#si-gear"/></svg>Irrigation system <span class="s-sub">(how it works)</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the irrigation system picture" data-info-title="Irrigation system" data-info-text="Water goes from the reservoir, through the transfer pump, into the mixing tank, where nutrients can be added. The booster pump then sends it to one of the columns. Water moves in the picture only while the controller reports that pump running, and nothing moves when its report is old." data-help="help-tanks">i</button></h3>
+            <h3 id="sDiagramTitle"><svg class="si" aria-hidden="true"><use href="#si-gear"/></svg>Irrigation system <span class="s-sub">(how it works)</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the irrigation system picture" data-info-title="Irrigation system" data-info-text="Water goes from the reservoir, through the transfer pump, into the mixing tank. There the nutrients (calcium nitrate, ammonium phosphate, potassium nitrate) can be added, and the mixer stirs them in. The booster pump then sends it to one of the columns. The pH Up and pH Down bottles are only run by hand tests: ESP1 never adds them by itself. Water moves in the picture only while the controller reports that pump running, and nothing moves when its report is old." data-help="help-tanks">i</button></h3>
             <p class="s-hint" id="sDiagramNote">Waiting for the controller's report.</p>
           </div>
           <div class="s-diagram-host" id="sDiagram"></div>
@@ -393,7 +397,10 @@
 
         <div class="s-row s-row-bottom">
           <article class="s-card s-activity" id="sActivity" data-tone="none">
-            <h3><svg class="si" aria-hidden="true"><use href="#si-drop"/></svg>Current activity</h3>
+            <div class="s-card-head">
+              <h3><svg class="si" aria-hidden="true"><use href="#si-drop"/></svg>Current activity</h3>
+              <span class="complete-only"><span id="runStateBadge" class="device-status off">IDLE</span></span>
+            </div>
             <div class="s-activity-body">
               <svg class="s-activity-art" viewBox="0 0 96 72" aria-hidden="true" focusable="false">
                 <g class="s-art-drops"><circle cx="34" cy="10" r="3"/><circle cx="48" cy="6" r="3"/><circle cx="62" cy="10" r="3"/></g>
@@ -409,9 +416,28 @@
                 <p class="s-hint" id="sActProgress" hidden></p>
               </div>
             </div>
+            <!-- Complete mode: the run in full (it was the Current run panel). Same ids, same updateRunProgress(). -->
+            <div class="s-detail complete-only">
+              <p id="runSummary" class="s-detail-line">Nothing is running.<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the current run" data-info-title="Current run" data-info-text="The run ESP1 is doing now, scheduled or forced: its step, and the water and nutrients delivered so far." data-help="help-run-phases">i</button></p>
+              <div class="progress-layout">
+                <div><span class="status-label">Step now</span><strong id="runStage">Unavailable</strong></div>
+                <div><span class="status-label">This step</span><strong id="runStageProgress">Unavailable</strong></div>
+                <div><span class="status-label">Water delivered</span><strong id="runWaterProgress">Unavailable</strong></div>
+                <div><span class="status-label">Nutrients delivered</span><strong id="runDoseProgress">Unavailable</strong></div>
+              </div>
+              <div class="pump-lamps">
+                <div><span class="status-label">Transfer pump</span><span id="transferPumpStatus" class="device-status off">OFF</span><span class="lamp-note">Reservoir to mixing tank</span></div>
+                <div><span class="status-label">Booster pump</span><span id="boosterPumpStatus" class="device-status off">OFF</span><span class="lamp-note">Mixing tank to a column</span></div>
+                <div><span class="status-label">Tank mixer</span><span id="mixerPumpStatus" class="device-status off">OFF</span><span class="lamp-note">Stirs the mixing tank</span></div>
+              </div>
+            </div>
           </article>
           <article class="s-card s-next" id="sNext">
-            <h3><svg class="si" aria-hidden="true"><use href="#si-calendar"/></svg>Next watering</h3>
+            <div class="s-card-head">
+              <h3><svg class="si" aria-hidden="true"><use href="#si-calendar"/></svg>Next watering</h3>
+              <!-- Shows or hides the watering plan below (shown unless hidden here; remembered in this browser). -->
+              <button type="button" class="s-plan-toggle" id="sPlanToggle" aria-expanded="true" aria-controls="sPlanCard" title="Show or hide the watering plan"><svg class="si" aria-hidden="true"><use href="#si-calendar"/></svg><span id="sPlanToggleText">Hide plan</span></button>
+            </div>
             <div class="s-next-body">
               <svg class="s-next-art" viewBox="0 0 80 72" aria-hidden="true" focusable="false">
                 <path class="s-art-pot" d="M22 50h36l-5 20H27z"/>
@@ -424,136 +450,111 @@
                 <p class="s-hint" id="sNextNote"></p>
               </div>
             </div>
-          </article>
-          <details class="s-card s-more" id="sMore" open>
-            <summary>
-              <span class="s-more-head"><svg class="si" aria-hidden="true"><use href="#si-info"/></svg><span class="s-more-title">More information</span></span>
-              <span class="s-hint">Other readings and system details</span>
-              <svg class="si s-more-chevron" aria-hidden="true"><use href="#si-chevron"/></svg>
-            </summary>
-            <div class="s-more-grid">
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-thermo"/></svg><span class="s-tile-label">Temperature</span><strong id="sTemp" class="s-roll">--</strong></div>
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-drop"/></svg><span class="s-tile-label">Humidity</span><strong id="sHum" class="s-roll">--</strong></div>
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-sun"/></svg><span class="s-tile-label">Light</span><strong id="sLux">--</strong></div>
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-beaker"/></svg><span class="s-tile-label">Mix tank pH</span><strong id="sPh" class="s-roll">--</strong></div>
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-bolt"/></svg><span class="s-tile-label">Mix tank EC</span><strong id="sEc" class="s-roll">--</strong></div>
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-battery"/></svg><span class="s-tile-label">Main battery</span><strong id="sBattV">--</strong></div>
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-solar"/></svg><span class="s-tile-label">Solar today</span><strong id="sSolarToday">--</strong></div>
-              <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-battery"/></svg><span class="s-tile-label">Battery 2</span><strong id="sBatt2">--</strong></div>
+            <!-- Complete mode: everything ESP1 will do next (it was the Up next panel). Same ids, same renderUpNext(). -->
+            <div class="s-detail complete-only">
+              <h4 id="upNextTitle">Up next<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Up next" data-info-title="Up next" data-info-text="What ESP1 will do next, by its own clock: each column's watering times today and tomorrow, a forced run that is counting down, and when each pump's exercise is due. A watering time only waters if the column's soil is drier than its Soil start then, and nutrients go in at most once a day. A pump is exercised once it hasn't run for 2 days, counted from its last run or ESP1's last restart, and only while the rig is idle." data-help="help-when-water">i</button></h4>
+              <p id="upNextStatus" class="next-status" hidden></p>
+              <div id="upNextList" class="next-list"><p class="muted">Waiting for ESP1's report.</p></div>
             </div>
-            <p class="s-hint s-more-foot" id="sMoreFoot">More detail is in Complete mode.</p>
-          </details>
+          </article>
         </div>
-      </div>
 
-      <div class="section-heading complete-only">
-        <div>
-          <h2>Live farm status<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the live farm status" data-info-title="Live farm status" data-info-text="What ESP1 measured in its latest report, grouped by what it is about. A reading says Unavailable when ESP1 didn't send it, usually because that sensor isn't answering." data-help="help-snapshot">i</button></h2>
-          <p class="hint">What ESP1 measured in its latest report.</p>
-        </div>
-        <div id="liveAge" class="snapshot-age">Waiting for first snapshot</div>
-      </div>
-
-      <!-- The rig drawn from ESP1's latest report (2026-11-05): see buildRigDrawing() in script.js. -->
-      <article class="panel rig-panel complete-only" aria-labelledby="rigTitle">
-        <div class="panel-heading">
-          <div>
-            <h3 id="rigTitle">The rig now<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the rig drawing" data-info-title="The rig now" data-info-text="The tanks, pumps and columns as ESP1 last reported them. Water sits at the measured level, a pipe shows water moving only while ESP1 reports that pump running, and each column fills to its soil moisture, with Soil start % marked." data-help="help-tanks">i</button></h3>
-            <p id="rigStatus">Waiting for ESP1's report.</p>
+        <!-- The watering plan (18 Nov 2026, the owner): which days each column runs Automatic and which Manual, as ESP1 has
+             it. Read-only here; it is changed in a column's Edit settings. Filled by renderDashPlan(). -->
+        <article class="s-card s-plan" id="sPlanCard" aria-labelledby="sPlanTitle">
+          <div class="s-card-head">
+            <h3 id="sPlanTitle"><svg class="si" aria-hidden="true"><use href="#si-calendar"/></svg>Watering plan <span class="s-sub">(Automatic or Manual days)</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the watering plan" data-info-title="Watering plan" data-info-text="Each day shows every column that is switched on. Automatic (green): the controller waters it at its watering times when the soil is dry. Manual (amber): readings only, no scheduled watering that day; use Water a column now. Change a column's days in Zone profiles, Edit settings." data-help="help-operation">i</button></h3>
+            <p class="s-hint" id="sPlanNote"></p>
           </div>
+          <div class="s-plan-cal" id="sPlanCal"><p class="s-hint">Waiting for the controller's report.</p></div>
+        </article>
+
+        <details class="s-card s-more simple-only" id="sMore" open>
+          <summary>
+            <span class="s-more-head"><svg class="si" aria-hidden="true"><use href="#si-info"/></svg><span class="s-more-title">More information</span></span>
+            <span class="s-hint">Other readings</span>
+            <svg class="si s-more-chevron" aria-hidden="true"><use href="#si-chevron"/></svg>
+          </summary>
+          <div class="s-more-grid">
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-thermo"/></svg><span class="s-tile-label">Temperature</span><strong id="sTemp" class="s-roll">--</strong></div>
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-drop"/></svg><span class="s-tile-label">Humidity</span><strong id="sHum" class="s-roll">--</strong></div>
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-sun"/></svg><span class="s-tile-label">Light</span><strong id="sLux">--</strong></div>
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-beaker"/></svg><span class="s-tile-label">Mix tank pH</span><strong id="sPh" class="s-roll">--</strong></div>
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-bolt"/></svg><span class="s-tile-label">Mix tank EC</span><strong id="sEc" class="s-roll">--</strong></div>
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-battery"/></svg><span class="s-tile-label">Main battery</span><strong id="sBattV">--</strong></div>
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-solar"/></svg><span class="s-tile-label">Solar today</span><strong id="sSolarToday">--</strong></div>
+            <div class="s-tile"><svg class="si" aria-hidden="true"><use href="#si-battery"/></svg><span class="s-tile-label">Battery 2</span><strong id="sBatt2">--</strong></div>
+          </div>
+          <p class="s-hint s-more-foot" id="sMoreFoot">More detail is in Complete mode.</p>
+        </details>
+
+        <!-- Complete mode: every reading (it was the Live farm status panels), in the same cards as the rest. -->
+        <div class="s-section-head complete-only">
+          <h2>All readings<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the readings" data-info-title="All readings" data-info-text="What ESP1 measured in its latest report, grouped by what it is about. A reading says Unavailable when ESP1 didn't send it, usually because that sensor isn't answering." data-help="help-snapshot">i</button></h2>
+          <div id="liveAge" class="snapshot-age">Waiting for first snapshot</div>
         </div>
-        <div id="rigDrawing" class="rig-drawing"></div>
-      </article>
+        <div class="reading-panels complete-only">
+          <article class="panel reading-panel">
+            <h3><svg class="si" aria-hidden="true"><use href="#si-tank"/></svg>Water<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the water readings" data-info-title="Water" data-info-text="The reservoir holds the plain water, and each batch is mixed in the mixing tank. Their levels come from ultrasonic sensors. pH and EC are measured in the mixing tank during a run, so between runs they show the last batch." data-help="help-tanks">i</button></h3>
+            <dl class="reading-grid">
+              <div class="reading"><dt>Reservoir</dt><dd class="reading-value" id="reservoirLevel">Unavailable</dd><dd class="reading-note" id="reservoirNote">Runs wait below 18 %</dd></div>
+              <div class="reading"><dt>Mixing tank</dt><dd class="reading-value" id="mixingLevel">Unavailable</dd><dd class="reading-note">From its ultrasonic sensor</dd></div>
+              <div class="reading"><dt>Reservoir refill</dt><dd class="reading-value" id="flowRate">Unavailable</dd><dd class="reading-note">Water coming into the reservoir</dd></div>
+              <div class="reading"><dt>Mix tank pH</dt><dd class="reading-value" id="waterPH">Unavailable</dd><dd class="reading-note">Last batch</dd></div>
+              <div class="reading"><dt>Mix tank EC</dt><dd class="reading-value" id="waterEC">Unavailable</dd><dd class="reading-note">Last batch</dd></div>
+            </dl>
+          </article>
 
-      <div class="reading-panels complete-only">
-        <article class="panel reading-panel">
-          <h3>Water<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the water readings" data-info-title="Water" data-info-text="The reservoir holds the plain water, and each batch is mixed in the mixing tank. Their levels come from ultrasonic sensors. pH and EC are measured in the mixing tank during a run, so between runs they show the last batch." data-help="help-tanks">i</button></h3>
-          <dl class="reading-grid">
-            <div class="reading"><dt>Reservoir</dt><dd class="reading-value" id="reservoirLevel">Unavailable</dd><dd class="reading-note">Runs are blocked below 18 %</dd></div>
-            <div class="reading"><dt>Mixing tank</dt><dd class="reading-value" id="mixingLevel">Unavailable</dd><dd class="reading-note">From its ultrasonic sensor</dd></div>
-            <div class="reading"><dt>Reservoir refill</dt><dd class="reading-value" id="flowRate">Unavailable</dd><dd class="reading-note">Water coming into the reservoir</dd></div>
-            <div class="reading"><dt>Mix tank pH</dt><dd class="reading-value" id="waterPH">Unavailable</dd><dd class="reading-note">Last batch</dd></div>
-            <div class="reading"><dt>Mix tank EC</dt><dd class="reading-value" id="waterEC">Unavailable</dd><dd class="reading-note">Last batch</dd></div>
-          </dl>
-        </article>
+          <article class="panel reading-panel">
+            <h3><svg class="si" aria-hidden="true"><use href="#si-sun"/></svg>Air and light<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the air and light readings" data-info-title="Air and light" data-info-text="Measured at the rig by the Nano, for monitoring. None of these start or stop anything." data-help="help-air">i</button></h3>
+            <dl class="reading-grid">
+              <div class="reading"><dt>Air temperature</dt><dd class="reading-value" id="temperature">Unavailable</dd></div>
+              <div class="reading"><dt>Humidity</dt><dd class="reading-value" id="humidity">Unavailable</dd></div>
+              <div class="reading"><dt>Light</dt><dd class="reading-value" id="lightLevel">Unavailable</dd></div>
+            </dl>
+          </article>
 
-        <article class="panel reading-panel">
-          <h3>Air and light<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the air and light readings" data-info-title="Air and light" data-info-text="Measured at the rig by the Nano, for monitoring. None of these start or stop anything." data-help="help-air">i</button></h3>
-          <dl class="reading-grid">
-            <div class="reading"><dt>Air temperature</dt><dd class="reading-value" id="temperature">Unavailable</dd></div>
-            <div class="reading"><dt>Humidity</dt><dd class="reading-value" id="humidity">Unavailable</dd></div>
-            <div class="reading"><dt>Light</dt><dd class="reading-value" id="lightLevel">Unavailable</dd></div>
-          </dl>
-        </article>
+          <article class="panel reading-panel">
+            <h3><svg class="si" aria-hidden="true"><use href="#si-battery"/></svg>Main battery<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the main battery readings" data-info-title="Main battery" data-info-text="The battery bank that runs the rig, from ESP1's own sensor. Current says charging or discharging when ESP1 knows the direction." data-help="help-power">i</button></h3>
+            <dl class="reading-grid">
+              <div class="reading"><dt>Voltage</dt><dd class="reading-value" id="batteryVoltage">Unavailable</dd></div>
+              <div class="reading"><dt>Charge</dt><dd class="reading-value" id="batteryPercent">Unavailable</dd><dd class="reading-note">Estimated</dd></div>
+              <div class="reading"><dt>Current</dt><dd class="reading-value" id="batteryCurrent">Unavailable</dd></div>
+              <div class="reading"><dt>Power</dt><dd class="reading-value" id="batteryPower">Unavailable</dd></div>
+              <div class="reading"><dt>Power source</dt><dd class="reading-value reading-words" id="powerSource">Unavailable</dd></div>
+            </dl>
+          </article>
 
-        <article class="panel reading-panel">
-          <h3>Main battery<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the main battery readings" data-info-title="Main battery" data-info-text="The battery bank that runs the rig, from ESP1's own sensor. Current says charging or discharging when ESP1 knows the direction." data-help="help-power">i</button></h3>
-          <dl class="reading-grid">
-            <div class="reading"><dt>Voltage</dt><dd class="reading-value" id="batteryVoltage">Unavailable</dd></div>
-            <div class="reading"><dt>Charge</dt><dd class="reading-value" id="batteryPercent">Unavailable</dd><dd class="reading-note">Estimated</dd></div>
-            <div class="reading"><dt>Current</dt><dd class="reading-value" id="batteryCurrent">Unavailable</dd></div>
-            <div class="reading"><dt>Power</dt><dd class="reading-value" id="batteryPower">Unavailable</dd></div>
-            <div class="reading"><dt>Power source</dt><dd class="reading-value reading-words" id="powerSource">Unavailable</dd></div>
-          </dl>
-        </article>
+          <article class="panel reading-panel">
+            <h3><svg class="si" aria-hidden="true"><use href="#si-solar"/></svg>Solar and second battery<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About solar and the second battery" data-info-title="Solar and second battery" data-info-text="Solar panel output, and the second battery meant to run the controllers while the inverter runs. A reading says Unavailable while its own sensor isn't answering." data-help="help-power">i</button></h3>
+            <p id="powerGridNote" class="field-note" hidden>Not reported by this firmware. These readings need the web v.3 firmware.</p>
+            <dl id="powerGrid" class="reading-grid">
+              <div class="reading"><dt>Solar voltage</dt><dd class="reading-value" id="solarVoltage">Unavailable</dd><dd class="reading-note">0 V at night is normal</dd></div>
+              <div class="reading"><dt>Solar current</dt><dd class="reading-value" id="solarCurrent">Unavailable</dd></div>
+              <div class="reading"><dt>Solar power</dt><dd class="reading-value" id="solarPower">Unavailable</dd></div>
+              <div class="reading"><dt>Solar energy today</dt><dd class="reading-value" id="solarEnergyToday">Unavailable</dd><dd class="reading-note">Since the daily reset</dd></div>
+              <div class="reading"><dt>Boards run from</dt><dd class="reading-value reading-words" id="boardSupply">Unavailable</dd></div>
+              <div class="reading"><dt>Second battery voltage</dt><dd class="reading-value" id="secondaryBatteryVoltage">Unavailable</dd></div>
+              <div class="reading"><dt>Second battery charge</dt><dd class="reading-value" id="secondaryBatteryPercent">Unavailable</dd><dd class="reading-note">Estimated from its voltage</dd></div>
+              <div class="reading"><dt>Second battery current</dt><dd class="reading-value" id="secondaryBatteryCurrent">Unavailable</dd></div>
+              <div class="reading"><dt>Second battery power</dt><dd class="reading-value" id="secondaryBatteryPower">Unavailable</dd></div>
+              <div class="reading"><dt>Second battery status</dt><dd class="reading-value reading-words" id="secondaryBatteryStatus">Unavailable</dd><dd class="reading-note">Low blocks the inverter while battery switching is on</dd></div>
+            </dl>
+          </article>
+        </div>
 
-        <article class="panel reading-panel">
-          <h3>Solar and second battery<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About solar and the second battery" data-info-title="Solar and second battery" data-info-text="Solar panel output, and the second battery meant to run the controllers while the inverter runs. A reading says Unavailable while its own sensor isn't answering." data-help="help-power">i</button></h3>
-          <p id="powerGridNote" class="field-note" hidden>Not reported by this firmware. These readings need the web v.3 firmware.</p>
-          <dl id="powerGrid" class="reading-grid">
-            <div class="reading"><dt>Solar voltage</dt><dd class="reading-value" id="solarVoltage">Unavailable</dd><dd class="reading-note">0 V at night is normal</dd></div>
-            <div class="reading"><dt>Solar current</dt><dd class="reading-value" id="solarCurrent">Unavailable</dd></div>
-            <div class="reading"><dt>Solar power</dt><dd class="reading-value" id="solarPower">Unavailable</dd></div>
-            <div class="reading"><dt>Solar energy today</dt><dd class="reading-value" id="solarEnergyToday">Unavailable</dd><dd class="reading-note">Since the daily reset</dd></div>
-            <div class="reading"><dt>Boards run from</dt><dd class="reading-value reading-words" id="boardSupply">Unavailable</dd></div>
-            <div class="reading"><dt>Second battery voltage</dt><dd class="reading-value" id="secondaryBatteryVoltage">Unavailable</dd></div>
-            <div class="reading"><dt>Second battery charge</dt><dd class="reading-value" id="secondaryBatteryPercent">Unavailable</dd><dd class="reading-note">Estimated from its voltage</dd></div>
-            <div class="reading"><dt>Second battery current</dt><dd class="reading-value" id="secondaryBatteryCurrent">Unavailable</dd></div>
-            <div class="reading"><dt>Second battery power</dt><dd class="reading-value" id="secondaryBatteryPower">Unavailable</dd></div>
-            <div class="reading"><dt>Second battery status</dt><dd class="reading-value reading-words" id="secondaryBatteryStatus">Unavailable</dd><dd class="reading-note">Low blocks the inverter while battery switching is on</dd></div>
-          </dl>
+        <article class="panel command-panel complete-only">
+          <div class="panel-heading"><div><h3><svg class="si" aria-hidden="true"><use href="#si-pulse"/></svg>Recent commands<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About recent commands" data-info-title="Recent commands" data-info-text="What this website asked ESP1 to do, newest first, with ESP1's reply. Queued only means sent: only the reply (accepted, completed, rejected or failed) says whether it happened." data-help="help-command-status">i</button></h3><p>Newest first, with ESP1's reply.</p></div></div>
+          <p id="commandStatus" class="command-status" aria-live="polite">No dashboard command has been sent in this session.</p>
+          <div id="commandHistory" class="command-history"><p class="muted">No command history received yet.</p></div>
         </article>
       </div>
-
-      <!-- Current run, with what ESP1 will do next beside it (Up next, 6 Nov 2026: see renderUpNext() in script.js). -->
-      <div class="run-row complete-only">
-      <article class="panel run-panel">
-        <div class="panel-heading">
-          <div><h3>Current run<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the current run" data-info-title="Current run" data-info-text="The run ESP1 is doing now, scheduled or forced: its step, and the water and nutrients delivered so far." data-help="help-run-phases">i</button></h3><p id="runSummary">Nothing is running.</p></div>
-          <span id="runStateBadge" class="device-status off">IDLE</span>
-        </div>
-        <div class="progress-layout">
-          <div><span class="status-label">Step now</span><strong id="runStage">Unavailable</strong></div>
-          <div><span class="status-label">This step</span><strong id="runStageProgress">Unavailable</strong></div>
-          <div><span class="status-label">Water delivered</span><strong id="runWaterProgress">Unavailable</strong></div>
-          <div><span class="status-label">Nutrients delivered</span><strong id="runDoseProgress">Unavailable</strong></div>
-        </div>
-        <div class="pump-lamps">
-          <div><span class="status-label">Transfer pump</span><span id="transferPumpStatus" class="device-status off">OFF</span><span class="lamp-note">Reservoir to mixing tank</span></div>
-          <div><span class="status-label">Booster pump</span><span id="boosterPumpStatus" class="device-status off">OFF</span><span class="lamp-note">Mixing tank to a column</span></div>
-          <div><span class="status-label">Tank mixer</span><span id="mixerPumpStatus" class="device-status off">OFF</span><span class="lamp-note">Stirs the mixing tank</span></div>
-        </div>
-      </article>
-
-      <article class="panel next-panel" aria-labelledby="upNextTitle">
-        <h3 id="upNextTitle">Up next<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Up next" data-info-title="Up next" data-info-text="What ESP1 will do next, by its own clock: each column's watering times today and tomorrow, a forced run that is counting down, and when each pump's exercise is due. A watering time only waters if the column's soil is drier than Soil start % then, and nutrients go in at most once a day. A pump is exercised once it hasn't run for 2 days, counted from its last run or ESP1's last restart, and only while the rig is idle." data-help="help-when-water">i</button></h3>
-        <p class="hint">By ESP1's own clock.</p>
-        <p id="upNextStatus" class="next-status" hidden></p>
-        <div id="upNextList" class="next-list"><p class="muted">Waiting for ESP1's report.</p></div>
-      </article>
-      </div>
-
-      <article class="panel command-panel complete-only">
-        <div class="panel-heading"><div><h3>Recent commands<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About recent commands" data-info-title="Recent commands" data-info-text="What this website asked ESP1 to do, newest first, with ESP1's reply. Queued only means sent: only the reply (accepted, completed, rejected or failed) says whether it happened." data-help="help-command-status">i</button></h3><p>Newest first, with ESP1's reply.</p></div></div>
-        <p id="commandStatus" class="command-status" aria-live="polite">No dashboard command has been sent in this session.</p>
-        <div id="commandHistory" class="command-history"><p class="muted">No command history received yet.</p></div>
-      </article>
     </section>
 
     <section class="view" id="zones">
       <div class="section-heading">
         <div>
-          <h2>Zone profiles<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About zone profiles" data-info-title="Zone profiles" data-info-text="A, B and C are the rig's growing columns, one card each: what its soil reads now, and what ESP1 does with it. Turn a column on or off with its switch, and rename it with Rename. To change what it does, when it runs or its nutrient targets, press Edit settings; nothing reaches the rig until you press Save to rig. The crops each column is compared with are under Crop profiles, below the columns." data-help="help-column">i</button></h2>
+          <h2><svg class="si" aria-hidden="true"><use href="#si-sprout"/></svg>Zone profiles<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About zone profiles" data-info-title="Zone profiles" data-info-text="A, B and C are the rig's growing columns, one card each: what its soil reads now, and what ESP1 does with it. Turn a column on or off with its switch, and rename it with Rename. To change what it does, when it runs or its nutrient targets, press Edit settings; nothing reaches the rig until you press Save to rig. The crops each column is compared with are under Crop profiles, below the columns." data-help="help-column">i</button></h2>
           <p class="hint">Each column's soil now, and what ESP1 does with it.</p>
         </div>
       </div>
@@ -594,7 +595,7 @@
     <section class="view" id="manual">
       <div class="section-heading">
         <div>
-          <h2>Controls<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Controls" data-info-title="Controls" data-info-text="Stop the rig, switch its pumps and valves off for maintenance, water a column now, or restart a board. ESP1 checks every request and replies: queued only means sent. The replies show beside each control and under Recent commands on the Live dashboard." data-help="help-command-status">i</button></h2>
+          <h2><svg class="si" aria-hidden="true"><use href="#si-controls"/></svg>Controls<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Controls" data-info-title="Controls" data-info-text="Stop the rig, switch its pumps and valves off for maintenance, water a column now, or restart a board. ESP1 checks every request and replies: queued only means sent. The replies show beside each control and under Recent commands on the Live dashboard." data-help="help-command-status">i</button></h2>
           <p class="hint">Stop the rig, water a column now, or restart a board.</p>
         </div>
       </div>
@@ -668,9 +669,9 @@
           <fieldset class="dose-fieldset" id="forceDoseFieldset">
             <legend>Nutrients (mL, up to 500 each). Leave at 0 for plain water</legend>
             <div class="force-row">
-              <label>Nutrient A<input id="forceDoseA" type="number" min="0" max="500" step="1" value="0" required></label>
-              <label>Nutrient B<input id="forceDoseB" type="number" min="0" max="500" step="1" value="0" required></label>
-              <label>Nutrient C<input id="forceDoseC" type="number" min="0" max="500" step="1" value="0" required></label>
+              <label>Nutrient A <span class="nut-name">calcium nitrate</span><input id="forceDoseA" type="number" min="0" max="500" step="1" value="0" required></label>
+              <label>Nutrient B <span class="nut-name">ammonium phosphate</span><input id="forceDoseB" type="number" min="0" max="500" step="1" value="0" required></label>
+              <label>Nutrient C <span class="nut-name">potassium nitrate</span><input id="forceDoseC" type="number" min="0" max="500" step="1" value="0" required></label>
             </div>
           </fieldset>
           <p class="field-note">Any nutrient needs at least 6.3 L of water.</p>
@@ -723,7 +724,7 @@
       <div id="mtControls" hidden>
         <div class="section-heading">
           <div>
-            <h2>Manual tests</h2>
+            <h2><svg class="si" aria-hidden="true"><use href="#si-tools"/></svg>Manual tests</h2>
             <p id="mtControlsNote" class="control-result" aria-live="polite"></p>
           </div>
         </div>
@@ -762,13 +763,13 @@
               <option value="mixer">Tank mixer (no flow meter)</option>
               <option value="servoL">Pump selector servo to TRANSFER side (no pump runs)</option>
               <option value="servoR">Pump selector servo to BOOSTER side (no pump runs)</option>
-              <option value="nutA">Nutrient A pump</option>
-              <option value="nutB">Nutrient B pump</option>
-              <option value="nutC">Nutrient C pump</option>
+              <option value="nutA">Nutrient A pump (calcium nitrate)</option>
+              <option value="nutB">Nutrient B pump (ammonium phosphate)</option>
+              <option value="nutC">Nutrient C pump (potassium nitrate)</option>
               <!-- Nutrient D (18 Nov 2026): the owner opened it on 16 Nov (LCD Testing row "Nut D", relay P12, and its own
                    flow calibration), overriding the old "Nut D unused" rule. ESP1's pulseRowForTarget() takes nutD. Runs
                    still never dose it: only these tests and the LCD's calibration drive it. -->
-              <option value="nutD">Nutrient D pump (test only)</option>
+              <option value="nutD">Nutrient D pump (magnesium sulfate, test only)</option>
               <option value="phUp">pH UP pump (corrosive)</option>
               <option value="phDn">pH DOWN pump (corrosive)</option>
             </select></label>
@@ -788,10 +789,10 @@
             <button type="button" class="hold-btn" data-hold-target="colB">Booster to column B</button>
             <button type="button" class="hold-btn" data-hold-target="colC">Booster to column C</button>
             <button type="button" class="hold-btn" data-hold-target="mixer">Tank mixer</button>
-            <button type="button" class="hold-btn" data-hold-target="nutA">Nutrient A pump</button>
-            <button type="button" class="hold-btn" data-hold-target="nutB">Nutrient B pump</button>
-            <button type="button" class="hold-btn" data-hold-target="nutC">Nutrient C pump</button>
-            <button type="button" class="hold-btn" data-hold-target="nutD">Nutrient D pump</button>
+            <button type="button" class="hold-btn" data-hold-target="nutA">Nutrient A pump (calcium nitrate)</button>
+            <button type="button" class="hold-btn" data-hold-target="nutB">Nutrient B pump (ammonium phosphate)</button>
+            <button type="button" class="hold-btn" data-hold-target="nutC">Nutrient C pump (potassium nitrate)</button>
+            <button type="button" class="hold-btn" data-hold-target="nutD">Nutrient D pump (magnesium sulfate)</button>
             <button type="button" class="hold-btn danger" data-hold-target="phUp">pH UP pump (corrosive)</button>
             <button type="button" class="hold-btn danger" data-hold-target="phDn">pH DOWN pump (corrosive)</button>
           </div>
@@ -846,7 +847,7 @@
     <section class="view" id="diagnostics">
       <div class="section-heading">
         <div>
-          <h2>Diagnostics<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Diagnostics" data-info-title="Diagnostics" data-info-text="How ESP1 and everything it talks to are doing. Start with the summary; the details under it are what ESP1 reports, item by item. Passwords and keys are never shown, only whether they are set." data-help="help-find-problem">i</button></h2>
+          <h2><svg class="si" aria-hidden="true"><use href="#si-pulse"/></svg>Diagnostics<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About Diagnostics" data-info-title="Diagnostics" data-info-text="How ESP1 and everything it talks to are doing. Start with the summary; the details under it are what ESP1 reports, item by item. Passwords and keys are never shown, only whether they are set." data-help="help-find-problem">i</button></h2>
           <p class="hint">How ESP1 and everything it talks to are doing.</p>
         </div>
       </div>
@@ -917,7 +918,7 @@
     <section class="view" id="system">
       <div class="section-heading">
         <div>
-          <h2>System<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About System" data-info-title="System" data-info-text="The rig-wide settings from the LCD's Settings menu, each checked by ESP1 the same way as on the LCD. Now values come live from ESP1, and nothing changes until you send it and ESP1 replies." data-help="help-clock">i</button></h2>
+          <h2><svg class="si" aria-hidden="true"><use href="#si-gear"/></svg>System<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About System" data-info-title="System" data-info-text="The rig-wide settings from the LCD's Settings menu, each checked by ESP1 the same way as on the LCD. Now values come live from ESP1, and nothing changes until you send it and ESP1 replies." data-help="help-clock">i</button></h2>
           <p class="hint">The rig-wide settings from the LCD's Settings menu.</p>
         </div>
       </div>
@@ -952,15 +953,18 @@
       </article>
 
       <article class="panel">
-        <h3>Watering thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the watering thresholds" data-info-title="Watering thresholds" data-info-text="Soil start % decides when a column is dry enough to water. Fertigation gap decides how far short of its target a nutrient must be before ESP1 adds nutrients. They apply to every column. ESP1 from 18 Nov 2026 shows its current values here (Now on ESP1); fill in both every time you send. The firmware's defaults are Soil start 35 % and Fertigation gap 30." data-help="help-soil-start">i</button></h3>
+        <h3>Watering thresholds<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the watering thresholds" data-info-title="Watering thresholds" data-info-text="Soil start % decides when a column is dry enough to water. Too wet % only warns: a column wetter than it shows Too wet. Fertigation gap decides how far short of its target a nutrient must be before ESP1 adds nutrients. The reservoir pause stops new runs while the reservoir is under it, so the pumps never run dry: 18 % at the least, because the reservoir's sensor can't see the water below its filter. Soil start and Too wet are the defaults: a column can have its own on Zone profiles, in Edit settings. The firmware's defaults are Soil start 35 %, Too wet 90 %, Fertigation gap 30 and the reservoir pause 18 %." data-help="help-soil-start">i</button></h3>
         <dl class="now-list"><dt>Now on ESP1</dt><dd id="sysThreshNow">Unavailable</dd></dl>
-        <p class="hint">For every column. Fill in both every time you send.</p>
+        <p class="hint">Defaults for every column (a column can have its own Soil start and Too wet on Zone profiles). Fill in every box each time you send.</p>
         <div class="control-grid">
           <label>Soil start % (water when the soil is drier than this)<input id="sysThreshStart" type="number" min="0" max="100" step="1"></label>
+          <label id="sysThreshWetLabel">Too wet % (warn when the soil is wetter than this)<input id="sysThreshWet" type="number" min="5" max="100" step="1"></label>
           <label id="sysThreshStopLabel">Soil stop % (older firmware only; must be above start)<input id="sysThreshStop" type="number" min="0" max="100" step="1"></label>
           <label>Fertigation gap (mg/kg short of a target before nutrients are added)<input id="sysThreshGap" type="number" min="0" max="500" step="1"></label>
+          <label id="sysThreshResLabel">Reservoir pause % (no watering below this; 18 to 50)<input id="sysThreshRes" type="number" min="18" max="50" step="1"></label>
           <button id="sysThreshSendBtn" type="button">Send to ESP1</button>
         </div>
+        <p id="sysThreshNewNote" class="field-note" hidden>Too wet and the reservoir pause need ESP1's firmware of 18 Nov 2026 (b). Until the rig runs it, the reservoir pause stays at 18 % and Too wet is shown at 90 %.</p>
         <p id="sysThreshResult" class="control-result" aria-live="polite"></p>
       </article>
 
@@ -1025,7 +1029,7 @@
     <section class="view" id="users">
       <div class="section-heading">
         <div>
-          <h2>User Management<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About User Management" data-info-title="User Management" data-info-text="Every account, grouped by status, with what it did recently. New accounts wait under Waiting for approval, and requests are listed at the top. Firebase's own rules enforce what each account can do, so an account can't get round this page." data-help="help-approve">i</button></h2>
+          <h2><svg class="si" aria-hidden="true"><use href="#si-users"/></svg>User Management<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About User Management" data-info-title="User Management" data-info-text="Every account, grouped by status, with what it did recently. New accounts wait under Waiting for approval, and requests are listed at the top. Firebase's own rules enforce what each account can do, so an account can't get round this page." data-help="help-approve">i</button></h2>
           <p class="hint">Every account, and the requests waiting for you.</p>
         </div>
       </div>
@@ -1051,7 +1055,7 @@
         <details class="help-item" id="help-when-water" data-for="all">
           <summary>When does a column get watered?</summary>
           <p>ESP1 looks at a column only during its watering times, and starts a run when that column's soil is drier than <strong>Soil start %</strong> (35 % unless changed on the System tab). It waters a column at most once in each watering time. The run delivers the column's set amount of water, then stops.</p>
-          <p>Default windows, one a day: column A 06:00–08:00, column B 08:00–10:00, column C 06:00–08:00. On Zone profiles you can give a column its own times instead, up to 4 a day. Several a day needs ESP1's firmware from 5 Nov 2026; older firmware has one a day.</p>
+          <p>Default windows, one a day: column A 6:00 AM – 8:00 AM, column B 8:00 AM – 10:00 AM, column C 6:00 AM – 8:00 AM. On Zone profiles you can give a column its own times instead, up to 4 a day. Several a day needs ESP1's firmware from 5 Nov 2026; older firmware has one a day.</p>
           <p><strong>Up next</strong>, beside Current run on the Live dashboard, lists the coming watering times with their dates, by ESP1's own clock, and when each pump's exercise is due.</p>
         </details>
         <details class="help-item" id="help-when-nutrients" data-for="all">
@@ -1100,9 +1104,10 @@
           <summary>Simple and Complete modes</summary>
           <p>The switch at the top of the page changes how much the website shows. It changes nothing on the rig.</p>
           <ul>
-            <li><strong>Simple</strong> (the first time you open the site): the farm at a glance, in plain words. Is it running, how much water is left, how wet each column's soil is, what it is doing now and when it waters next. Zone profiles, Controls and Help work as usual, with the technical parts folded away.</li>
-            <li><strong>Complete</strong>: every reading and control, including Manual/Test, System and Diagnostics.</li>
+            <li><strong>Simple</strong> (the first time you open the site): the farm at a glance, in big, plain words. Is it running, how much water is left, how wet each zone's soil is, what it is doing now, when it waters next and which days are Manual. Zone profiles, Controls and Help work as usual, with the technical parts folded away.</li>
+            <li><strong>Complete</strong>: the same cards and picture, with every reading and control in them, and Manual/Test, System and Diagnostics.</li>
           </ul>
+          <p>The dashboard's <strong>Watering plan</strong> shows which days each column runs Automatic and which Manual. <strong>Hide plan</strong> (or <strong>Show plan</strong>) in Next watering hides or shows it; that choice, too, is kept in this browser only. While a page like this is open, the controller reports every second (with its firmware of 18 Nov 2026, b), and every time on the page is on the 12-hour clock (6:00 AM – 8:00 AM).</p>
           <p>Both modes use the same live report from ESP1 and the same safety checks: a button works the same, and is refused for the same reasons, in either mode. When ESP1's report is old, both say the state is unknown rather than guess. Your choice is kept in this browser only, so another phone or computer keeps its own.</p>
         </details>
         <details class="help-item" id="help-operation" data-for="all">
@@ -1117,6 +1122,7 @@
             <li>Open <strong>Zone profiles</strong> and press <strong>Edit settings</strong> on the column's card.</li>
             <li>Under <strong>Operation</strong>, pick the default for every day.</li>
             <li>In the <strong>Day plan</strong> calendar, click a day to change that date only: once for <strong>Manual</strong>, twice for <strong>Automatic</strong>, a third time to go back to the default. Use the arrows for the next month. You can plan today and about two months ahead.</li>
+            <li>The card itself shows <strong>This week</strong> (Sunday to Saturday: A for Automatic, M for Manual, today ringed) with today's watering times under it, and the dashboard's <strong>Watering plan</strong> shows every column's month. Both only show: changes are made here.</li>
             <li>Check the <strong>You changed</strong> line, then press <strong>Save to rig</strong>.</li>
           </ol>
           <p>ESP1 keeps the plan itself and follows it by its own clock, from midnight to midnight, so it works with this website closed. The plan then shows under the column's readings: Manual days in amber, Automatic days in green, and a day you set carries its word. <strong>Up next</strong> on the Live dashboard says when a column is Manual, and the LCD's column page shows <strong>MAN</strong>. A run that has already started still finishes on a Manual day. Restore factory settings puts every column back to Automatic with no plan.</p>
@@ -1254,7 +1260,7 @@
         <h3>Words used on this site</h3>
         <details class="help-item" id="help-column" data-for="all"><summary>Column (zone)</summary><p>One growing column with its own soil probes and its own valve: A, B or C. Column C is off on this rig unless it has been wired and turned on.</p></details>
         <details class="help-item" id="help-controllers" data-for="all"><summary>ESP1, ESP2 and the Nano</summary><p><strong>ESP1</strong> is the main controller: it decides, keeps the schedule, logs, sends texts and talks to this website. <strong>ESP2</strong> runs the pumps and valves and measures the water; ESP1 powers it up only when something needs to run. The <strong>Nano</strong> reads the soil, air, light and tank sensors. <strong>Restart a board</strong> on Controls restarts one of them; the LCD calls this Reboot.</p></details>
-        <details class="help-item" id="help-tanks" data-for="all"><summary>Reservoir and mixing tank</summary><p>The <strong>reservoir</strong> holds the plain water. The <strong>transfer pump</strong> moves water from it into the <strong>mixing tank</strong>, where nutrients are added and stirred by the <strong>mixer</strong>. The <strong>booster pump</strong> then sends the batch to a column.</p><p>Both levels come from ultrasonic sensors, as a % and in litres (the mixer standing in the mixing tank is taken out). A fill runs the transfer pump for the time the litres need, then lets the water settle for about a minute and measures the mixing tank; more than 3 L short, it tops up. A delivery runs the booster until the mixing tank is under 5 %, then 10 seconds more. A tank with no reading says why: no echo, echo line stuck, out of range, too few good pings, or not pinging.</p></details>
+        <details class="help-item" id="help-tanks" data-for="all"><summary>Reservoir and mixing tank</summary><p>The <strong>reservoir</strong> holds the plain water. The <strong>transfer pump</strong> moves water from it into the <strong>mixing tank</strong>, where nutrients are added and stirred by the <strong>mixer</strong>. The <strong>booster pump</strong> then sends the batch to a column.</p><p>The bottles over the mixing tank are the nutrients ESP1 doses in a fertigation run, <strong>calcium nitrate</strong> (A), <strong>ammonium phosphate</strong> (B) and <strong>potassium nitrate</strong> (C), and <strong>pH Up</strong> and <strong>pH Down</strong>, which only run in hand tests: ESP1 never adds them by itself. Nutrient D (magnesium sulfate) is wired for tests only and isn't drawn.</p><p><strong>Watering pauses</strong> while the reservoir is under its pause line, so the pumps never run dry: 18 % unless an operator raised it on the System tab (up to 50 %; never lower, because the reservoir's sensor can't see the water below its filter).</p><p>Both levels come from ultrasonic sensors, as a % and in litres (the mixer standing in the mixing tank is taken out). A fill runs the transfer pump for the time the litres need, then lets the water settle for about a minute and measures the mixing tank; more than 3 L short, it tops up. A delivery runs the booster until the mixing tank is under 5 %, then 10 seconds more. A tank with no reading says why: no echo, echo line stuck, out of range, too few good pings, or not pinging.</p></details>
         <details class="help-item" id="help-irrigation" data-for="all"><summary>Irrigation and fertigation</summary><p><strong>Irrigation</strong> is plain water. <strong>Fertigation</strong> is water with nutrients mixed in, followed by a plain-water flush.</p></details>
         <details class="help-item" id="help-nutrients" data-for="all"><summary>Nutrients A, B and C</summary><p>The three nutrient pumps, one stock solution each: A is nitrogen (N), B is phosphorus (P), C is potassium (K). A fourth pump, <strong>D</strong>, has its own pump and flow meter: it can be tested on Manual/Test and calibrated on the LCD, but no run doses it.</p></details>
         <details class="help-item" id="help-npk" data-for="all"><summary>N, P, K, ppm and targets</summary><p>Nitrogen, phosphorus and potassium in the soil, in ppm (parts per million, the same as mg/kg), as read by the column's 7-in-1 probe. A column's <strong>targets</strong> are the levels ESP1 aims for; it adds nutrients when a reading falls short by the Fertigation gap.</p></details>
@@ -1263,11 +1269,11 @@
         <details class="help-item" id="help-tank-ph-ec" data-for="all"><summary>Mix tank pH and EC</summary><p>The mixed batch's pH and EC (in mS/cm), measured by ESP2 during a run. Between runs they show the last batch.</p></details>
         <details class="help-item" id="help-air" data-for="all"><summary>Air temperature, humidity and light</summary><p>Measured at the rig by the Nano, for monitoring only: none of them starts or stops a run. Light is in lux.</p></details>
         <details class="help-item" id="help-power" data-for="all"><summary>Main battery, solar and second battery</summary><p>The <strong>main battery</strong> runs the rig; its current says charging or discharging when ESP1 knows the direction, and its charge is an estimate. <strong>Solar</strong> shows what the panel gives now, and the energy it has given since the daily reset; 0 V at night is normal. The <strong>second battery</strong> is meant to run the controllers while the inverter runs. <strong>Boards run from</strong> says which battery they use now: always the main one while battery switching is off in the firmware. If battery switching resets the controllers twice within 24 hours, ESP1 latches a <strong>battery switch fault</strong> that blocks the inverter until it is cleared on the System tab. The pumps on the inverter are refused while the second battery's charge is 30 % or less (allowed again from 35 %). Its % is the charge it would rest at: a charger pushes the voltage up and a load pulls it down, and ESP1 takes both out using the measured current.</p></details>
-        <details class="help-item" id="help-soil-start" data-for="all"><summary>Soil start %</summary><p>A column is only watered when its soil moisture is below this. Set on the System tab, under Watering thresholds (35 % unless changed). 0 % would mean no column is ever dry enough, so scheduled watering would stop.</p></details>
+        <details class="help-item" id="help-soil-start" data-for="all"><summary>Soil start % and Too wet %</summary><p><strong>Soil start</strong>: a column is only watered when its soil moisture is below this. <strong>Too wet</strong>: wetter than this, its card and the dashboard say Too wet. It is a warning only (look for a leak or a stuck valve); it stops nothing. Both have a default on the System tab, under Watering thresholds (35 % and 90 % unless changed), and each column can have its own in Edit settings, Soil moisture lines (needs ESP1's firmware of 18 Nov 2026, b). Too wet always sits at least 5 above Soil start. 0 % Soil start would mean the column is never dry enough, so its scheduled watering would stop, and at 15 % or under the NPK probe can't read the soil, so it would get water but never nutrients.</p></details>
         <details class="help-item" id="help-fert-gap" data-for="all"><summary>Fertigation gap</summary><p>How far below its target (in mg/kg) a nutrient must be before ESP1 adds nutrients. Set on the System tab, under Watering thresholds (30 unless changed). Smaller means nutrients are added more often.</p></details>
         <details class="help-item" id="help-ac-volt" data-for="privileged"><summary>AC voltage limits</summary><p>While a pump runs on the inverter (the transfer and booster pumps; the mixer runs on 12 V DC), ESP2 measures the AC voltage with its PZEM meter and stops the pump if it is below the <strong>low limit</strong> or above the <strong>high limit</strong>. The rig then reports a power fault that says which limit was crossed. Set them on the System tab, under AC voltage limits, or on the LCD under Settings, AC Voltage: whole volts from 80 to 260, with the low limit at least 5 V under the high one. The defaults are 215 V and 240 V, and Restore factory settings puts them back. <strong>Last reading</strong> is the most recent voltage measured while a pump ran; there is none until one has run since ESP1 started. Operators, Sub-operators and 1-hour access can change them.</p></details>
         <details class="help-item" id="help-ac-amp" data-for="privileged"><summary>AC current limits</summary><p>While a pump runs on the inverter (the transfer and booster pumps), ESP2 measures the current it draws with its PZEM meter. Above the <strong>overcurrent limit</strong> it stops the pump at once. Below the <strong>no-current limit</strong> for 30 seconds it stops it too, because a pump drawing that little is running dry or isn't running. The rig then reports a power fault that says which limit was crossed. Set them on the System tab, under AC current limits, or on the LCD under Settings, AC Current: 0.1 to 10.0 A in steps of 0.1 A, with the no-current limit at least 0.2 A under the overcurrent limit. The defaults are 0.5 A and 3.0 A, and Restore factory settings puts them back. <strong>Last reading</strong> is the most recent current measured while a pump ran; there is none until one has run since ESP1 started. Operators, Sub-operators and 1-hour access can change them; the website needs ESP1's firmware from 16 Nov 2026 for it.</p></details>
-        <details class="help-item" id="help-window" data-for="all"><summary>Watering times (rig default or my own time)</summary><p>The times of day a column may be watered. <strong>Rig default</strong> uses the one window built into the firmware (A 06:00–08:00, B 08:00–10:00, C 06:00–08:00). <strong>My own time</strong> uses the times you set, up to 4 a day with ESP1's firmware from 5 Nov 2026. Either way the column is watered at most once in each, and only when its soil is dry enough. Under the times, the card says how many of today's are done, and, with ESP1's firmware from 6 Nov 2026, how often the column was watered and fed today and how much it got.</p></details>
+        <details class="help-item" id="help-window" data-for="all"><summary>Watering times (rig default or my own time)</summary><p>The times of day a column may be watered. <strong>Rig default</strong> uses the one window built into the firmware (A 6:00 AM – 8:00 AM, B 8:00 AM – 10:00 AM, C 6:00 AM – 8:00 AM). <strong>My own time</strong> uses the times you set, up to 4 a day with ESP1's firmware from 5 Nov 2026. Either way the column is watered at most once in each, and only when its soil is dry enough. Under the times, the card says how many of today's are done, and, with ESP1's firmware from 6 Nov 2026, how often the column was watered and fed today and how much it got.</p></details>
         <details class="help-item" id="help-what-it-does" data-for="all"><summary>What it does (water + nutrients, or water only)</summary><p><strong>Water + nutrients</strong> lets ESP1 add nutrients when the soil needs them. <strong>Water only</strong> never adds nutrients to that column. On the LCD these are called Auto and Irrigation only.</p></details>
         <details class="help-item" id="help-crop-profile" data-for="all"><summary>Crop profile</summary><p>The crop and growth stage you pick for a column on this website. It sets the reference numbers the soil readings are compared with, and what <strong>Fill from crop profile</strong> copies. The crops, their stages and their numbers are listed under <strong>Crop profiles</strong>, below the columns, where they can be changed: see <em>Add or change a crop profile</em>. ESP1 never sees it.</p></details>
         <details class="help-item" id="help-forced-run" data-for="control"><summary>Forced run and countdown</summary><p>A run you start yourself from Controls, with your own litres and nutrients. It waits for a countdown first (0–300 seconds) so you can still cancel it, and shows ESP1's own countdown on the page. There is no daily limit on forced runs, and a "check the mixing tank" request does not hold one back: starting a forced run counts as that check (ESP1's firmware of 17 Nov 2026).</p></details>

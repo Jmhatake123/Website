@@ -104,6 +104,10 @@
             "operation":    { ".validate": "!newData.exists() || newData.val() === 'AUTOMATIC' || newData.val() === 'MANUAL'" },
             "plan":         { ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 62 && newData.val().matches(/^[-MA]*$/))" },
             "planFrom":     { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 20250101 && newData.val() <= 20991231)" },
+            "soilStart":    { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= -1 && newData.val() <= 100)" },
+            "soilWet":      { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= -1 && newData.val() <= 100)" },
+            "thWet":        { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 5 && newData.val() <= 100)" },
+            "thRes":        { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 18 && newData.val() <= 50)" },
             "doseMl": {
               "A": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 500)" },
               "B": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 500)" },

@@ -73,18 +73,37 @@ The page works with web v.3 firmware too (no litres shown).
 ## What the dashboard does
 
 - **Simple and Complete modes** (18 Nov 2026) — a switch at the top changes how much the site shows; it
-  changes nothing on the rig. **Simple** (the default) shows the farm at a glance in plain words: whether it
-  is running, how much water is left, how wet each column's soil is, a drawn picture of the system with water
-  moving only while ESP1 reports it, what it is doing now and when it waters next. Its tabs are Dashboard,
-  Zone profiles, Controls and Help (plus User Management for operators), with the technical parts folded
-  away. **Complete** is every reading and control, as described below. Both use the same live report and the
-  same safety checks; when ESP1's report is old, both say the state is unknown rather than guess. The choice
-  and the theme (light by default) are kept in this browser only.
+  changes nothing on the rig. Both share one farm-green design. **Simple** (the default) shows the farm at a
+  glance in big, plain words: whether it is running, how much water is left, how wet each zone's soil is,
+  a drawn picture of the system, what it is doing now, when it waters next, and the watering plan. Its tabs
+  are Dashboard, Zone profiles, Controls and Help (plus User Management for operators), with the technical
+  parts folded away. **Complete** is the same cards with every reading and control in them, and every tab.
+  Both use the same live report and the same safety checks; when ESP1's report is old, both say the state is
+  unknown rather than guess (the pump lamps say UNKNOWN, never OFF). The choice, the theme (light by default)
+  and whether the plan is shown are kept in this browser only.
+- **The owner's second round** (18 Nov 2026):
+  - *The picture*: blue water in both tanks whose surface is a small wave simulation (springs between points
+    across the surface), stirred by what ESP1 reports (water pouring in or drawn off, the mixer, nutrient
+    drops, a level change); still when the report is old, the page is hidden or reduced motion is asked for.
+    Over the mixing tank: calcium nitrate (A), ammonium phosphate (B), potassium nitrate (C), pH Up and pH Down.
+  - *Times* on the 12-hour clock everywhere (6:00 AM – 8:00 AM); *who is signed in* in the top bar (the name on
+    the account's record).
+  - *Watering plan* on the dashboard (a month, each column Automatic or Manual each day), hidden or shown with
+    the Plan button in Next watering.
+  - *Zone cards*: the zone's own name on top, the column under it; the moisture over a bar marking Soil start
+    and Too wet; the readings shown unless hidden; this week (Sun–Sat, A or M, today ringed) with today's
+    times, progress, feeding and targets; Operation as one word, its meaning in the (i). Edit settings has
+    Operation as two buttons and **Soil moisture lines**: the column's own Soil start and Too wet, by slider or
+    box, or the System tab's defaults.
+  - *System, Watering thresholds*: Too wet % (default 90, a warning only) and the **reservoir pause** % (18 to
+    50; never under 18, where the reservoir's sensor stops seeing water).
+  - Needs ESP1's firmware of 18 Nov 2026 (b) (`system.firmware` "web v.4 (2026-11-18b)") for the own lines,
+    Too wet, the pause and 1 s reports; on older firmware those parts say so and stay off.
 - **Rig lock** — one switch, at the top of every tab and on System, that locks this website's controls
   and the buttons on the rig's LCD together. It is ESP1's own Lock Screen flag, so locking or unlocking at
   the rig does the same to the website. Automatic watering carries on; Emergency stop, switching pumps and
   valves off and cancelling a forced run still work. Operators and privileged accounts can lock and unlock.
-- **Live Dashboard** — a drawing of the rig with its tanks, pumps and columns as ESP1 reports them,
+- **Live Dashboard** — the picture of the system (the same in both modes since 18 Nov 2026) with its tanks, pumps and columns as ESP1 reports them,
   readings grouped by what they're about (water, air and light, main battery, solar and the second
   battery), the current run with its pumps, **Up next** beside it (each column's watering times today and
   tomorrow with dates, a forced run counting down, each pump's next exercise), and the recent commands with
