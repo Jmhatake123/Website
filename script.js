@@ -362,12 +362,20 @@ function snapshotAgeText() {
   return `Snapshot received ${formatAge(age)} ago`;
 }
 
-// The age at the top of the dashboard, with the pace ESP1 is reporting at (web v.4 of 17 Nov 2026: fast while watched).
+// The age at the top of the dashboard, with the pace ESP1 is reporting at. Both come from ESP1 (meta.refreshMs, and
+// meta.linkMode on web v.4 of 18 Nov 2026 e), so a firmware pace change needs no change here.
 function liveAgeText() {
   const base = snapshotAgeText();
   if (!liveData.meta?.updatedAt || !deviceIsFresh()) return base;
-  const every = Math.round(Number(liveData.meta.refreshMs || 60000) / 1000);
-  return liveData.meta.live ? `${base} · live, every ${every} s` : `${base} · every ${every} s`;
+  return `${base} · ${linkPaceText()}`;
+}
+
+// "every 30 s", plus why it is slower while the rig works (18 Nov 2026 e, the owner: "during the operation or an upcoming
+// schedule, the system should focus on the operation than the firebase").
+function linkPaceText() {
+  const every = Math.round(Number(liveData.meta?.refreshMs || 60000) / 1000);
+  const pace = every >= 60 && every % 60 === 0 ? `every ${every / 60} min` : `every ${every} s`;
+  return liveData.meta?.linkMode === "busy" ? `${pace} while the rig works on a watering` : pace;
 }
 
 function deviceIsFresh() {
@@ -376,10 +384,9 @@ function deviceIsFresh() {
   return Boolean(stamp) && serverNow() - stamp < Math.max(refreshMs * 2 + 15000, 90000);
 }
 
-// How late ESP1's report is (18 Nov 2026, the owner: "very realtime connection"): 0 while it is on time, else its age.
-// ESP1 reports every meta.refreshMs (1 s while a page like this one watches, on the firmware of 18 Nov b and later;
-// 20 / 60 s otherwise), so a report older than one more interval, and at least 5 s more, is late. Only while
-// deviceIsFresh(): past that the page says ESP1 has stopped reporting.
+// How late ESP1's report is (18 Nov 2026): 0 while it is on time, else its age. ESP1 reports every meta.refreshMs (web v.4
+// of 18 Nov e: 30 s while a page like this one is open and the rig is idle, 60 s otherwise), so a report older than one
+// more interval, and at least 5 s more, is late. Only while deviceIsFresh(): past that the page says ESP1 has stopped.
 function deviceDelayMs() {
   const stamp = Number(liveData.meta?.updatedAt || 0);
   if (!stamp || !deviceIsFresh()) return 0;
@@ -4635,7 +4642,10 @@ function linkHealthRows(fb) {
   return [
     ["Reports since start", attempts > 0 ? `${attempts - failures} of ${attempts} sent${failedPct}` : "None yet"],
     ["New connections since start", hasValue(fb.handshakes) ? String(fb.handshakes) : "Unavailable"],
-    ["Free memory", hasValue(fb.freeHeap) ? `${kb(fb.freeHeap)}${hasValue(fb.maxAllocHeap) ? `, largest block ${kb(fb.maxAllocHeap)}` : ""}` : "Unavailable"]
+    ["Free memory", hasValue(fb.freeHeap) ? `${kb(fb.freeHeap)}${hasValue(fb.maxAllocHeap) ? `, largest block ${kb(fb.maxAllocHeap)}` : ""}` : "Unavailable"],
+    // Recovery (web v.4 of 18 Nov 2026 e): ESP1 starts a fresh connection after failed reports, and rejoins Wi-Fi after more.
+    ...(hasValue(fb.linkResets) ? [["Recoveries since start",
+      `${fb.linkResets} fresh connection${Number(fb.linkResets) === 1 ? "" : "s"}, ${fb.wifiRejoins || 0} Wi-Fi rejoin${Number(fb.wifiRejoins) === 1 ? "" : "s"}`]] : [])
   ];
 }
 
@@ -6812,14 +6822,17 @@ const contributorsDialog = document.getElementById("contributorsDialog");
 document.getElementById("contributorsBtn")?.addEventListener("click", () => contributorsDialog?.showModal());
 contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () => contributorsDialog.close());
 
-/* ---- Live viewing and Refresh (2026-11-17, user: "a very realtime website, and a refresh button") --------------------
+/* ---- Viewing and Refresh (2026-11-17; no realtime since 18 Nov 2026 e) ------------------------------------------------
+ * The owner, 18 Nov 2026: "don't show realtime, but a refresh button to request live data; still refresh every 20 or
+ * 30 s or longer, only while idle; during an operation or an upcoming schedule the system should focus on the operation".
  * While this page is open and on screen it tells ESP1 someone is watching (irrigation/viewer/at, every VIEWER_TOUCH_MS);
- * ESP1 then reports every second (firmware of 18 Nov 2026 b and later; 17 Nov's: every 2 s during a run and every 4 s
- * otherwise), instead of every 20 / 60 s, and goes back to that
- * pace about 45 s after the last touch. Refresh asks for a report now (irrigation/viewer/refreshAt) and says how long
- * ESP1 took to answer. An older ESP1 ignores the node: the page then simply keeps the old pace. */
+ * ESP1 (web v.4 of 18 Nov e) then reports every 30 s while idle, and every 60 s while a run is on or coming up. Opening
+ * the page, or bringing it back to the front, asks for one report at once; so does Refresh, which also says how long
+ * ESP1 took. The pace itself is ESP1's (meta.refreshMs / meta.linkMode): nothing here assumes a number.
+ * Firmware of 17-18 Nov d still reports every second while watched; an older ESP1 ignores the node. */
 const VIEWER_TOUCH_MS = 15000;
-const REFRESH_WAIT_MS = 12000;
+// How long Refresh waits for ESP1's answer: while busy ESP1 answers at most every 20 s (FB_REFRESH_GAP_BUSY_MS).
+function refreshWaitMs() { return liveData.meta?.linkMode === "busy" ? 30000 : 15000; }
 let viewerTouchTimer = null;
 let refreshAskedAt = 0, refreshBaseStamp = 0, refreshTimeout = null, refreshClearTimer = null;
 
@@ -6838,7 +6851,8 @@ function syncViewerTouch() {
   if (refreshButton) refreshButton.hidden = !allowed;
   const want = allowed && document.visibilityState === "visible";
   if (want && !viewerTouchTimer) {
-    viewerTouch();
+    // Opening the page (or coming back to it) asks for a fresh report once, so it never starts on an old picture.
+    viewerTouch({ refreshAt: firebase.database.ServerValue.TIMESTAMP });
     viewerTouchTimer = setInterval(() => viewerTouch(), VIEWER_TOUCH_MS);
   } else if (!want && viewerTouchTimer) {
     clearInterval(viewerTouchTimer);
@@ -6882,7 +6896,9 @@ function requestRefresh() {
   refreshBaseStamp = Number(liveData.meta?.updatedAt || 0);
   // The label has its own span since 18 Nov 2026: the button also holds Simple mode's icon.
   if (button) { button.disabled = true; (button.querySelector(".refresh-label") || button).textContent = "Refreshing…"; }
-  refreshStatusText("Asking ESP1 for a fresh report…");
+  refreshStatusText(liveData.meta?.linkMode === "busy"
+    ? "Asking ESP1 for a fresh report… The rig is working on a watering, so it may take up to 20 s."
+    : "Asking ESP1 for a fresh report…");
   viewerTouch({ refreshAt: firebase.database.ServerValue.TIMESTAMP }).then(ok => {
     if (!ok) finishRefresh(false, "Couldn't ask ESP1: this account may not be allowed, or the connection dropped.");
   });
@@ -6897,7 +6913,7 @@ function requestRefresh() {
     syncControlAvailability();
   }).catch(() => {});
   if (refreshTimeout) clearTimeout(refreshTimeout);
-  refreshTimeout = setTimeout(() => finishRefresh(false), REFRESH_WAIT_MS);
+  refreshTimeout = setTimeout(() => finishRefresh(false), refreshWaitMs());
 }
 
 function finishRefresh(answered, message) {
@@ -6908,7 +6924,7 @@ function finishRefresh(answered, message) {
   const button = document.getElementById("refreshBtn");
   if (button) { button.disabled = false; (button.querySelector(".refresh-label") || button).textContent = "Refresh"; }
   if (answered) refreshStatusText(`Fresh report from ESP1 in ${(took / 1000).toFixed(1)} s`, 8000);
-  else refreshStatusText(message || "No new report from ESP1 yet: it may be offline or busy, or its firmware is older than 17 Nov.", 15000);
+  else refreshStatusText(message || "No new report from ESP1 yet: it may be offline (often a weak Wi-Fi signal at the rig) or busy. Its next regular report will still come.", 15000);
 }
 document.getElementById("refreshBtn")?.addEventListener("click", requestRefresh);
 
@@ -7642,11 +7658,9 @@ function renderSimpleDashboard() {
   sTone("sChipLink", link.tone);
   sIcon("sLinkIconUse", link.icon);
   sSet("sLinkText", link.text);
-  // How fresh the picture is (18 Nov 2026, the owner: "realtime, every 1 second"): ESP1 reports every second while a
-  // page like this one is open (firmware of 18 Nov 2026 b), every 2 to 4 s on the firmware before it.
-  const every = Math.round(Number(liveData.meta?.refreshMs || 0) / 1000);
+  // How fresh the picture is, and ESP1's own pace (linkPaceText(): no realtime since 18 Nov 2026 e).
   const ageMs = Math.max(0, serverNow() - stamp);
-  sSet("sLinkAge", !stamp || !fresh ? "" : `${ageMs < 2000 ? "Just now" : `${formatAge(ageMs)} ago`}${liveData.meta?.live && every ? ` · every ${every} s` : ""}`);
+  sSet("sLinkAge", !stamp || !fresh ? "" : `${ageMs < 2000 ? "Just now" : `${formatAge(ageMs)} ago`} · ${linkPaceText()}`);
   const sensors = liveData.sensors || {};
   const last = stale ? " · last known" : "";
   sSet("sSolar", hasValue(sensors.solarPower) ? `${numberText(sensors.solarPower, 1, "W")}${last}` : "No reading");
