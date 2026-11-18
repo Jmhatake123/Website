@@ -25,8 +25,28 @@
         "zones": {
           ".write": "auth != null && (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2' || (root.child('users').child(auth.uid).child('status').val() === 'approved' && ((root.child('users').child(auth.uid).child('tempAccessUntil').exists() && root.child('users').child(auth.uid).child('tempAccessUntil').val() > now) || root.child('users').child(auth.uid).child('subOperator').val() === true || root.child('users').child(auth.uid).child('zoneEditAccess').val() === true)))",
           "$zone": {
-            "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60" }
+            "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60" },
+            "autoStage": {
+              ".validate": "newData.hasChildren(['crop', 'from', 'start'])",
+              "crop": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60" },
+              "from": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60" },
+              "start": { ".validate": "newData.isNumber() && newData.val() >= 20200101 && newData.val() <= 20991231" },
+              "pausedOn": { ".validate": "newData.isNumber() && (newData.val() === 0 || (newData.val() >= 20200101 && newData.val() <= 20991231))" },
+              "pausedDays": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3650" },
+              "by": { ".validate": "newData.isString() && newData.val().length <= 60" },
+              "at": { ".validate": "newData.isNumber()" },
+              "$other": { ".validate": false }
+            }
           }
+        },
+        "site": {
+          ".write": "auth != null && (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2')",
+          ".validate": "newData.hasChildren(['name'])",
+          "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60" },
+          "sub": { ".validate": "newData.isString() && newData.val().length <= 60" },
+          "updatedAt": { ".validate": "newData.isNumber()" },
+          "updatedBy": { ".validate": "newData.isString() && newData.val().length <= 60" },
+          "$other": { ".validate": false }
         },
         "crops": {
           ".write": "auth != null && (auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2' || (root.child('users').child(auth.uid).child('status').val() === 'approved' && ((root.child('users').child(auth.uid).child('tempAccessUntil').exists() && root.child('users').child(auth.uid).child('tempAccessUntil').val() > now) || root.child('users').child(auth.uid).child('subOperator').val() === true)))",

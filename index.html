@@ -151,8 +151,8 @@
         <path class="s-brand-drop" d="M24 8c4 5 6.5 8.5 6.5 11.5a6.5 6.5 0 0 1-13 0C17.5 16.5 20 13 24 8z"/>
       </svg>
       <div>
-        <p class="s-brand-name">Pinamungahan Automated Farm</p>
-        <p class="s-brand-sub">Smart Irrigation System</p>
+        <p class="s-brand-name" id="siteName">Pinamungahan Automated Farm</p>
+        <p class="s-brand-sub" id="siteSub">Smart Irrigation System</p>
       </div>
     </div>
     <!-- The owner's order (2026-11-05). Each tab shows only for the accounts that may use it (refreshOperatorUI() in
@@ -628,13 +628,52 @@
       <article class="panel switch-panel">
         <div class="panel-heading">
           <div>
-            <h3><span class="complete-only">Pumps and valves</span><span class="simple-only">Allow pumps and valves to run</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About switching pumps and valves off" data-info-title="Pumps and valves" data-info-text="On: the schedule, forced runs, exercises and tests can run. Switch it off before maintenance to stop everything at once. Off (actuations disabled): nothing runs, not even the schedule, until someone switches it back on, even after a restart. Readings, logging and this website keep working. At the rig: Settings, Enable Actuations. Switching off is a stop, so it can't be sent while ESP1 isn't connected." data-help="help-pause">i</button></h3>
+            <h3><span class="complete-only">Pumps and valves</span><span class="simple-only s-act-title"><svg class="si" aria-hidden="true"><use href="#si-power"/></svg>Allow pumps and valves to run</span><button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About switching pumps and valves off" data-info-title="Pumps and valves" data-info-text="On: the schedule, forced runs, exercises and tests can run. Switch it off before maintenance to stop everything at once. Off (actuations disabled): nothing runs, not even the schedule, until someone switches it back on, even after a restart. Readings, logging and this website keep working. At the rig: Settings, Enable Actuations. Switching off is a stop, so it can't be sent while ESP1 isn't connected." data-help="help-pause">i</button></h3>
             <p id="actStateText">Waiting for ESP1's report.</p>
           </div>
           <div class="switch-row">
             <span id="actState" class="switch-state">--</span>
             <button type="button" id="actSwitch" class="switch" role="switch" aria-checked="false" aria-label="Pumps and valves allowed to run" disabled></button>
           </div>
+        </div>
+        <!-- Simple mode only (19 Nov 2026, the owner: "even more simpler ... more design and icons and more animations"):
+             the same switch's state as a picture. data-state = on | off | sending | unknown, set by renderActuationSwitch().
+             Water runs from the pump through the open valve to the sprinkler while it is on; the valve wheel turns shut
+             and everything greys out while it is off. Nothing moves for reduced motion, or while the page is hidden. -->
+        <div id="sActCard" class="s-act simple-only" data-state="unknown">
+          <svg class="s-act-art" viewBox="0 0 320 100" aria-hidden="true" focusable="false">
+            <path class="s-act-ground" d="M0 88 H320 V100 H0z"/>
+            <path class="s-act-pipe" d="M64 54 H150 M182 54 H250 V34"/>
+            <path class="s-act-flow" d="M64 54 H150 M182 54 H250 V34"/>
+            <g class="s-act-pump">
+              <rect class="s-act-pump-base" x="20" y="80" width="44" height="8" rx="3"/>
+              <circle class="s-act-pump-body" cx="42" cy="54" r="24"/>
+              <g class="s-act-impeller">
+                <path d="M42 54 L39 36 Q42 33 45 36 Z"/><path d="M42 54 L60 51 Q63 54 60 57 Z"/>
+                <path d="M42 54 L45 72 Q42 75 39 72 Z"/><path d="M42 54 L24 57 Q21 54 24 51 Z"/>
+                <circle cx="42" cy="54" r="4.5"/>
+              </g>
+            </g>
+            <g class="s-act-valve">
+              <rect class="s-act-valve-body" x="150" y="42" width="32" height="24" rx="7"/>
+              <path class="s-act-stem" d="M166 30 V42"/>
+              <g class="s-act-wheel"><circle cx="166" cy="24" r="11"/><path d="M166 13 V35 M155 24 H177"/></g>
+              <g class="s-act-mark-off"><circle cx="166" cy="54" r="8"/><path d="M163 50.5 V57.5 M169 50.5 V57.5"/></g>
+            </g>
+            <path class="s-act-nozzle" d="M241 26 H259 L256 34 H244 Z"/>
+            <g class="s-act-drops"><circle cx="267" cy="34" r="2.6"/><circle cx="278" cy="38" r="2.6"/><circle cx="289" cy="34" r="2.6"/></g>
+            <g class="s-act-plant">
+              <path class="s-act-plant-stem" d="M292 88 C291 78 292 70 293 60"/>
+              <path class="s-act-leaf" d="M293 70 C282 69 276 62 276 54 C286 55 292 61 293 70 Z"/>
+              <path class="s-act-leaf2" d="M293 64 C302 62 307 55 306 47 C297 49 293 55 293 64 Z"/>
+            </g>
+          </svg>
+          <p class="s-act-chip">
+            <svg class="si s-act-i-on" aria-hidden="true"><use href="#si-check"/></svg>
+            <svg class="si s-act-i-off" aria-hidden="true"><use href="#si-pause"/></svg>
+            <svg class="si s-act-i-wait" aria-hidden="true"><use href="#si-refresh"/></svg>
+            <span id="sActBadge">Waiting</span>
+          </p>
         </div>
         <p id="actResult" class="control-result" aria-live="polite"></p>
       </article>
@@ -894,9 +933,17 @@
            2026 also where today's log is fetched: the separate Manual/Test panel for it was merged in here. -->
       <article id="logsPanel" class="panel logs-panel" hidden>
         <div class="panel-heading">
-          <div><h3>SD card logs (CSV)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the SD card logs" data-info-title="SD card logs" data-info-text="ESP1 writes everything it does to a CSV file on its SD card, one file a day. Each finished day is sent here by itself after midnight. To get one now, today's included as far as it is written, pick the day (today is picked already) and press Upload from the rig, then Download it from the list. Asking only works while the rig is idle and nothing is running. A megabyte takes about 2–3 minutes. Firebase keeps the last 14 days. The logs hold SMS texts and phone numbers, so only operators, Sub-operators and 1-hour access can see them." data-help="help-logs">i</button></h3>
+          <div><h3>SD card logs (CSV)<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the SD card logs" data-info-title="SD card logs" data-info-text="ESP1 writes everything it does to a CSV file on its SD card, one file a day. Download today's log gets what is already here, without asking the rig. ESP1's next firmware (Plan B, not on the rig yet) keeps today's log here by itself: only the new lines, every hour and soon after a run or a fault, and it finishes yesterday's just after midnight. Until then, or for another day, pick the day (today is picked already) and press Upload from the rig, then Download it from the list. Asking only works while the rig is idle and nothing is running. A megabyte takes about 2–3 minutes. Firebase keeps the last 14 days. The logs hold SMS texts and phone numbers, so only operators, Sub-operators and 1-hour access can see them." data-help="help-logs">i</button></h3>
           <p class="hint">Fetch a day's log from the rig, today's included, then download it.</p></div>
           <span id="logTodayState" class="device-status off">TODAY: NOT SENT</span>
+        </div>
+        <!-- Today's log in one click (19 Nov 2026, the owner: "a button that downloads the logs of today without requesting
+             any from the rig ... like OneDrive: any changes or every 1 hr it uploads"). It downloads what is already on the
+             website; it never asks the rig. ESP1 Plan B keeps it there by itself (new lines every hour and after a run or
+             a fault); the firmware on the rig now (18h) only sends it when someone presses Upload from the rig. -->
+        <div class="log-today">
+          <button id="logTodayBtn" type="button" disabled><svg class="si" aria-hidden="true"><use href="#si-calendar"/></svg><span class="btn-label">Download today's log</span></button>
+          <p id="logTodayNote" class="field-note">Waiting for the list.</p>
         </div>
         <div class="control-grid">
           <label>Day<input id="logDay" type="date"></label>
@@ -1023,6 +1070,27 @@
         <p class="hint">Back to the firmware's starting values. <strong>This can't be undone.</strong></p>
         <button id="sysRestoreDefaultsBtn" class="danger" type="button">Restore factory settings…</button>
         <p id="sysRestoreResult" class="control-result" aria-live="polite"></p>
+      </article>
+
+      <!-- The website's title (19 Nov 2026, the owner): the name at the top left, for everyone who signs in. Only the
+           operator and the backup operator see this panel, and only they may change it (irrigation/config/site, rules).
+           ESP1 never reads it. -->
+      <article class="panel site-panel" id="sysSitePanel" hidden>
+        <h3>Website title<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the website title" data-info-title="Website title" data-info-text="The farm's name and the line under it, at the top left of this website, for everyone who signs in. Only the operator and the backup operator can change it. Back to the original puts Pinamungahan Automated Farm / Smart Irrigation System back. The rig, the LCD and SMS don't use it." data-help="help-site-title">i</button></h3>
+        <p class="hint">The name at the top left, for everyone. Only the operator and the backup operator see this.</p>
+        <div class="site-preview" aria-hidden="true">
+          <svg class="s-brand-mark" viewBox="0 0 48 48" focusable="false"><path class="s-brand-leaf" d="M24 40c0-12 6-21 18-24-1 13-7 22-18 24z"/><path class="s-brand-leaf2" d="M24 40C23 30 17 23 6 22c1 10 7 17 18 18z"/><path class="s-brand-drop" d="M24 8c4 5 6.5 8.5 6.5 11.5a6.5 6.5 0 0 1-13 0C17.5 16.5 20 13 24 8z"/></svg>
+          <div><p class="s-brand-name" id="sitePreviewName">Pinamungahan Automated Farm</p><p class="s-brand-sub" id="sitePreviewSub">Smart Irrigation System</p></div>
+        </div>
+        <div class="control-grid">
+          <label>Name<input id="siteNameInput" type="text" maxlength="60" autocomplete="off" placeholder="Pinamungahan Automated Farm"></label>
+          <label>Line under it<input id="siteSubInput" type="text" maxlength="60" autocomplete="off" placeholder="Smart Irrigation System"></label>
+        </div>
+        <div class="config-actions">
+          <button id="siteSaveBtn" type="button">Save title</button>
+          <button id="siteResetBtn" type="button" class="secondary">Back to the original</button>
+        </div>
+        <p id="siteResult" class="control-result" aria-live="polite"></p>
       </article>
     </section>
 
@@ -1278,6 +1346,7 @@
         <details class="help-item" id="help-window" data-for="all"><summary>Watering times (rig default or my own time)</summary><p>The times of day a column may be watered. <strong>Rig default</strong> uses the one window built into the firmware (A 6:00 AM – 8:00 AM, B 8:00 AM – 10:00 AM, C 6:00 AM – 8:00 AM). <strong>My own time</strong> uses the times you set, up to 4 a day with ESP1's firmware from 5 Nov 2026. Either way the column is watered at most once in each, and only when its soil is dry enough. Under the times, the card says how many of today's are done, and, with ESP1's firmware from 6 Nov 2026, how often the column was watered and fed today and how much it got.</p></details>
         <details class="help-item" id="help-what-it-does" data-for="all"><summary>What it does (water + nutrients, or water only)</summary><p><strong>Water + nutrients</strong> lets ESP1 add nutrients when the soil needs them. <strong>Water only</strong> never adds nutrients to that column. On the LCD these are called Auto and Irrigation only.</p></details>
         <details class="help-item" id="help-crop-profile" data-for="all"><summary>Crop profile</summary><p>The crop and growth stage you pick for a column on this website. It sets the reference numbers the soil readings are compared with, and what <strong>Fill from crop profile</strong> copies. The crops, their stages and their numbers are listed under <strong>Crop profiles</strong>, below the columns, where they can be changed: see <em>Add or change a crop profile</em>. ESP1 never sees it.</p></details>
+        <details class="help-item" id="help-auto-stage" data-for="all"><summary>Auto stage (Complete mode)</summary><p>Optional, on each column's card under <strong>Compared with</strong>, in Complete mode. <strong>Start auto stage (Day 1)</strong> makes today day 1 of the stage picked there; after that stage's <strong>Days</strong> (from the crop's profile) the column moves on to the next stage by itself, and so on, and it stays on the last stage until you press <strong>End</strong> or pick another crop. A stage with 0 days is skipped. <strong>Pause</strong> stops the count (the stage stays) and <strong>Resume</strong> carries on from the same day. It can only start when every stage of that crop has its Days filled in (0 counts) under Crop profiles. Days go by the rig's own date. While it runs the stage list is locked; it changes only what this website compares the readings with, never anything on the rig.</p></details>
         <details class="help-item" id="help-forced-run" data-for="control"><summary>Forced run and countdown</summary><p>A run you start yourself from Controls, with your own litres and nutrients. It waits for a countdown first (0–300 seconds) so you can still cancel it, and shows ESP1's own countdown on the page. There is no daily limit on forced runs, and a "check the mixing tank" request does not hold one back: starting a forced run counts as that check (ESP1's firmware of 17 Nov 2026).</p></details>
         <details class="help-item" id="help-estop" data-for="control"><summary>Emergency stop</summary><p>Stops every pump and valve at once and cuts ESP2's power. The rig stays stopped until someone presses Return to normal, here or at the LCD. It can't be sent from this website while ESP1 isn't connected.</p></details>
         <details class="help-item" id="help-lockout" data-for="control"><summary>Actuations disabled (pumps and valves off)</summary><p>A standing stop: nothing moves, while sensors, logging and this website keep working. Controls' <strong>Pumps and valves</strong> switch sets it, and ESP1 shows its state as SAFE_MODE. It survives a restart, and lasts until someone switches pumps and valves back on. It is a different thing from the rig lock, which only locks the controls.</p></details>
@@ -1288,9 +1357,10 @@
         <details class="help-item" id="help-exercise" data-for="privileged"><summary>Pump exercise</summary><p>The rig runs each AC pump for a few seconds once it hasn't run for 2 days, so it doesn't seize between runs, and only while the rig is idle. The 2 days count from the pump's last run, or from ESP1's last restart. Turn it off if the tank is empty. Up next, on the Live dashboard, says when each is due (ESP1's firmware from 6 Nov 2026).</p></details>
         <details class="help-item" id="help-sweep" data-for="control"><summary>ESP2 sweep (reading ESP2's sensors)</summary><p>Powers ESP2 up for 10–120 seconds to read its own sensors (pH, EC, current, flow meters), then powers it down. Only when the rig is idle. <strong>Read ESP2's sensors</strong> on Diagnostics and <strong>Read the flow meters</strong> on Manual/Test both start one.</p></details>
         <details class="help-item" id="help-raw" data-for="control"><summary>Readings before conversion</summary><p>The sensors' own numbers, before ESP1 turns them into percentages and units: soil probe counts, tank distances in cm, and the NPK probe's registers. A sensor stuck at its limit shows here even when the converted reading looks normal. A reading older than 5 minutes is marked STALE.</p></details>
-        <details class="help-item" id="help-logs" data-for="privileged"><summary>SD card logs (CSV)</summary><p>ESP1 writes everything it does to a CSV file on its SD card, one file a day (timestamp, source, event type, detail). Each finished day is sent to this website by itself after midnight. <strong>Upload from the rig</strong> on the Diagnostics tab asks for any day still on the card, today included as far as it is written (today is picked already); a megabyte takes about 2–3 minutes. It only asks while the rig is idle and nothing is running, because the upload shares ESP1's memory and connection with its live report. <strong>TODAY</strong> beside the panel's title says how far today's log has got. <strong>Download</strong> saves the file to this computer. An upload that stops half way (ESP1 gives up after 15 minutes) says so; ask again. Firebase keeps the last 14 days; older days stay on the SD card only. (ESP1's firmware of 17 Nov 2026; before that the logs went to Supabase.)</p></details>
+        <details class="help-item" id="help-logs" data-for="privileged"><summary>SD card logs (CSV)</summary><p>ESP1 writes everything it does to a CSV file on its SD card, one file a day (timestamp, source, event type, detail). <strong>Download today's log</strong> saves what this website already holds for today, without asking the rig, and says how far it reaches. ESP1's next firmware (Plan B, not on the rig yet) keeps today's log here by itself, sending only the new lines every hour and soon after a run or a fault, and finishes yesterday's just after midnight; the firmware on the rig now (18h) only sends a day when someone asks. <strong>Upload from the rig</strong> on the Diagnostics tab asks for any day still on the card, today included as far as it is written (today is picked already); a megabyte takes about 2–3 minutes. It only asks while the rig is idle and nothing is running, because the upload shares ESP1's memory and connection with its live report. <strong>TODAY</strong> beside the panel's title says how far today's log has got. <strong>Download</strong> saves the file to this computer. An upload that stops half way (ESP1 gives up after 15 minutes) says so; ask again. Firebase keeps the last 14 days; older days stay on the SD card only. (ESP1's firmware of 17 Nov 2026; before that the logs went to Supabase.)</p></details>
         <details class="help-item" id="help-events" data-for="control"><summary>Recent events on the rig</summary><p>The last 12 notable things ESP1 logged: faults, runs starting and their results, tests from the website or the LCD, refused requests and SMS traffic. Routine housekeeping is left out. The full history is in ESP1's daily log on its SD card; this list starts again when ESP1 restarts.</p></details>
         <details class="help-item" id="help-snapshot" data-for="all"><summary>Snapshot (live data)</summary><p>ESP1 sends this website a full report once a minute by itself, and the page shows each one as it arrives. <strong>Refresh</strong> at the top asks ESP1 for a report straight away and also sends it a small check that it answers within a few seconds, so the page first says ESP1 answered (it is connected), then when the report landed. Nothing shows on the LCD. If the report is late, the page checks the same way at most once a minute instead of asking for more reports. ESP1 counts as <strong>connected</strong> while it answers, even if its full report is late (its numbers then say how old they are); it counts as <strong>not connected</strong> only when it hasn't answered anything for about 2 minutes, and only then are the controls that need it turned off. (19 Nov 2026.)</p></details>
+        <details class="help-item" id="help-site-title" data-for="privileged"><summary>Website title</summary><p>The farm's name and the line under it, at the top left of the page, for everyone who signs in. On the System tab, under <strong>Website title</strong>, which only the operator and the backup operator see and only they may change (the database refuses anyone else). <strong>Back to the original</strong> puts <em>Pinamungahan Automated Farm / Smart Irrigation System</em> back. The rig, its LCD and SMS don't use it.</p></details>
         <details class="help-item" id="help-restore" data-for="privileged"><summary>Restore factory settings (Restore Defaults)</summary><p>Puts every column's mode, Operation and day plan (back to Automatic, no plan), targets, watering times and ESP1's own name for it, the thresholds, and the AC voltage and current limits, back to the firmware's starting values. It keeps calibration, which columns are on, and the WiFi setup, and the website's own names and crop profiles aren't touched. Only when the rig is idle; it can't be undone.</p></details>
         <details class="help-item" id="help-access" data-for="all"><summary>Accounts and what each can do</summary><p><strong>Pending</strong> (new), <strong>rejected</strong> and <strong>restricted</strong> accounts see only a page with a button to ask for approval or to be unrestricted. <strong>Blocked</strong> accounts can't use the site at all. <strong>Approved</strong> accounts can look at the Live dashboard, Zone profiles and Help. With <strong>zone editing</strong> they can change the column cards, and with <strong>control</strong> they can use the Controls tab, Diagnostics and the Emergency stop; each is asked for and given separately. <strong>Sub-operators</strong> and <strong>1-hour access</strong> have all of that, plus Manual/Test, System, the rig lock and crop profiles. <strong>Operators</strong> manage the accounts.</p></details>
         <details class="help-item" id="help-grants" data-for="privileged"><summary>1-hour access and Sub-operator</summary><p>Ways for an operator to open Manual/Test and System, and the rig lock, to an approved account: <strong>1-hour access</strong> ends by itself after an hour, and <strong>Sub-operator</strong> lasts until an operator removes it. Restricting, blocking or rejecting the account ends both at once.</p></details>

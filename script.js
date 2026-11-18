@@ -33,7 +33,10 @@
  *   EMERGENCY_STOP     {}   no confirmation dialog, never held back by the rig lock or the cooldown. Since 6 Nov
  *                        2026 it, DISABLE_ACTUATIONS and CANCEL_FORCE are not sent while ESP1 isn't reporting (see
  *                        stopOfflineReason()), and the rules refuse them when ESP1's last report is over 3 minutes old
- *   RECOVER            { action: "hold"|"release"|"irrigate"|"normal" }   only while a fault is held
+ *   RECOVER            { action: "hold"|"release"|"irrigate"|"normal" }   only while a fault is held. Also the
+ *                        website's LINK PING (19 Nov 2026): { action: "ping" }, which every ESP1 build refuses without
+ *                        doing anything ("no held fault to recover from" / "action must be ..."), and ESP1 Plan B
+ *                        answers "completed" with "pong|state|manual|block|uptime". See esp1Online() and sendLinkPing().
  *   ESTOP_RECOVER      {}   only while stopped (EMERGENCY_STOP) and no fault is held
  *   ENABLE_ACTUATIONS  {}   the one escape hatch checked first, gated on nothing
  *   DISABLE_ACTUATIONS {}   monitoring keeps running
@@ -179,11 +182,175 @@ function cropLabel(crop) {
 
 // The crop and stage a column is compared with: its saved choice, or, when that is gone from the list (removed on
 // another device, or not loaded yet), the first there is. Only for showing: nothing is written.
+// With an auto stage on (19 Nov 2026), the stage is the one its day count has reached (autoStageState()).
 function zoneCrop(zone) {
   const library = cropLibrary();
   const crop = library.find(c => c.key === zone.defaultCrop) || library[0] || null;
-  const stage = crop ? (crop.stages.find(s => s.key === zone.defaultStage) || crop.stages[0] || null) : null;
+  let stage = crop ? (crop.stages.find(s => s.key === zone.defaultStage) || crop.stages[0] || null) : null;
+  const auto = crop ? autoStageState(zone, crop) : null;
+  if (auto?.valid) stage = auto.stage;
   return { crop, stage };
+}
+
+/* ---- Auto stage (19 Nov 2026, the owner) ---------------------------------------------------------------------------
+ * "Add an auto change stage with Start (Day 1), Pause, End ... not accessible if you haven't put Days on the crop
+ * profile of the crop you use on that column; if all stages are not input, still not accessible, unless you put 0 to
+ * skip ... it counts the days on that stage before evolving to the next stage ... and stops on the last stage until you
+ * remove it or change crop." Complete mode only; website only, like the crop and stage it moves (ESP1 never sees them).
+ * irrigation/config/zones/<id>/autoStage = { crop, from, start, pausedOn, pausedDays, by, at }:
+ *   crop        the crop it was started for (another crop on the column ends it)
+ *   from        the stage Day 1 is the first day of: the stage selected when Start was pressed (the owner's choice)
+ *   start       Day 1, by the rig's own date (yyyymmdd), the clock the day plan uses too
+ *   pausedOn    the rig's date it was paused on (0 = counting)
+ *   pausedDays  whole days spent paused before that
+ * The stage is worked out from these wherever it is needed, so every page agrees. A page that may edit zones also writes
+ * it to the column's saved `stage` when it moves on (syncAutoStages()), so the activity log and Simple mode follow. */
+function stageDaysMissing(crop) {
+  return (crop?.stages || []).filter(s => !Number.isInteger(Number(s.days)) || s.days === null || s.days === "" || Number(s.days) < 0);
+}
+
+// The stages an auto stage started at `fromKey` goes through, with their days; 0-day stages are skipped.
+function autoStagePath(crop, fromKey) {
+  const at = (crop?.stages || []).findIndex(s => s.key === fromKey);
+  if (at < 0) return [];
+  return crop.stages.slice(at).filter(s => Number(s.days) > 0).map(s => ({ stage: s, days: Number(s.days) }));
+}
+
+// Why Start isn't available for this column right now ("" = it is).
+function autoStageBlock(zone) {
+  const { crop, stage } = zoneCrop(zone);
+  if (!crop || !stage) return "Pick a crop and a stage first.";
+  const missing = stageDaysMissing(crop);
+  if (missing.length) {
+    return `Give every stage of ${cropLabel(crop)} its Days in Crop profiles first (0 skips a stage). No Days yet: ${missing.map(s => s.name).join(", ")}.`;
+  }
+  if (!autoStagePath(crop, stage.key).length) return `Every stage from ${stage.name} on has 0 days. Give at least one of them some days.`;
+  return "";
+}
+
+// The running auto stage, or null when the column has none. valid:false (with why) when it can't be followed any more.
+function autoStageState(zone, cropArg) {
+  const a = zone?.autoStage;
+  if (!a || typeof a !== "object") return null;
+  const crop = cropArg || findCrop(zone.defaultCrop);
+  const today = rigTodayYmd();
+  const bad = why => ({ valid: false, why, paused: Boolean(a.pausedOn) });
+  if (!crop || a.crop !== crop.key) return bad("the column's crop has changed");
+  if (!validYmd(a.start)) return bad("its start date can't be read");
+  if (stageDaysMissing(crop).length) return bad(`a stage of ${cropLabel(crop)} has no Days any more`);
+  const path = autoStagePath(crop, a.from);
+  if (!path.length) return bad("the stage it started from is gone, or every stage from it on has 0 days");
+  const paused = validYmd(a.pausedOn);
+  const pausedNow = paused ? Math.max(0, ymdToDayNumber(today) - ymdToDayNumber(a.pausedOn)) : 0;
+  const elapsed = Math.max(0, ymdToDayNumber(today) - ymdToDayNumber(a.start) - Math.max(0, Number(a.pausedDays) || 0) - pausedNow);
+  let left = elapsed, index = 0;
+  while (index < path.length - 1 && left >= path[index].days) { left -= path[index].days; index++; }
+  const step = path[index];
+  const last = index === path.length - 1;
+  // The day the next stage begins: today plus what is left of this one (later while paused, so not given then).
+  const nextOn = !last && !paused ? ymdAddDays(today, step.days - left) : 0;
+  return {
+    valid: true, paused, pausedOn: paused ? Number(a.pausedOn) : 0, day: elapsed + 1,
+    stage: step.stage, stageDay: Math.min(left + 1, step.days), stageDays: step.days, beyond: last && left >= step.days,
+    last, next: last ? null : path[index + 1].stage, nextOn
+  };
+}
+
+// One line, in words, for the card.
+function autoStageText(zone) {
+  const s = autoStageState(zone);
+  if (!s) return "";
+  if (!s.valid) return `Auto stage stopped: ${s.why}. End it, then start it again if you want it.`;
+  const where = s.beyond ? `${s.stage.name}, the last stage: it stays here until you end auto stage or change crop`
+    : `${s.stage.name}, day ${s.stageDay} of ${s.stageDays}${s.last ? " (the last stage: it stays here after that)" : ""}`;
+  if (s.paused) return `Auto stage paused since ${ymdLabel(s.pausedOn)}, on day ${s.day}: ${where}.`;
+  return `Auto stage · day ${s.day} · ${where}${s.next ? `. ${s.next.name} from ${ymdLabel(s.nextOn)}` : ""}.`;
+}
+
+function writeAutoStage(zone, autoStage, extra = {}, activity = "") {
+  if (!hasZoneEditAccess()) { setCommandStatus(NO_ZONE_EDIT_TITLE, "error"); return Promise.resolve(false); }
+  return db.ref(`irrigation/config/zones/${zone.id}`).update({
+    name: zone.name, crop: zone.defaultCrop, autoStage, updatedAt: firebase.database.ServerValue.TIMESTAMP, ...extra
+  }).then(() => { if (activity) logActivity(activity); return true; })
+    .catch(error => { zoneNote(zone.id)(`Auto stage not saved: ${error.message}`, true); return false; });
+}
+
+function startAutoStage(zone) {
+  const block = autoStageBlock(zone);
+  if (block) { zoneNote(zone.id)(block, true); return; }
+  const { crop, stage } = zoneCrop(zone);
+  const path = autoStagePath(crop, stage.key);
+  const plan = path.map((p, i) => `${p.stage.name} ${p.days} day${p.days === 1 ? "" : "s"}${i === path.length - 1 ? " (then stays)" : ""}`).join(" → ");
+  if (!confirm(`Start auto stage for column ${zone.id} (${cropLabel(crop)})? Today is day 1 of ${stage.name}.\n\n${plan}\n\nThe stage then changes by itself. Pause or End it any time.`)) return;
+  const autoStage = { crop: crop.key, from: stage.key, start: rigTodayYmd(), pausedOn: 0, pausedDays: 0, by: myDisplayName() || "Operator", at: firebase.database.ServerValue.TIMESTAMP };
+  writeAutoStage(zone, autoStage, { stage: stage.key }, `Column ${zone.id}: auto stage started (${cropLabel(crop)}, day 1 of ${stage.name})`);
+}
+
+function pauseAutoStage(zone, pause) {
+  const a = zone.autoStage;
+  const s = autoStageState(zone);
+  if (!a || !s?.valid || s.paused === pause) return;
+  const today = rigTodayYmd();
+  const next = pause
+    ? { ...a, pausedOn: today, at: firebase.database.ServerValue.TIMESTAMP }
+    : { ...a, pausedOn: 0, pausedDays: (Number(a.pausedDays) || 0) + Math.max(0, ymdToDayNumber(today) - ymdToDayNumber(a.pausedOn)), at: firebase.database.ServerValue.TIMESTAMP };
+  writeAutoStage(zone, next, {}, `Column ${zone.id}: auto stage ${pause ? "paused" : "resumed"} (day ${s.day}, ${s.stage.name})`);
+}
+
+function endAutoStage(zone) {
+  const s = autoStageState(zone);
+  const keep = s?.valid ? s.stage : zoneCrop(zone).stage;
+  if (!confirm(`End auto stage for column ${zone.id}? It keeps ${keep ? keep.name : "its stage"}, and you pick the stage by hand again.`)) return;
+  writeAutoStage(zone, null, keep ? { stage: keep.key } : {}, `Column ${zone.id}: auto stage ended${keep ? ` (stays ${keep.name})` : ""}`);
+}
+
+// Fills a card's auto stage box: the line, and the buttons for an account that may edit zones.
+function renderAutoStage(zone) {
+  const box = document.getElementById(`autoStage${zone.id}`);
+  if (!box) return;
+  const s = autoStageState(zone);
+  const canEdit = hasZoneEditAccess();
+  const key = JSON.stringify([s ? [s.valid, s.paused, s.day, s.stage?.key, s.stageDay, s.nextOn] : null, canEdit, canEdit && !s ? autoStageBlock(zone) : ""]);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const icon = name => `<svg class="si" aria-hidden="true"><use href="#si-${name}"/></svg>`;
+  if (!s) {
+    if (!canEdit) { box.innerHTML = ""; box.hidden = true; return; }
+    const block = autoStageBlock(zone);
+    box.hidden = false;
+    box.innerHTML = `<div class="auto-stage-row"><button type="button" class="secondary small" data-auto-start="${zone.id}"${block ? " disabled" : ""}>${icon("calendar")}Start auto stage (Day 1)</button></div>` +
+      `<p class="field-note auto-stage-note">${escapeHtml(block || "Optional: the stage then moves on by itself, by the Days in Crop profiles, starting today at the stage picked above.")}</p>`;
+    return;
+  }
+  box.hidden = false;
+  const buttons = !canEdit ? "" : `<span class="auto-stage-actions">${s.valid
+      ? `<button type="button" class="secondary small" data-auto-pause="${zone.id}" data-pause="${s.paused ? "0" : "1"}">${icon(s.paused ? "refresh" : "pause")}${s.paused ? "Resume" : "Pause"}</button>`
+      : ""}<button type="button" class="secondary small" data-auto-end="${zone.id}">${icon("stop")}End</button></span>`;
+  box.innerHTML = `<div class="auto-stage-row${s.valid ? (s.paused ? " is-paused" : " is-on") : " is-stopped"}">` +
+    `<p class="auto-stage-line">${icon(s.valid && !s.paused ? "sprout" : "clock")}<span>${escapeHtml(autoStageText(zone))}</span></p>${buttons}</div>`;
+}
+
+// From the 1 s tick and when the columns change: a new day can move a stage on. The page that may edit zones writes the
+// new stage to the column (once per change), and every page redraws the card when the stage it shows is out of date.
+const autoStageWritten = {};   // zone id -> the stage key this page last wrote, so a slow echo isn't written twice
+let lastAutoStageCheck = 0;
+function syncAutoStages(force = false) {
+  if (!force && Date.now() - lastAutoStageCheck < 5000) return;
+  lastAutoStageCheck = Date.now();
+  let redraw = false;
+  activeZones.forEach(zone => {
+    renderAutoStage(zone);
+    const s = autoStageState(zone);
+    if (!s?.valid) return;
+    const shown = document.querySelector(`.zone-block[data-zone="${zone.id}"]`)?.dataset.stage;
+    if (shown !== undefined && shown !== s.stage.key) redraw = true;
+    if (s.stage.key === zone.defaultStage || !hasZoneEditAccess() || autoStageWritten[zone.id] === s.stage.key) return;
+    autoStageWritten[zone.id] = s.stage.key;
+    db.ref(`irrigation/config/zones/${zone.id}`).update({ stage: s.stage.key, updatedAt: firebase.database.ServerValue.TIMESTAMP })
+      .then(() => logActivity(`Column ${zone.id}: growth stage ${s.stage.name} (auto stage, day ${s.day})`))
+      .catch(() => { delete autoStageWritten[zone.id]; });
+  });
+  if (redraw) renderZonesUI();
 }
 
 // Kept separate from the mutable activeZones below so each zone's OWN original default survives a
@@ -240,6 +407,8 @@ const RTC_YEAR_MAX = 2099;
 // The pump selector's TEST_PULSE targets and the side each one moves the Nano's servo to (pulseRowForTarget() in the
 // firmware's pure_math.h: servoL = row 20, servoR = row 21). Up here because commandDetailText() uses it too.
 const SERVO_TARGETS = { servoL: "TRANSFER", servoR: "BOOSTER" };
+
+/* ---- Helpers: text, numbers, ages, Firebase's clock, how current ESP1's report is ---------------------------------------- */
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
@@ -469,6 +638,8 @@ function newerPong() {
   return best && best.at > Number(liveData.meta?.updatedAt || 0) && serverNow() - best.at < esp1LinkWindowMs() ? best : null;
 }
 
+/* ---- Late reports, the stops' gate, firmware generations ----------------------------------------------------------------- */
+
 // How late ESP1's report is (18 Nov 2026): 0 while it is on time, else its age. ESP1 reports every meta.refreshMs (web v.4
 // of 18 Nov g: once a minute), so a report older than one more interval, and at least 5 s more, is late. Only while
 // deviceIsFresh(): past that the page says ESP1 has stopped.
@@ -504,6 +675,8 @@ function isV3Firmware() {
 function v3Only(text) {
   return liveData.system && !isV3Firmware() ? "Not reported by this firmware" : text;
 }
+
+/* ---- Accounts and access levels (the rules enforce the same) ------------------------------------------------------------- */
 
 function currentUserIsSignedIn() {
   return Boolean(firebaseReady && auth?.currentUser);
@@ -608,6 +781,8 @@ function syncZoneEditCapability() {
   renderZonesUI();
 }
 
+/* ---- Status chips, the connection line, toasts and status lines ---------------------------------------------------------- */
+
 function setDeviceStatus(id, text, tone = "off") {
   const element = document.getElementById(id);
   if (!element) return;
@@ -706,6 +881,8 @@ const STATE_BUSY_TEXT = {
   BOOT_STATE: "ESP1 is still starting up"
 };
 let forceArmedShown = false;    // the "Forced run armed" panel is up (see updateForceArmed())
+
+/* ---- Why a control is off right now: busy rig, forced run, hold-to-run --------------------------------------------------- */
 
 function rigBusyReason() {
   const d = liveData.diagnostics || {};
@@ -889,9 +1066,15 @@ function renderActuationSwitch() {
   const waiting = Boolean(actSentKey) && (row ? row.status === "queued" || row.status === "received" : Date.now() - actSentAt < 10000);
   if (actSentKey && !waiting) actSentKey = null;
   setText("actState", waiting ? "Sending…" : !known ? "--" : off ? "Off" : "On");
+  // The owner's words (19 Nov 2026): "The schedule, forced runs and tests can run", without the "On:".
   setText("actStateText", !known ? "Waiting for ESP1's report."
-    : off ? "Off: nothing runs until someone switches it back on."
-    : "On: the schedule, forced runs and tests can run.");
+    : off ? "Nothing runs until someone switches it back on."
+    : "The schedule, forced runs and tests can run.");
+  // Simple mode's picture of the same state (#sActCard): the CSS draws and animates each state.
+  const card = document.getElementById("sActCard");
+  const pictured = waiting ? "sending" : !known ? "unknown" : off ? "off" : "on";
+  if (card && card.dataset.state !== pictured) card.dataset.state = pictured;
+  setText("sActBadge", { on: "On", off: "Off", sending: "Sending…", unknown: "Waiting" }[pictured]);
   if (!toggle) return;
   toggle.setAttribute("aria-checked", String(known && !off));
   const signedIn = currentUserIsSignedIn();
@@ -1272,7 +1455,9 @@ function attachDatabaseListeners() {
       // saveColumnSettings()/renderZonesUI()) -- lives under the same dashboard-only config/zones
       // node as crop/stage, so no new Firebase rule or listener was needed; this one already
       // watches the whole subtree.
-      return { id: def.id, name: zone.name || def.name, defaultCrop: crop, defaultStage: stage, savedSettings: zone.savedSettings || {} };
+      // autoStage (19 Nov 2026): the column's auto stage, if one is on (see autoStageState()).
+      return { id: def.id, name: zone.name || def.name, defaultCrop: crop, defaultStage: stage, savedSettings: zone.savedSettings || {},
+        autoStage: zone.autoStage && typeof zone.autoStage === "object" ? zone.autoStage : null };
     });
     renderZonesUI();
     renderCropLibrary();          // "Used by column A" follows the columns' choices
@@ -1286,7 +1471,78 @@ function attachDatabaseListeners() {
     renderCropLibrary();
     updateDashboard();
   }, error => console.warn("Could not read the crop profiles", error));
+
+  // The website's title (19 Nov 2026): the operators' choice, for everyone who can read the config.
+  siteRef = db.ref("irrigation/config/site");
+  siteRef.on("value", snapshot => {
+    siteConfig = snapshot.val() || {};
+    applySiteTitle();
+  }, error => console.warn("Could not read the website title", error));
 }
+
+/* ---- Website title (19 Nov 2026, the owner) ------------------------------------------------------------------------
+ * "On System tab, only the main operator and backdoor can access/see this: I can change the title name of the
+ * Pinamungahan Automated Farm / Smart Irrigation System on top left." irrigation/config/site = {name, sub, updatedAt,
+ * updatedBy}; read by every account that reads the config, written only by the two operator accounts (the rules agree).
+ * No record = the original words. */
+const SITE_DEFAULT = { name: "Pinamungahan Automated Farm", sub: "Smart Irrigation System" };
+const SITE_TEXT_MAX = 60;
+let siteRef = null;
+let siteConfig = {};
+
+function siteTitle() {
+  const name = typeof siteConfig.name === "string" && siteConfig.name.trim() ? siteConfig.name.trim() : SITE_DEFAULT.name;
+  const sub = typeof siteConfig.sub === "string" ? siteConfig.sub.trim() : SITE_DEFAULT.sub;
+  return { name, sub };
+}
+
+function applySiteTitle() {
+  const { name, sub } = siteTitle();
+  setText("siteName", name);
+  setText("siteSub", sub);
+  const subLine = document.getElementById("siteSub");
+  if (subLine) subLine.hidden = !sub;
+  // The editor follows the saved title unless someone is typing in it.
+  const nameInput = document.getElementById("siteNameInput");
+  const subInput = document.getElementById("siteSubInput");
+  const typing = [nameInput, subInput].includes(document.activeElement);
+  if (nameInput && subInput && !typing) { nameInput.value = name; subInput.value = sub; }
+  previewSiteTitle();
+}
+
+function previewSiteTitle() {
+  const name = (document.getElementById("siteNameInput")?.value || "").trim();
+  const sub = (document.getElementById("siteSubInput")?.value || "").trim();
+  setText("sitePreviewName", name || SITE_DEFAULT.name);
+  setText("sitePreviewSub", sub);
+}
+
+function saveSiteTitle() {
+  const show = resultLine("siteResult");
+  if (!isOperator()) { show("Only the operator and the backup operator can change the title.", true); return; }
+  const name = (document.getElementById("siteNameInput")?.value || "").trim();
+  const sub = (document.getElementById("siteSubInput")?.value || "").trim();
+  if (!name) { show("The name can't be empty.", true); return; }
+  if (name.length > SITE_TEXT_MAX || sub.length > SITE_TEXT_MAX) { show(`At most ${SITE_TEXT_MAX} characters each.`, true); return; }
+  db.ref("irrigation/config/site").set({ name, sub, updatedAt: firebase.database.ServerValue.TIMESTAMP, updatedBy: myDisplayName() || "Operator" })
+    .then(() => { show(`Saved. Everyone sees "${name}" now.`); logActivity(`Website title: ${name}${sub ? ` / ${sub}` : ""}`); })
+    .catch(error => show(error.code === "PERMISSION_DENIED" ? "Not saved: only the operator and the backup operator may change it." : `Not saved: ${error.message}`, true));
+}
+
+function resetSiteTitle() {
+  const show = resultLine("siteResult");
+  if (!isOperator()) return;
+  if (!confirm(`Put the original title back (${SITE_DEFAULT.name} / ${SITE_DEFAULT.sub})?`)) return;
+  db.ref("irrigation/config/site").remove()
+    .then(() => { show("The original title is back."); logActivity("Website title: back to the original"); })
+    .catch(error => show(`Not changed: ${error.message}`, true));
+}
+
+document.getElementById("siteSaveBtn")?.addEventListener("click", saveSiteTitle);
+document.getElementById("siteResetBtn")?.addEventListener("click", resetSiteTitle);
+["siteNameInput", "siteSubInput"].forEach(id => document.getElementById(id)?.addEventListener("input", previewSiteTitle));
+
+/* ---- The connection line, and redrawing when ESP1 goes quiet ------------------------------------------------------------- */
 
 // The top bar and sidebar. Called from a snapshot, from the 1 s tick when ESP1 goes quiet, and when this
 // browser's own connection changes.
@@ -1324,6 +1580,7 @@ function detachDatabaseListeners() {
   if (commandsRef) commandsRef.off();
   if (zonesRef) zonesRef.off();
   if (cropsRef) cropsRef.off();
+  if (siteRef) { siteRef.off(); siteRef = null; }
   if (logsRef) { logsRef.off(); logsRef = null; }
   logsIndex = {}; logsDenied = false;
   serverOffsetRef = null;
@@ -1339,6 +1596,8 @@ function detachDatabaseListeners() {
   cropDraft = null;
   databaseListenersAttached = false;
 }
+
+/* ---- Sign-in screens and this account's own record ----------------------------------------------------------------------- */
 
 function showAuthForm(which) {
   const login = document.getElementById("loginForm");
@@ -1657,6 +1916,8 @@ function releaseHoldsThenSignOut() {
  * convenience -- the actual boundary is /users' ".read" rule, which only the operator UID passes,
  * so this listener is only ever attached in the first place when isOperator() is true. */
 let usersRef = null;
+/* ---- Which tabs and panels this account sees ----------------------------------------------------------------------------- */
+
 function refreshOperatorUI() {
   const tab = document.getElementById("usersTab");
   const op = isOperator();
@@ -1682,6 +1943,9 @@ function refreshOperatorUI() {
   if (acVoltPanel) acVoltPanel.hidden = !canSetAcVoltage();
   const acAmpPanel = document.getElementById("sysAcAmpPanel");
   if (acAmpPanel) acAmpPanel.hidden = !canSetAcVoltage();
+  // The website title (19 Nov 2026): the operator and the backup operator only, not Sub-operators or 1-hour access.
+  const sitePanel = document.getElementById("sysSitePanel");
+  if (sitePanel) sitePanel.hidden = !op;
   if (!privileged && document.querySelector('.tab[data-view="system"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
@@ -1715,6 +1979,8 @@ function syncHelpAudience() {
   filterHelp(document.getElementById("helpSearch")?.value || "");
 }
 let lastKnownUsers = {};
+/* ---- User Management: listeners and presence ----------------------------------------------------------------------------- */
+
 function attachUserManagementListener() {
   if (usersRef) return;
   usersRef = db.ref("users");
@@ -2025,6 +2291,8 @@ const USER_ACTION_INFO = {
   grantsubop: ["Sub-operator", "The same access as 1-hour access, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
   withholdsubop: ["Sub-operator", "Ends this account's Sub-operator access now. Nothing else ever ends it."]
 };
+/* ---- User Management: the account list and its actions ------------------------------------------------------------------- */
+
 function renderUserManagement() {
   const container = document.getElementById("usersContainer");
   if (!container) return;
@@ -2310,7 +2578,9 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   run(() => db.ref().update(updates), done);
 });
 
-function writeZoneProfile(zone) {
+/* ---- Column profiles (website only) and the activity log ----------------------------------------------------------------- */
+
+function writeZoneProfile(zone, extra = {}) {
   if (!currentUserIsSignedIn()) return;
   // Audit fix (2026-09-08): every other write path (queueCommand, writeManualHold) gates on
   // isApprovedUser(), not just sign-in. The Firebase rule already rejects this write for a
@@ -2327,7 +2597,8 @@ function writeZoneProfile(zone) {
     name: zone.name,
     crop: zone.defaultCrop,
     stage: zone.defaultStage,
-    updatedAt: firebase.database.ServerValue.TIMESTAMP
+    updatedAt: firebase.database.ServerValue.TIMESTAMP,
+    ...extra                       // { autoStage: null } when a crop change ends an auto stage (19 Nov 2026)
   }).catch(error => setCommandStatus(`Could not save dashboard-only zone profile: ${error.message}`, "error"));
 }
 
@@ -2367,6 +2638,8 @@ const SHOWN_IN_NEXT_REPORT = new Set(["EMERGENCY_STOP", "ESTOP_RECOVER", "ENABLE
 // run carries on. A cancel takes up to 3 s to be picked up, so this is easy to hit near the end of a countdown.
 // Only the run's own row and the snapshot can tell. The age limit is for rows left on "accepted" for good.
 const FORCED_RUN_LONGEST_MS = 15 * 60 * 1000;
+/* ---- Sending commands, and announcing ESP1's replies --------------------------------------------------------------------- */
+
 function forcedRunHasStarted() {
   if (liveData.diagnostics?.runProgress?.active === true) return true;
   return commandData.some(row => row.type === "FORCE_RUN" && row.status === "accepted"
@@ -2778,6 +3051,8 @@ function planCalendarHtml(id, { month, marks, defaultOp, today, editable, locked
         <span class="plan-legend-note">A day with a word on it is set in the plan; the others follow the default (${escapeHtml(OPERATION_SHORT[defaultOp] || "unknown")}).</span></p>
     </div>`;
 }
+
+/* ---- A column's settings as ESP1 has them, in words ---------------------------------------------------------------------- */
 
 // What ESP1 has for a column right now.
 function zoneSettings(id) {
@@ -3518,6 +3793,8 @@ function loadSavedSetup(zone, key) {
   zoneNote(zone.id)(`Loaded "${rawText(chosen.name, "Untitled")}". Check it, then press Save to rig.`);
 }
 
+/* ---- Zone cards: building them, their readings and gauges ---------------------------------------------------------------- */
+
 // Each column's latest SET_COLUMN outcome, under its own card, in words. ESP1's own reply follows in
 // brackets, and the dashboard's Command status keeps the full record.
 function renderColumnCommandResults() {
@@ -3537,11 +3814,15 @@ function renderColumnCommandResults() {
     }
     if (!latest) return;
     const reply = commandDetailText(latest, "");
-    result.textContent = latest.status === "completed" ? `Saved on ESP1${reply ? ` (its reply: ${reply})` : ""}.`
+    // A save that worked says nothing in Complete mode (the owner, 19 Nov 2026: remove "Saved on ESP1 (its reply:
+    // COL_B: enabled=1)"; the card itself shows the new values), and a plain "Saved on the rig." in Simple mode
+    // (.zone-saved, see style.css). A refusal or a wait still says so in both.
+    const saved = latest.status === "completed";
+    result.textContent = saved ? "Saved on the rig."
       : latest.status === "rejected" || latest.status === "failed" ? `ESP1 refused it: ${reply || "no reason given"}.`
       : latest.status === "withdrawn" ? "Withdrawn before ESP1 read it."
       : "Sent. Waiting for ESP1…";
-    result.className = `control-result${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
+    result.className = `control-result${saved ? " zone-saved" : ""}${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
   });
 }
 
@@ -3586,13 +3867,15 @@ function renderZonesUI() {
         </div>`
       : `<div class="zone-power"><span class="zone-power-state" id="zonePowerState${id}">Not reported</span></div>`;
 
+    // Auto stage (19 Nov 2026): Complete mode only, under the crop and stage it moves on.
+    const autoBox = `<div class="auto-stage complete-only" id="autoStage${id}" aria-live="polite" hidden></div>`;
     const compare = canEdit
       ? `<div class="zone-compare">
-          <span class="label-row">Compared with${info("Crop profile", "Pick the crop and stage growing here. A reading turns red when it is below that crop's number. This stays on the website: ESP1 never sees it. The crops and their numbers are under Crop profiles, below the columns.", "help-crop-profile")}</span>
+          <span class="label-row">Compared with${info("Crop profile", "Pick the crop and stage growing here. A reading turns red when it is below that crop's number. This stays on the website: ESP1 never sees it. The crops and their numbers are under Crop profiles, below the columns. Auto stage (Complete mode) moves the stage on by itself, by the Days of each stage.", "help-crop-profile")}</span>
           <select id="cropSelect${id}" aria-label="Crop growing in column ${id}"></select>
           <select id="growthStage${id}" aria-label="Growth stage in column ${id}"></select>
-        </div>`
-      : `<p class="zone-compare">Compared with ${escapeHtml(crop)}, ${escapeHtml(stage)}</p>`;
+        </div>${autoBox}`
+      : `<p class="zone-compare">Compared with ${escapeHtml(crop)}, ${escapeHtml(stage)}</p>${autoBox}`;
 
     // This week's plan and today, read-only, in place of the old "What ESP1 does with it" list (the owner's second round,
     // 18 Nov 2026): the same ids, in short words; what they mean is in the (i) icons. Changes go through Edit settings.
@@ -3621,11 +3904,11 @@ function renderZonesUI() {
               <label class="line-name" for="cfg${key}${id}">${name}</label>
               <input type="range" class="line-range line-${key.toLowerCase()}" id="cfg${key}Range${id}" min="${min}" max="100" step="1" data-pair="cfg${key}${id}" aria-label="${name}, column ${id}"${linesOn ? "" : " disabled"}>
               <span class="line-num"><input type="number" id="cfg${key}${id}" min="${min}" max="100" step="1" inputmode="numeric" data-pair="cfg${key}Range${id}"${linesOn ? "" : " disabled"}><span aria-hidden="true">%</span></span>
-              <label class="line-def"><input type="checkbox" id="cfg${key}Def${id}"${linesOn ? "" : " disabled"}>Same as the System tab</label>
+              <label class="line-def"><input type="checkbox" id="cfg${key}Def${id}"${linesOn ? "" : " disabled"}>Default</label>
             </div>`;
     const lines = `
           <fieldset class="zone-lines">
-            <legend>Soil moisture lines${info("Soil moisture lines", `Water when drier than (Soil start): the controller waters this column at its watering times only when its soil is drier than this. Too wet above: wetter than this, the card says Too wet; it is a warning only. Same as the System tab follows the defaults there. Too wet must be at least ${THRESH_MIN_GAP} above Soil start.`, "help-soil-start")}</legend>
+            <legend>Soil moisture lines${info("Soil moisture lines", `Water when drier than (Soil start): the controller waters this column at its watering times only when its soil is drier than this. Too wet above: wetter than this, the card says Too wet; it is a warning only. Default uses the System tab's values for this line. Too wet must be at least ${THRESH_MIN_GAP} above Soil start.`, "help-soil-start")}</legend>
             ${lineRow("Start", "Water when drier than", 0)}
             ${lineRow("Wet", "Too wet above", THRESH_MIN_GAP)}
             <div class="line-preview" id="cfgLinePreview${id}" aria-hidden="true"><span class="lp-dry"></span><span class="lp-ok"></span><span class="lp-wet"></span><i class="lp-now"></i></div>
@@ -3748,7 +4031,17 @@ function renderZonesUI() {
         </section>
       </div>`;
     block.classList.toggle("readings-hidden", hidden);
+    block.dataset.stage = resolved.stage?.key || "";      // what the card shows, for syncAutoStages()
     container.appendChild(block);
+    renderAutoStage(zone);
+    // Auto stage buttons (data-auto-*), for the accounts that get them.
+    block.querySelector(`#autoStage${id}`)?.addEventListener("click", event => {
+      const button = event.target.closest("button");
+      if (!button || button.disabled) return;
+      if (button.dataset.autoStart) startAutoStage(zone);
+      else if (button.dataset.autoPause) pauseAutoStage(zone, button.dataset.pause === "1");
+      else if (button.dataset.autoEnd) endAutoStage(zone);
+    });
 
     if (canEdit) {
       block.querySelector(`#zonePower${id}`)?.addEventListener("click", () => toggleZonePower(id));
@@ -3808,14 +4101,25 @@ function renderZonesUI() {
       const stageSelect = block.querySelector(`#growthStage${id}`);
       cropLibrary().forEach(c => cropSelect.add(new Option(cropLabel(c), c.key, false, c.key === resolved.crop?.key)));
       populateStageOptions(zone, stageSelect);
+      // While an auto stage runs it picks the stage (19 Nov 2026); the crop can still change, which ends it.
+      if (autoStageState(zone)?.valid) {
+        stageSelect.disabled = true;
+        stageSelect.title = "Auto stage picks the stage. End it (below) to pick one by hand.";
+      }
       cropSelect.addEventListener("change", () => {
+        const hadAuto = Boolean(zone.autoStage);
+        if (hadAuto && !confirm(`Change column ${id}'s crop? That ends its auto stage.`)) {
+          cropSelect.value = zone.defaultCrop;
+          return;
+        }
         zone.defaultCrop = cropSelect.value;
         zone.defaultStage = findCrop(zone.defaultCrop)?.stages[0]?.key || "";
+        zone.autoStage = null;
         populateStageOptions(zone, stageSelect);
         updateZoneTargets(zone);
-        writeZoneProfile(zone);
+        writeZoneProfile(zone, hadAuto ? { autoStage: null } : {});
         const { crop, stage } = zoneCrop(zone);
-        if (crop) logActivity(`Column ${id}: compared with ${cropLabel(crop)}${stage ? `, ${stage.name}` : ""}`);
+        if (crop) logActivity(`Column ${id}: compared with ${cropLabel(crop)}${stage ? `, ${stage.name}` : ""}${hadAuto ? " (auto stage ended)" : ""}`);
       });
       stageSelect.addEventListener("change", () => {
         zone.defaultStage = stageSelect.value;
@@ -4054,7 +4358,7 @@ function cropEditorHtml(draft) {
               ${number("ph", "pH", 3, 9, "0.1")}
               ${number("ec", "EC (mS/cm)", 0, 20, "0.1")}
               ${number("moisture", "Moisture (%)", 0, 100, "1")}
-              ${number("days", "Days (optional)", 0, 365, "1")}
+              ${number("days", "Days (auto stage; 0 skips)", 0, 365, "1")}
             </div>
             <label class="stage-notes-field">Notes (optional)<input data-field="notes" maxlength="200" placeholder="e.g. Transplant at 3 to 4 true leaves"></label>
           </div>`).join("");
@@ -4067,7 +4371,7 @@ function cropEditorHtml(draft) {
       </div>
       <label>Notes (optional)<textarea id="cropNotes" maxlength="300" rows="2" placeholder="e.g. Needs a trellis. Harvest 55 to 60 days after transplanting."></textarea></label>
       <fieldset class="stage-editor">
-        <legend>Growth stages, in order. Each column picks one of these.</legend>
+        <legend>Growth stages, in order. Each column picks one of these. Days is how long a stage lasts: a column's Auto stage needs it on every stage (0 skips a stage).</legend>
         ${stages}
         <button type="button" class="secondary" id="cropAddStage"${draft.stages.length >= MAX_STAGES ? " disabled" : ""}>Add a stage</button>
       </fieldset>
@@ -4350,6 +4654,8 @@ document.getElementById("cropLibrary")?.addEventListener("submit", event => {
  * that lived here was replaced by the system picture shared by both modes (buildSimpleDiagram()). */
 const RIG_RES_LOW_PCT = 18;
 
+/* ---- Thresholds as ESP1 reports them ------------------------------------------------------------------------------------- */
+
 // ESP1 doesn't report its Soil start %, so this is the last value sent from this website (in the commands still
 // listed), or the firmware's default.
 function soilStartPercent() {
@@ -4393,6 +4699,8 @@ function tankReadingText(pct, litres, status) {
   const p = numberText(pct, 1, "%");
   return hasValue(litres) ? `${p} · ${numberText(litres, 1, "L")}` : p;
 }
+
+/* ---- The live dashboard: tanks, lamps, run progress, forced-run form ----------------------------------------------------- */
 
 function updateDashboard() {
   const sensors = liveData.sensors || {};
@@ -4592,6 +4900,8 @@ function updateRunProgress(run) {
     .map(key => `${key}: ${numberText(doses[key]?.delivered, 1, "mL")} / ${numberText(doses[key]?.target, 1, "mL")}`).join(" · ");
   setText("runDoseProgress", doseText || "Unavailable");
 }
+
+/* ---- Diagnostics: groups, health summary, link health -------------------------------------------------------------------- */
 
 function diagnosticGroup(title, rows) {
   const card = document.createElement("article");
@@ -4828,6 +5138,8 @@ function renderDiagnostics() {
     eventBox.appendChild(row);
   });
 }
+
+/* ---- Command status: history, ESP1's replies explained, withdraw --------------------------------------------------------- */
 
 function commandStatusTone(status) {
   const normalized = String(status || "").toLowerCase();
@@ -7045,6 +7357,8 @@ function syncLinkPings() {
   });
 }
 
+/* ---- Asking ESP1 for a report, and the automatic link check -------------------------------------------------------------- */
+
 // Ask ESP1 for one report now. The rule takes refreshAt within the last minute and at most every 2 s.
 function askForReport() {
   if (!db || !auth?.currentUser || !isApprovedUser() || databaseAccessDenied) return Promise.resolve(false);
@@ -7214,7 +7528,7 @@ function logStateText(entry) {
   switch (entry?.state) {
     case "done": {
       const kb = Number(entry.size || 0) / 1024;
-      return `${kb > 0 && kb < 1 ? "Under 1" : kb.toFixed(0)} KB${entry.partial ? " (the day so far)" : ""}, sent${when}`;
+      return `${kb > 0 && kb < 1 ? "Under 1" : kb.toFixed(0)} KB${entry.partial ? " (the day so far)" : ""}, ${entry.sync === "auto" ? "kept up to date by ESP1" : "sent"}${when}`;
     }
     case "uploading": return logUploadStalled(entry)
       ? `Stopped while being sent${when}. Ask again with Upload from the rig`
@@ -7243,13 +7557,18 @@ function renderLogs() {
 
 async function downloadLog(day, button) {
   if (!db) return;
-  const label = button ? button.textContent : "Download";
-  if (button) { button.disabled = true; button.textContent = "Downloading…"; }
+  // A button with an icon keeps it: only its .btn-label changes (19 Nov 2026, Download today's log).
+  const labelEl = button ? (button.querySelector(".btn-label") || button) : null;
+  const label = labelEl ? labelEl.textContent : "Download";
+  if (button) { button.disabled = true; labelEl.textContent = "Downloading…"; }
   try {
     const snapshot = await db.ref(`logs/files/${day}`).once("value");
     const pieces = snapshot.val() || {};
-    // Pieces are 0000, 0001, ...: joined in number order, whatever form Firebase hands the list back in.
-    const keys = Object.keys(pieces).sort((a, b) => Number(a) - Number(b));
+    // Pieces are 0000, 0001, ...: joined in number order, whatever form Firebase hands the list back in. When the index
+    // says how many make up the copy (`chunks`), only those: an older, longer copy can't leave its tail behind.
+    const chunks = Number(logsIndex[String(day)]?.chunks);
+    const keys = Object.keys(pieces).sort((a, b) => Number(a) - Number(b))
+      .filter(key => !(Number.isInteger(chunks) && chunks > 0) || Number(key) < chunks);
     if (!keys.length) { setText("logsNote", `${logDayLabel(day)}: no data in Firebase. Use Upload from the rig.`); return; }
     const text = keys.map(key => String(pieces[key] ?? "")).join("");
     const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
@@ -7261,7 +7580,8 @@ async function downloadLog(day, button) {
   } catch (error) {
     setText("logsNote", `${logDayLabel(day)}: download failed (${error.code || error.message || "unknown error"}).`);
   } finally {
-    if (button) { button.disabled = false; button.textContent = label; }
+    if (button) { button.disabled = false; labelEl.textContent = label; }
+    renderLogToday();
   }
 }
 
@@ -7344,7 +7664,31 @@ function renderLogRequest() {
     : state === "uploading" ? (stalled ? "STOPPED" : "SENDING")
     : state === "failed" ? "FAILED" : state === "missing" ? "NOT ON CARD" : asked ? "ASKED" : "NOT SENT"}`,
     state === "done" ? "active" : (state === "uploading" && !stalled) || asked ? "warn" : state === "failed" || stalled ? "danger" : "off");
+  renderLogToday();
 }
+
+// "Download today's log" (19 Nov 2026): what the website already holds for the rig's today, never a request. ESP1 Plan B
+// keeps it current by itself, adding only the new lines (index `sync: "auto"`); 18h only sends it when asked.
+function renderLogToday() {
+  const button = document.getElementById("logTodayBtn");
+  if (!button) return;
+  const today = todayLogDay();
+  const entry = logsIndex[String(today)];
+  const size = Number(entry?.size || 0);
+  const at = Number(entry?.at || 0);
+  const ready = entry?.state === "done" && size > 0;
+  if (button.querySelector(".btn-label")?.textContent !== "Downloading…") button.disabled = !ready;
+  const kb = size / 1024;
+  const sizeText = `${kb > 0 && kb < 1 ? "under 1" : kb.toFixed(0)} KB`;
+  const when = at ? `${dateTimeText(at)} (${agoText(Math.max(0, serverNow() - at))})` : "";
+  setText("logTodayNote", ready
+    ? `On the website: ${sizeText}, up to ${when}. ${entry.sync === "auto"
+      ? "ESP1 adds the new lines by itself every hour, and soon after a run or a fault."
+      : "Sent when someone pressed Upload from the rig. ESP1's next firmware (Plan B) keeps it up to date by itself."}`
+    : entry?.state === "uploading" ? `Being sent from the rig now${at ? `, since ${agoText(Math.max(0, serverNow() - at))}` : ""}…`
+    : "Today's log isn't on the website yet. ESP1's next firmware (Plan B) sends it by itself every hour; until it is on the rig, use Upload from the rig below.");
+}
+document.getElementById("logTodayBtn")?.addEventListener("click", event => downloadLog(String(todayLogDay()), event.currentTarget));
 
 function requestLogUpload() {
   const day = selectedLogDay();
@@ -7389,6 +7733,7 @@ setInterval(() => {
   syncLogsListener();                  // the SD card logs list, for the accounts that may see it
   renderLogRequest();                  // Diagnostics > SD card logs: idle-only request, today's state
   updateForceArmed();
+  syncAutoStages();           // a new day can move a column's auto stage on (every 5 s at most)
   renderUpNext();             // the clock moves on: a watering time opens or closes, the day turns over
   if (faultAckLocalUntil && Date.now() >= faultAckLocalUntil) faultAckLocalUntil = 0;
   updateFaultBanner();
@@ -7404,6 +7749,8 @@ setInterval(() => {
  * Pure UI: reads no live data, sends no command, and is never nested inside an actuating button's
  * own clickable area, so it cannot itself trigger a pump/valve/relay action. */
 let infoOpenerEl = null;
+
+/* ---- Info icons and the Help tab ----------------------------------------------------------------------------------------- */
 
 function closeInfoPopover() {
   const pop = document.getElementById("infoPopover");
@@ -7946,6 +8293,8 @@ const PLAN_HIDDEN_KEY = "planHidden";
 let dashPlanMonth = 0;
 let dashPlanKey = "";
 let dashPlanHidden = (() => { try { return localStorage.getItem(PLAN_HIDDEN_KEY) === "1"; } catch { return false; } })();
+/* ---- The watering-plan calendar on the dashboard ------------------------------------------------------------------------- */
+
 function syncDashPlanToggle() {
   const card = document.getElementById("sPlanCard");
   if (card) card.hidden = dashPlanHidden;

@@ -1383,3 +1383,111 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .zw-tag { min-width: 1.4em; font-size: .68rem; }
   .seg-opt span { min-width: 0; }
 }
+
+/* ==== 19 Nov 2026 ====================================================================================================== */
+
+/* ---- Simple mode: the pumps-and-valves picture (#sActCard, data-state = on | off | sending | unknown) -------------------
+   The owner: "even more simpler ... more design and icons and more animations". While it is on, water runs from the pump
+   through the open valve to the sprinkler and the plant sways; off, the valve wheel turns shut, a pause mark shows and the
+   plant greys. Every state also has words (the chip and the line above), so colour is never the only signal. */
+.s-act { display: flex; align-items: center; gap: 16px; margin: 4px 0 6px; padding: 12px 16px; border: 1px solid var(--s-border); border-radius: 18px; background: linear-gradient(180deg, color-mix(in srgb, var(--water-soft) 50%, var(--surface)), var(--surface-muted)); transition: background .5s ease, border-color .5s ease; }
+.s-act-art { flex: 1 1 auto; min-width: 0; width: 100%; max-height: 124px; height: auto; overflow: visible; }
+.s-act-ground { fill: var(--ground); }
+.s-act-pipe { fill: none; stroke: var(--pipe); stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; }
+.s-act-flow { fill: none; stroke: var(--flow); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 3 13; opacity: 0; transition: opacity .5s ease; }
+.s-act-pump-base { fill: var(--soil-edge); opacity: .6; }
+.s-act-pump-body { fill: var(--surface); stroke: var(--muted); stroke-width: 3; transition: stroke .4s ease, fill .4s ease; }
+.s-act-impeller { fill: var(--muted); transform-box: fill-box; transform-origin: 50% 50%; transition: fill .4s ease; }
+.s-act-valve-body { fill: var(--surface); stroke: var(--muted); stroke-width: 3; transition: stroke .4s ease; }
+.s-act-stem { stroke: var(--muted); stroke-width: 3; stroke-linecap: round; }
+.s-act-wheel { fill: none; stroke: var(--muted); stroke-width: 3.2; stroke-linecap: round; transform-box: fill-box; transform-origin: 50% 50%; transition: transform .7s cubic-bezier(.3, 1.4, .5, 1), stroke .4s ease; }
+.s-act-mark-off { opacity: 0; transform-box: fill-box; transform-origin: 50% 50%; transform: scale(.4); transition: opacity .3s ease, transform .45s cubic-bezier(.3, 1.6, .5, 1); }
+.s-act-mark-off circle { fill: var(--warning); }
+.s-act-mark-off path { fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; }
+.s-act-nozzle { fill: var(--muted); transition: fill .4s ease; }
+.s-act-drops circle { fill: var(--flow); opacity: 0; }
+.s-act-plant { transform-box: fill-box; transform-origin: 50% 100%; transition: opacity .4s ease, filter .4s ease; }
+.s-act-plant-stem { fill: none; stroke: var(--leaf); stroke-width: 2.6; stroke-linecap: round; }
+.s-act-leaf { fill: var(--leaf); }
+.s-act-leaf2 { fill: var(--leaf-2); }
+.s-act-chip { display: inline-flex; flex: none; align-items: center; gap: 8px; margin: 0; padding: 10px 18px; border-radius: 999px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--s-border); color: var(--muted); font-size: 1.1rem; font-weight: 800; letter-spacing: .02em; }
+.s-act-chip .si { display: none; width: 1.35em; height: 1.35em; }
+
+.s-act[data-state="on"] { border-color: color-mix(in srgb, var(--s-green) 40%, var(--s-border)); background: linear-gradient(180deg, var(--s-green-soft), var(--surface-muted)); }
+.s-act[data-state="on"] .s-act-flow { opacity: 1; animation: s-flow .8s linear infinite; }
+.s-act[data-state="on"] .s-act-pump-body { stroke: var(--flow); fill: color-mix(in srgb, var(--flow) 12%, var(--surface)); }
+.s-act[data-state="on"] .s-act-impeller { fill: var(--flow); animation: s-spin .9s linear infinite; }
+.s-act[data-state="on"] .s-act-valve-body, .s-act[data-state="on"] .s-act-wheel { stroke: var(--s-green); }
+.s-act[data-state="on"] .s-act-nozzle { fill: var(--flow); }
+.s-act[data-state="on"] .s-act-drops circle { animation: s-fall-small 1s ease-in infinite; }
+.s-act[data-state="on"] .s-act-drops circle:nth-child(2) { animation-delay: .33s; }
+.s-act[data-state="on"] .s-act-drops circle:nth-child(3) { animation-delay: .66s; }
+.s-act[data-state="on"] .s-act-plant { animation: s-act-sway 3.2s ease-in-out infinite; }
+.s-act[data-state="on"] .s-act-chip { background: var(--s-green); box-shadow: 0 6px 16px rgb(31 127 69 / .28); color: #fff; animation: s-act-pop-on .5s cubic-bezier(.3, 1.6, .5, 1); }
+.s-act[data-state="on"] .s-act-i-on { display: inline; }
+:root[data-theme="dark"] .s-act[data-state="on"] .s-act-chip { color: #06140c; }
+
+.s-act[data-state="off"] { border-color: color-mix(in srgb, var(--warning) 45%, var(--s-border)); background: linear-gradient(180deg, var(--warn-soft), var(--surface-muted)); }
+.s-act[data-state="off"] .s-act-valve-body { stroke: var(--warning); }
+.s-act[data-state="off"] .s-act-wheel { stroke: var(--warning); transform: rotate(45deg); }   /* turned shut: an "x" */
+.s-act[data-state="off"] .s-act-mark-off { opacity: 1; transform: scale(1); }
+.s-act[data-state="off"] .s-act-plant { filter: saturate(.35); opacity: .75; }
+.s-act[data-state="off"] .s-act-chip { background: var(--warning); box-shadow: 0 6px 16px rgb(165 92 0 / .22); color: #fff; animation: s-act-pop-off .5s cubic-bezier(.3, 1.6, .5, 1); }
+.s-act[data-state="off"] .s-act-i-off { display: inline; }
+:root[data-theme="dark"] .s-act[data-state="off"] .s-act-chip { color: #1c1204; }
+
+.s-act[data-state="sending"] .s-act-i-wait, .s-act[data-state="unknown"] .s-act-i-wait { display: inline; }
+.s-act[data-state="sending"] .s-act-i-wait { animation: s-spin 1s linear infinite; }
+.s-act[data-state="sending"] .s-act-art { animation: s-act-breathe 1.4s ease-in-out infinite; }
+.s-act[data-state="unknown"] .s-act-art { filter: grayscale(1); opacity: .6; }
+
+@keyframes s-act-sway { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
+@keyframes s-act-pop-on { 0% { transform: scale(.8); } 100% { transform: scale(1); } }
+@keyframes s-act-pop-off { 0% { transform: scale(.8); } 100% { transform: scale(1); } }
+@keyframes s-act-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
+/* The switch itself: bigger in Simple mode, with a spring, and a soft glow while on. */
+:root[data-mode="simple"] #actSwitch { width: 74px; min-width: 74px; height: 42px; }
+:root[data-mode="simple"] #actSwitch::after { top: 4px; left: 4px; width: 32px; height: 32px; box-shadow: 0 2px 6px rgb(0 0 0 / .18); transition: transform .35s cubic-bezier(.3, 1.5, .5, 1), background .25s ease; }
+:root[data-mode="simple"] #actSwitch[aria-checked="true"]::after { transform: translateX(32px); }
+:root[data-mode="simple"] #actSwitch[aria-checked="true"] { box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 16%, transparent); }
+:root[data-mode="simple"] #actState { font-size: 1.05rem; }
+.s-act-title { display: inline-flex; align-items: center; gap: 8px; }
+.s-act-title .si { width: 1.3em; height: 1.3em; color: var(--s-green); }
+
+@media (max-width: 600px) {
+  .s-act { flex-direction: column; align-items: stretch; }
+  .s-act-chip { align-self: center; }
+}
+.page-hidden .s-act * { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+  .s-act, .s-act * { animation: none !important; }
+  .s-act[data-state="on"] .s-act-drops circle { opacity: 1; }
+}
+
+/* ---- Zone cards ---------------------------------------------------------------------------------------------------- */
+/* A save that worked: "Saved on the rig." in Simple mode, nothing in Complete mode (the owner: remove "Saved on ESP1"). */
+:root[data-mode="complete"] .control-result.zone-saved { display: none; }
+
+/* Auto stage, under Compared with (Complete mode only: .complete-only on the box). */
+.auto-stage { margin-top: 10px; }
+.auto-stage-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border: 1px dashed var(--s-border); border-radius: 12px; background: var(--surface-muted); }
+.auto-stage-row.is-on { border-style: solid; border-color: color-mix(in srgb, var(--s-green) 45%, var(--s-border)); background: var(--s-green-soft); }
+.auto-stage-row.is-paused { border-style: solid; border-color: color-mix(in srgb, var(--warning) 45%, var(--s-border)); background: var(--warn-soft); }
+.auto-stage-row.is-stopped { border-style: solid; border-color: color-mix(in srgb, var(--danger) 45%, var(--s-border)); }
+.auto-stage-line { display: flex; flex: 1 1 260px; align-items: flex-start; gap: 8px; margin: 0; font-weight: 600; line-height: 1.4; }
+.auto-stage-line .si { margin-top: .12em; color: var(--s-green); }
+.auto-stage-row.is-paused .auto-stage-line .si { color: var(--warning); }
+.auto-stage-row.is-stopped .auto-stage-line .si { color: var(--danger); }
+.auto-stage-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.auto-stage button { display: inline-flex; align-items: center; gap: 6px; }
+.auto-stage-note { margin: 6px 2px 0; }
+
+/* ---- System: the website title (operators only) -------------------------------------------------------------------- */
+.site-preview { display: inline-flex; align-items: center; gap: 10px; margin: 4px 0 14px; padding: 10px 16px 10px 10px; border: 1px dashed var(--s-border); border-radius: 14px; background: var(--sidebar); }
+.site-preview .s-brand-name, .site-preview .s-brand-sub { overflow-wrap: anywhere; }
+
+/* ---- Diagnostics: Download today's log ----------------------------------------------------------------------------- */
+.log-today { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--s-border); border-radius: 14px; background: var(--surface-muted); }
+.log-today button { display: inline-flex; align-items: center; gap: 8px; }
+.log-today .field-note { flex: 1 1 260px; margin: 0; }
