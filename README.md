@@ -105,8 +105,8 @@ The page works with web v.3 firmware too (no litres shown).
   17 Nov; it is *busy* during a run, its warm-up, a pump exercise, an armed forced run, a dosed tank waiting, or a
   watering window that is open and not yet served or opens within 10 minutes, and then answers a refresh at most every
   30 s (10 s otherwise) and holds any SD log upload. Commands and every stop are still read every 3 s. The page asks
-  ESP1 for one report (`irrigation/viewer/refreshAt`) when it opens or comes back to the front, by itself when the
-  regular report is overdue (at most every 2 minutes), and when **Refresh** is pressed. It no longer touches
+  ESP1 for one report (`irrigation/viewer/refreshAt`) when it opens or comes back to the front, and when **Refresh** is
+  pressed (until 19 Nov also by itself when the regular report was overdue: a link ping now, see below). It no longer touches
   `viewer/at` (the 17 Nov – 18 Nov f "watched" pace), ESP1 no longer uploads old SD logs by itself (only a day asked
   for with "Upload from the rig"), and ESP1's two polls from 17 Nov are slower (refresh every 6 s, log requests every
   30 s). Why: the SD card shows ESP1's reports failing 1–8 % a day from 10 to 17 Nov at −84 to −89 dBm, and 97 % on
@@ -115,6 +115,30 @@ The page works with web v.3 firmware too (no litres shown).
   so a pace change in the firmware needs no website change. After failed reports ESP1 opens a fresh connection
   (every 3 failures) and rejoins Wi-Fi (after 10); Diagnostics shows both counts, and how many reports needed their
   text cleaned (noise bytes swapped for "?", which Firebase would otherwise refuse with HTTP 400).
+- **Connected = online, Refresh with an answer** (19 Nov 2026, the owner: "decide ESP's offline if it wasn't connected
+  ... if it's connected and has its old snapshot consider it as online", and "make the refresh button request to the
+  rig more like manual/test way, but don't show on LCD ... less heavy work load to ESP1"). ESP1's ~5 KB report is the
+  request most likely to fail (weak Wi-Fi; and memory: a new TLS session needs two ~16.7 KB buffers), while it still
+  reads the command queue every 3 s and answers each row with a ~100-byte status.
+  - **Link ping**: `RECOVER {action:"ping"}` in `irrigation/commands`. Every ESP1 build so far marks it `received` on the
+    3 s poll and then refuses it (`no held fault to recover from` / `action must be ...`): no LCD, no SD row, no event, no
+    extra report. ESP1 Plan B (`..\ESP1_PlanB`, not flashed) answers `completed` with `pong|state|manual|block|uptime`,
+    which the page uses for the Manual/Test hold (`newerPong()`).
+  - **Online** (`esp1Online()`): the report is current **or** ESP1 answered any command row within the same window
+    (2 report intervals + 15 s, at least 90 s). Every gate uses it: the controls, the stops, Manual/Test, the tank check,
+    the SD log request, Save to rig. The numbers keep their age (`deviceIsFresh()`); the top bar says "ESP1 connected ·
+    its full report is late" (amber), and "ESP1 isn't connected" only when nothing answers.
+  - **Refresh** asks for a report (`viewer/refreshAt`, as before) **and** sends a ping; it says "ESP1 answered in x s:
+    it's connected", then "Fresh report in y s", or that the report didn't get through, or that nothing answered.
+  - **Automatically** the page no longer asks for extra reports when one is overdue; it sends a ping at most once a
+    minute for all open pages together (one pending at a time), and only while the report is overdue. ESP1's own
+    minute report is the automatic refresh.
+  - **Housekeeping** (`syncLinkPings()`): an unanswered ping is withdrawn after 20 s; finished or withdrawn pings are
+    deleted after 2 minutes by any page; pings never appear in Command status (`commandData` excludes them).
+  - **Rules**: any approved account may create a queued ping, withdraw it, and delete it once ESP1 has finished with
+    it (and delete a type-less row, which is only ever ESP1's late answer to a deleted row). A stop is accepted when
+    ESP1's report is under 3 minutes old **or** `payload.proof` names a row ESP1 answered under 3 minutes ago (only the
+    device account writes those statuses). Tests: `npm run test:rules-emu` (53), `npm run test:link` (12).
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
   once a report is one interval plus at least 5 s late (`deviceDelayMs()`: over 60 s at the 30 s pace, over 120 s

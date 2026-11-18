@@ -199,7 +199,8 @@ let activeZones = DEFAULT_ZONES.map(z => ({ ...z }));
 let db = null;
 let auth = null;
 let liveData = {};
-let commandData = [];
+let commandData = [];       // the command rows the page shows and acts on (never a link ping, see isLinkPingRow())
+let commandRows = [];       // every row read, pings included: ESP1's answers to any of them prove it is connected
 let firebaseReady = false;
 let databaseListenersAttached = false;
 let databaseAccessDenied = false;   // the rules refused a listener, which also ended it
@@ -209,6 +210,7 @@ let firebaseLinkSeen = false;       // has this page connected yet? Until then, 
 let firebaseConnected = true;       // this browser's own link to Firebase, which says nothing about ESP1
 let lastKnownFresh = false;         // whether the page last drew ESP1 as reporting (see syncFreshness())
 let lastKnownDelayed = false;       // ...and whether it drew its reports as late (deviceDelayMs(), 18 Nov 2026)
+let lastKnownOnline = false;        // ...and whether it drew ESP1 as connected (esp1Online(), 19 Nov 2026)
 let firebaseDownSince = 0;          // when this browser lost Firebase (0 = connected), for nudgeFirebaseReconnect()
 let lastReconnectNudge = 0;
 let liveRef = null;
@@ -366,7 +368,9 @@ function snapshotAgeText() {
 // meta.linkMode on web v.4 of 18 Nov 2026 e), so a firmware pace change needs no change here.
 function liveAgeText() {
   const base = snapshotAgeText();
-  if (!liveData.meta?.updatedAt || !deviceIsFresh()) return base;
+  if (!liveData.meta?.updatedAt) return base;
+  // Connected with an old report (19 Nov 2026): say when ESP1 last answered, which is what makes it online.
+  if (!deviceIsFresh()) return esp1Online() ? `${base} · ESP1 answered ${agoText(Math.max(0, serverNow() - esp1AnswerAt()))}` : base;
   return `${base} · ${linkPaceText()}`;
 }
 
@@ -378,10 +382,91 @@ function linkPaceText() {
   return liveData.meta?.linkMode === "busy" ? `${pace} while the rig works on a watering` : pace;
 }
 
+// How long one sign of life from ESP1 counts: two report intervals and 15 s, at least 90 s.
+function esp1LinkWindowMs() {
+  const refreshMs = Number(liveData.meta?.refreshMs || 60000);
+  return Math.max(refreshMs * 2 + 15000, 90000);
+}
+
+// Whether ESP1's latest full REPORT is current. The numbers on the page are only as new as this.
 function deviceIsFresh() {
   const stamp = Number(liveData.meta?.updatedAt || 0);
-  const refreshMs = Number(liveData.meta?.refreshMs || 60000);
-  return Boolean(stamp) && serverNow() - stamp < Math.max(refreshMs * 2 + 15000, 90000);
+  return Boolean(stamp) && serverNow() - stamp < esp1LinkWindowMs();
+}
+
+/* ---- Is ESP1 connected? (19 Nov 2026) ------------------------------------------------------------------------------
+ * The owner, 19 Nov 2026: "decide ESP's offline if it wasn't connected to ESP. But if it's connected and has its old
+ * snapshot consider it as online." ESP1's full report (~5 KB) is the request most likely to fail on its weak Wi-Fi and
+ * tight memory, while it still reads the command queue every 3 s and answers each row with a ~100-byte status. So
+ * ESP1 counts as ONLINE when its report is current OR it has answered a command row within the same window; OFFLINE
+ * only when neither. Gates (every control, the stops, Manual/Test, Refresh) follow esp1Online(); the numbers on the
+ * page still say how old they are (deviceIsFresh()).
+ * A row's status other than "queued"/"withdrawn" is written only by ESP1's device account (the rules allow nothing
+ * else), and its updatedAt is Firebase's own clock, so an answer can't be faked by a browser. The page makes sure there
+ * is a recent answer to look at with a link ping (sendLinkPing()). */
+function esp1AnswerRow() {
+  let best = null;
+  commandRows.forEach(row => {
+    const at = Number(row.updatedAt || 0);
+    if (!at || row.status === "queued" || row.status === "withdrawn") return;
+    if (!best || at > Number(best.updatedAt)) best = row;
+  });
+  return best;
+}
+function esp1AnswerAt() { return Number(esp1AnswerRow()?.updatedAt || 0); }
+
+function esp1Online() {
+  if (deviceIsFresh()) return true;
+  const at = esp1AnswerAt();
+  return Boolean(at) && serverNow() - at < esp1LinkWindowMs();
+}
+
+// When ESP1 was last heard from at all: its report or its latest answer.
+function esp1HeardAt() {
+  return Math.max(Number(liveData.meta?.updatedAt || 0), esp1AnswerAt());
+}
+function esp1HeardText() {
+  const at = esp1HeardAt();
+  return at ? `last heard from ${agoText(Math.max(0, serverNow() - at))}` : "never heard from yet";
+}
+
+// Proof for the rules that ESP1 is reading the queue, sent with a stop while its report is old: the id of a row ESP1
+// answered within the last 3 minutes (the rules check the row itself). "" when there is none or the report is current.
+const ESP1_ANSWER_STATUSES = new Set(["received", "accepted", "rejected", "completed", "failed"]);   // as the rules list them
+function esp1AnswerProof() {
+  if (deviceIsFresh()) return "";
+  let best = null;
+  commandRows.forEach(row => {
+    if (row.type && ESP1_ANSWER_STATUSES.has(row.status) && Number(row.updatedAt) > Number(best?.updatedAt || 0)) best = row;
+  });
+  return best && serverNow() - Number(best.updatedAt) < 170000 ? best.id : "";
+}
+
+// A link ping: RECOVER with the action "ping". On every ESP1 build so far it does nothing at all -- no LCD, no SD row,
+// no event, no report: firebasePollCommands() marks it "received" and firebaseCommandTick() refuses it ("no held
+// fault to recover from" / "action must be hold/release/irrigate/normal"). ESP1 Plan B (ESP1_PlanB_link_rescue)
+// answers "completed" with "pong|<state>|<manual mode>|<largest memory block>|<uptime s>" instead.
+const LINK_PING_ACTION = "ping";
+function isLinkPingRow(row) {
+  // A row with no type at all is only ever an answer that landed after its row was deleted: never a command.
+  return !row?.type || (row.type === "RECOVER" && row.payload?.action === LINK_PING_ACTION);
+}
+
+// ESP1 Plan B's answer to a ping, parsed; null on every build before it (and on any row that isn't one).
+function parsePong(row) {
+  const parts = String(row?.detail || "").split("|");
+  if (parts[0] !== "pong" || !row?.updatedAt) return null;
+  return { at: Number(row.updatedAt), state: parts[1] || "", manual: parts[2] || "", block: Number(parts[3]) || 0, uptimeS: Number(parts[4]) || 0 };
+}
+// The newest Plan B answer that is newer than the report, so it says more about now than the report does.
+function newerPong() {
+  let best = null;
+  commandRows.forEach(row => {
+    if (!isLinkPingRow(row) || row.status !== "completed") return;
+    const pong = parsePong(row);
+    if (pong && (!best || pong.at > best.at)) best = pong;
+  });
+  return best && best.at > Number(liveData.meta?.updatedAt || 0) && serverNow() - best.at < esp1LinkWindowMs() ? best : null;
 }
 
 // How late ESP1's report is (18 Nov 2026): 0 while it is on time, else its age. ESP1 reports every meta.refreshMs (web v.4
@@ -398,13 +483,13 @@ function deviceDelayMs() {
 // The stops (2026-11-06, the owner's choice): Emergency stop, switching pumps and valves off, and Cancel forced run
 // are never queued while ESP1 isn't reading the queue. A stop waiting there fires whenever ESP1 next reads it, which
 // can be hours later and into a different situation, while the page looks as if the rig has been told. So while ESP1
-// isn't reporting, or this browser has lost Firebase, those buttons are off and say how else to stop the rig. The
-// rules refuse a stop once ESP1's last report is over 3 minutes old; deviceIsFresh() gives up within 2.25 minutes
-// (ESP1 reports at least once a minute), so the page always says so first.
+// isn't connected, or this browser has lost Firebase, those buttons are off and say how else to stop the rig. The
+// rules refuse a stop unless ESP1's last report, or its answer to the row named in payload.proof (19 Nov 2026), is
+// under 3 minutes old; esp1Online() gives up within 2.25 minutes, so the page always says so first.
 const STOP_ELSEWHERE = "Use the physical cutoff, MODE + BACK on the unit, or SMS STOP,ALL.";
 function stopOfflineReason() {
   if (!firebaseConnected) return `This browser is offline, so a stop can't be sent from here. ${STOP_ELSEWHERE}`;
-  if (!deviceIsFresh()) return `ESP1 isn't reporting, so a stop can't be sent from here. ${STOP_ELSEWHERE}`;
+  if (!esp1Online()) return `ESP1 isn't connected (${esp1HeardText()}), so a stop can't be sent from here. ${STOP_ELSEWHERE}`;
   return "";
 }
 
@@ -743,7 +828,9 @@ function renderRigLock() {
     : !known ? "ESP1 hasn't reported its lock yet."
     : waiting ? "Waiting for ESP1's report."
     : !firebaseConnected ? "This browser has lost its connection to Firebase."
-    : !deviceIsFresh() ? "ESP1 isn't reporting, so it can't lock or unlock right now."
+    : !deviceIsFresh() ? (esp1Online()
+      ? "ESP1 is connected, but the lock needs its current state, and its full report hasn't come through yet."
+      : "ESP1 isn't connected, so it can't lock or unlock right now.")
     : "";
   const word = waiting || (!known ? "Unknown" : locked ? "Locked" : "Unlocked");
   ["lockSwitch", "sysLockSwitch"].forEach(id => {
@@ -848,9 +935,13 @@ function syncControlAvailability() {
   const notApprovedTitle = !isApprovedUser() ? "Your account is awaiting operator approval before it can use this control." : NO_CONTROL_TITLE;
   // The rig lock: the rules refuse everything but the stops while it is on, so those controls are off too.
   const locked = rigLocked();
-  const normalAllowed = signedIn && control && deviceIsFresh() && firebaseConnected && !locked;
+  // ESP1 connected (19 Nov 2026): a current report, or an answer from it within the same window. ESP1 checks every
+  // request itself and refuses one it can't run, so an old report doesn't need to keep the controls off.
+  const online = esp1Online();
+  const normalAllowed = signedIn && control && online && firebaseConnected && !locked;
   const normalTitle = (signedIn && !control) ? notApprovedTitle : locked ? LOCKED_TITLE
-    : "Sign in and wait for a fresh ESP1 snapshot before using this control.";
+    : !signedIn ? "Sign in before using this control."
+    : `ESP1 isn't connected (${esp1HeardText()}). This control comes back as soon as ESP1 answers again.`;
   renderRigLock();
   renderActuationSwitch();
   // Every actuating control needs a fresh snapshot: ESP1 will refuse anything that arrives while it
@@ -869,8 +960,9 @@ function syncControlAvailability() {
   // the Manual/Test hold itself does in renderManualHold().
   // A button ESP1 would ignore is off as well, with the reason beside the buttons (see holdBlockReason()) --
   // but never the one being held: a disabled button doesn't receive its own release.
-  const holdAllowed = normalAllowed || (locked && signedIn && control && deviceIsFresh() && firebaseConnected);
-  const holdTitle = (signedIn && !control) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before using a hold-to-run test.";
+  const holdAllowed = normalAllowed || (locked && signedIn && control && online && firebaseConnected);
+  const holdTitle = (signedIn && !control) ? notApprovedTitle : !signedIn ? "Sign in before using a hold-to-run test."
+    : `ESP1 isn't connected (${esp1HeardText()}), so a hold-to-run test can't reach it.`;
   // While locked, holdBlockReason() says so ("the rig is locked"), so the note below explains the buttons being off.
   document.querySelectorAll(".hold-btn").forEach(button => {
     const reason = holdAllowed ? holdBlockReason(button.dataset.holdTarget) : "";
@@ -908,7 +1000,7 @@ function syncControlAvailability() {
     const reason = holdAllowed ? forceRunBlockReason() : "";
     forceButton.disabled = !holdAllowed || Boolean(reason);
     forceButton.title = !holdAllowed
-      ? ((signedIn && !control) ? notApprovedTitle : "Sign in and wait for a fresh ESP1 snapshot before forcing a run.")
+      ? ((signedIn && !control) ? notApprovedTitle : !signedIn ? "Sign in before forcing a run." : `ESP1 isn't connected (${esp1HeardText()}).`)
       : reason ? `ESP1 would refuse a forced run right now: ${reason}.` : "";
     const note = document.getElementById("forceRunBlocked");
     if (note) {
@@ -938,11 +1030,11 @@ function syncControlAvailability() {
   if (barNote) {
     barNote.hidden = !signedIn || !control || !stopBlocked;
     barNote.textContent = !firebaseConnected ? "Offline: stop it at the unit (MODE + BACK) or by SMS STOP,ALL."
-      : "ESP1 isn't reporting: stop it at the unit (MODE + BACK) or by SMS STOP,ALL.";
+      : "ESP1 isn't connected: stop it at the unit (MODE + BACK) or by SMS STOP,ALL.";
   }
-  // This page can't see why ESP1 stopped reporting, but the LCD can, so say where to look.
+  // This page can't see why ESP1 stopped answering, but the LCD can, so say where to look.
   const offlineHelp = document.getElementById("esp1OfflineHelp");
-  if (offlineHelp) offlineHelp.hidden = !signedIn || !control || deviceIsFresh();
+  if (offlineHelp) offlineHelp.hidden = !signedIn || !control || online;
 
   // Recovery + reboot: signed-in AND Control, deliberately NOT freshness-gated. A stale snapshot is often
   // exactly why you are reaching for these. None of them is a stop, so the rig lock switches them off. The
@@ -1120,11 +1212,12 @@ function attachDatabaseListeners() {
     liveData = snapshot.val() || {};
     lastKnownFresh = deviceIsFresh();
     lastKnownDelayed = deviceDelayMs() > 0;
+    lastKnownOnline = esp1Online();
     updateDashboard();
     setText("liveAge", liveAgeText());
     syncConnection();
     syncControlAvailability();
-    if (refreshAskedAt && Number(liveData.meta?.updatedAt || 0) > refreshBaseStamp) finishRefresh(true);
+    syncRefreshProgress();
   }, error => {
     if (error.code === "PERMISSION_DENIED") {
       // Live data needs an approved account. The denial also ends this listener, so
@@ -1138,7 +1231,13 @@ function attachDatabaseListeners() {
 
   commandsRef.on("value", snapshot => {
     const raw = snapshot.val() || {};
-    commandData = Object.entries(raw).map(([id, command]) => ({ id, ...command }));
+    commandRows = Object.entries(raw).map(([id, command]) => ({ id, ...command }));
+    // Link pings stay out of everything that shows or acts on commands; they only say whether ESP1 is connected.
+    commandData = commandRows.filter(row => !isLinkPingRow(row));
+    syncLinkPings();              // tidy answered pings away, and give up on one ESP1 never read
+    syncRefreshProgress();        // ESP1's answer to a Refresh
+    syncFreshness();              // an answer can bring ESP1 back online without a report
+    renderManualHold();           // ...and a Plan B answer carries the manual-mode state (newerPong())
     renderCommandHistory();
     announceCommandReplies();     // whichever tab is open, say what ESP1 answered
     renderPulseResult();          // the pulse verdict rides on its command status detail
@@ -1197,7 +1296,9 @@ function syncConnection() {
   const fresh = deviceIsFresh();
   // No running age here: the top bar's own line (liveAge) already counts the seconds.
   if (fresh && deviceDelayMs()) { setConnection("delayed", "Connected, but ESP1's reports are late"); return; }
-  setConnection(fresh, fresh ? "Live system connected" : "Waiting for a current ESP1 snapshot");
+  // Online with an old report (19 Nov 2026): ESP1 answers, but its full report hasn't come through.
+  if (!fresh && esp1Online()) { setConnection("delayed", "ESP1 connected · its full report is late"); return; }
+  setConnection(fresh, fresh ? "Live system connected" : liveData.meta?.updatedAt ? "ESP1 isn't connected" : "Waiting for ESP1's first report");
 }
 
 // A rig that stops reporting sends nothing to react to, so nothing else would redraw the page: the top bar
@@ -1206,11 +1307,13 @@ function syncConnection() {
 function syncFreshness() {
   const fresh = deviceIsFresh();
   const delayed = deviceDelayMs() > 0;
-  if (fresh === lastKnownFresh && delayed === lastKnownDelayed) return;
-  const freshChanged = fresh !== lastKnownFresh;
+  const online = esp1Online();
+  if (fresh === lastKnownFresh && delayed === lastKnownDelayed && online === lastKnownOnline) return;
+  const redraw = fresh !== lastKnownFresh || online !== lastKnownOnline;
   lastKnownFresh = fresh;
   lastKnownDelayed = delayed;
-  if (freshChanged) updateDashboard();   // late but current: the numbers stand, only the connection line changes
+  lastKnownOnline = online;
+  if (redraw) updateDashboard();   // late but current: the numbers stand, only the connection line changes
   syncConnection();
 }
 
@@ -2354,14 +2457,20 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus(`${type.replaceAll("_", " ")} not sent: this browser has lost its connection to Firebase. Try again once it's back.`, "error");
     return Promise.resolve(false);
   }
-  if (OFFLINE_CONFIRM_TYPES.has(type) && !deviceIsFresh() &&
+  if (OFFLINE_CONFIRM_TYPES.has(type) && !esp1Online() &&
       !confirm(`ESP1 appears offline. ${type.replaceAll("_", " ")} will wait in the queue and run whenever ESP1 reconnects, even if that is days from now. Queue it anyway?`)) {
     setCommandStatus(`${type.replaceAll("_", " ")} not sent.`);
     return Promise.resolve(false);
   }
-  if (!emergency && !deviceIsFresh()) {
-    setCommandStatus("Normal command not sent: ESP1 live status is stale or offline.", "error");
+  if (!emergency && !esp1Online()) {
+    setCommandStatus(`Not sent: ESP1 isn't connected (${esp1HeardText()}).`, "error");
     return Promise.resolve(false);
+  }
+  // A stop while ESP1 answers but its report is old (19 Nov 2026): the rules want proof that ESP1 is reading the
+  // queue, so name the row it answered last (see esp1AnswerProof()). ESP1 ignores the extra field.
+  if (NOT_WITHDRAWABLE.has(type) && !deviceIsFresh()) {
+    const proof = esp1AnswerProof();
+    if (proof) payload = { ...payload, proof };
   }
   if (!emergency) {
     const remaining = COMMAND_COOLDOWN_MS - (Date.now() - lastCommandAt);
@@ -2765,7 +2874,7 @@ function rigControlBlock() {
   if (!currentUserIsSignedIn() || !isApprovedUser()) return "Needs an approved account.";
   if (!hasZoneEditAccess()) return NO_ZONE_EDIT_TITLE;
   if (!firebaseConnected) return "This browser has lost its connection to Firebase.";
-  if (!deviceIsFresh()) return "Needs a fresh ESP1 snapshot: ESP1 isn't reporting right now.";
+  if (!esp1Online()) return `ESP1 isn't connected (${esp1HeardText()}).`;
   if (rigLocked()) return LOCKED_TITLE;
   return "";
 }
@@ -4563,7 +4672,9 @@ function healthItems() {
   const add = (tone, text) => items.push({ tone, text });
   const f = d.fault || {};
   const state = liveData.system?.state || "";
-  if (!deviceIsFresh()) add("bad", `ESP1 isn't reporting: ${snapshotAgeText().toLowerCase()}. Everything below is from that report.`);
+  if (!deviceIsFresh()) add(esp1Online() ? "warn" : "bad", esp1Online()
+    ? `ESP1 is connected, but its full report is late: ${snapshotAgeText().toLowerCase()}. Everything below is from that report.`
+    : `ESP1 isn't connected: ${snapshotAgeText().toLowerCase()}. Everything below is from that report.`);
   if (f.held) add("bad", `A fault is held and waiting for a decision: ${rawText(heldFaultCode || f.code, "see the banner")}. Use the banner at the top of the page.`);
   else if (state === "EMERGENCY_STOP") add("bad", "The emergency stop is on. Use Return to normal in the banner when it is safe.");
   if (actuationsAreOff()) add("warn", "Pumps and valves are switched off (actuations disabled), so nothing runs, not even the schedule.");
@@ -5198,7 +5309,7 @@ const TANK_CHECK_WHY = {
 function tankCheckBlockReason() {
   if (!hasControlAccess()) return "Confirming needs control access. Ask an operator, or send SMS TANKCHECK,OK from the owner's phone.";
   if (!firebaseConnected) return "This browser is offline.";
-  if (!deviceIsFresh()) return "ESP1 isn't reporting, so it can't be told. Use SMS TANKCHECK,OK or the LCD.";
+  if (!esp1Online()) return "ESP1 isn't connected, so it can't be told. Use SMS TANKCHECK,OK or the LCD.";
   if (rigLocked()) return LOCKED_TITLE;
   if (liveData.system?.state !== "IDLE_STATE") return "Only while the rig is idle: ESP1 refuses it during a run or a test.";
   return "";
@@ -5414,7 +5525,7 @@ function updateForceArmed() {
   const cancelNote = document.getElementById("cancelForceOffline");
   if (cancelNote) {
     cancelNote.hidden = !offline || left <= 0;
-    if (offline) cancelNote.textContent = `${!firebaseConnected ? "This browser is offline" : "ESP1 isn't reporting"}, so Cancel can't be sent from here. Press BACK on the LCD before the countdown ends, or send SMS STOP,ALL.`;
+    if (offline) cancelNote.textContent = `${!firebaseConnected ? "This browser is offline" : "ESP1 isn't connected"}, so Cancel can't be sent from here. Press BACK on the LCD before the countdown ends, or send SMS STOP,ALL.`;
   }
 }
 
@@ -5519,7 +5630,7 @@ function upNextBlockText() {
   const d = liveData.diagnostics || {};
   const state = liveData.system?.state;
   const reasons = [];
-  if (!deviceIsFresh()) reasons.push("ESP1 isn't reporting, so this is from its last report.");
+  if (!deviceIsFresh()) reasons.push(esp1Online() ? "ESP1's full report is late, so this is from its last report." : "ESP1 isn't connected, so this is from its last report.");
   if (state === "EMERGENCY_STOP" && !d.fault?.held) reasons.push("The emergency stop is on: none of this runs until Return to normal.");
   else if (d.fault?.held) reasons.push("A fault is held: none of this runs until someone chooses how to continue.");
   if (actuationsAreOff()) reasons.push("Pumps and valves are off: none of this runs until they are switched back on.");
@@ -6405,6 +6516,11 @@ let mtStaleAnswer = null;     // the "refused" or "revoked" already published wh
 const MT_HOLD_ANSWER_GRACE_MS = 6000;
 
 function manualHoldState() {
+  // ESP1 Plan B answers a ping with its manual-mode state, which is newer than an old report (19 Nov 2026).
+  const pong = newerPong();
+  if (pong && ["idle", "held", "refused", "revoked"].includes(pong.manual)) {
+    return (pong.manual === "refused" || pong.manual === "revoked") && pong.at < mtAskedAt ? "idle" : pong.manual;
+  }
   const state = String(liveData.diagnostics?.webManual?.state || "idle");
   if (state !== "refused" && state !== "revoked") return state;
   const stamp = Number(liveData.meta?.updatedAt || 0);
@@ -6429,16 +6545,19 @@ function renderManualHold() {
     // indistinguishable from "the page is broken" or "ESP1 is offline."
     else if (!isApprovedUser()) note.textContent = "Your account is awaiting operator approval before it can use this control.";
     else if (rigLocked()) note.textContent = "The rig is locked, so nothing on this tab can be used. Unlock it first: operators, and accounts with 1-hour access or Sub-operator, can.";
-    // Checked ahead of every state branch, including "held" -- a stale snapshot can't be trusted to
-    // mean the rig is still there, and telling the operator "Manual mode active" from stale data would
-    // be actively misleading.
-    else if (!deviceIsFresh()) note.textContent = `ESP1 appears offline — ${snapshotAgeText()}. Your request is queued but cannot be granted until it reconnects.`;
-    else if (state === "held")    note.textContent = `Manual mode active — the rig is out of automatic${wm.secondsLeft ? ` (renews, ${wm.secondsLeft}s left)` : ""}.`;
+    // Checked ahead of every state branch, including "held" -- with ESP1 not answering at all, telling the
+    // operator "Manual mode active" from old data would be actively misleading.
+    else if (!esp1Online()) note.textContent = `ESP1 is offline: ${esp1HeardText()}. Your request stays in place, and ESP1 grants it as soon as it is connected again (if the rig is idle).`;
+    // Connected with an old report (19 Nov 2026, the owner: "make it granted, even if it has no latest snapshot"):
+    // ESP1 reads the request every 3 s and grants it from an idle rig, so the page treats it as granted. A Plan B
+    // ESP1 says so in its ping answer (newerPong()), which then takes the branches below.
+    else if (!deviceIsFresh() && !newerPong()) note.textContent = `Manual mode granted: ESP1 is connected (it answered ${agoText(Math.max(0, serverNow() - esp1AnswerAt()))}). Its full report hasn't come through yet (${snapshotAgeText().toLowerCase()}), so the rig's state shown here is from then. ESP1 still checks every test itself and refuses one it can't run.`;
+    else if (state === "held")    note.textContent = `Manual mode active — the rig is out of automatic${wm.secondsLeft && deviceIsFresh() ? ` (renews, ${wm.secondsLeft}s left)` : ""}.`;
     else if (state === "refused") note.textContent = `The rig refused manual mode: ${rawText(wm.reason, "not idle")}. Wait for it to finish, then press Proceed to ask again.`;
     else if (state === "revoked") note.textContent = "The rig operator took control at the LCD.";
     else note.textContent = "Requesting manual control from the rig…";
     // Asking is the normal first step, not an error.
-    const refusedOrUnavailable = !isApprovedUser() || rigLocked() || !deviceIsFresh() || state === "refused" || state === "revoked";
+    const refusedOrUnavailable = !isApprovedUser() || rigLocked() || !esp1Online() || state === "refused" || state === "revoked";
     note.className = refusedOrUnavailable ? "control-result error" : state === "held" ? "field-note" : "control-result";
   }
   // Proceed reveals the screen regardless of hold state (2026-09-10 revision) -- previously this
@@ -6500,9 +6619,12 @@ function renderManualHold() {
   // they're re-enabled after a reconnect.
   const controlsNote = document.getElementById("mtControlsNote");
   if (controlsNote && mtArmed) {
-    if (!deviceIsFresh()) {
-      controlsNote.textContent = `ESP1 appears offline — ${snapshotAgeText()}. Requests are queued but nothing runs until it reconnects.`;
+    if (!esp1Online()) {
+      controlsNote.textContent = `ESP1 is offline: ${esp1HeardText()}. The tests come back as soon as it answers again.`;
       controlsNote.className = "control-result error";
+    } else if (!deviceIsFresh() && !newerPong()) {
+      controlsNote.textContent = `Direct hardware control — granted: ESP1 is connected (answered ${agoText(Math.max(0, serverNow() - esp1AnswerAt()))}), but its full report is late, so states shown here may be old.`;
+      controlsNote.className = "control-result";
     } else if (state === "held") {
       controlsNote.textContent = "Direct hardware control — this tab drives the hardware directly.";
       controlsNote.className = "control-result";
@@ -6833,15 +6955,95 @@ contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () 
  * ESP1." ESP1 (web v.4 of 18 Nov g) reports by itself once a minute (meta.refreshMs), and this page shows each report as
  * it arrives. On top of that it asks ESP1 for one report at once (irrigation/viewer/refreshAt):
  *   - when the page opens or comes back to the front,
- *   - by itself when ESP1's regular report is overdue (one interval + 30 s), at most every AUTO_REFRESH_MIN_GAP_MS,
  *   - and when Refresh is pressed (which also says how long ESP1 took).
+ * (Until 19 Nov it also asked for one when ESP1's regular report was overdue; that is a link ping now, see below.)
  * It no longer tells ESP1 that someone is watching (irrigation/viewer/at every 15 s, 17 Nov to 18 Nov f): that set a
- * faster pace, the load this undoes. The pace itself is ESP1's; nothing here assumes a number. */
-const AUTO_REFRESH_MIN_GAP_MS = 120000;
-// How long Refresh waits for ESP1's answer: ESP1 reads the request within ~6 s and answers at most every 10 s (30 s busy).
+ * faster pace, the load this undoes. The pace itself is ESP1's; nothing here assumes a number.
+ *
+ * 19 Nov 2026, the owner: "make the refresh button request to the rig more like manual/test way. But don't show on LCD.
+ * In refreshing must request data from rig ... or automatically refresh every 1 min, but takes less heavy work load to
+ * ESP1." On 18-19 Nov ESP1's ~5 KB report was the request that failed (weak Wi-Fi, and memory: a new secure connection
+ * needs two ~16.7 KB buffers), so a Refresh that only waited for a report said "no new report" even while ESP1 was
+ * reading the queue. Now Refresh is a request with an answer, like Manual/Test:
+ *   1. it asks for a report (viewer/refreshAt, as before: ESP1 polls it every 6 s and sends one at once), and
+ *   2. it sends a link ping (sendLinkPing()), which ESP1 answers from the command poll within ~3 s with a ~100-byte
+ *      status -- nothing on the LCD, no SD row, no extra report;
+ *   3. the page says when ESP1 answered, then when the report landed; ESP1 counts as online on the answer alone.
+ * Automatically: ESP1 already sends a report every minute by itself (meta.refreshMs), and the page shows each one. When
+ * one is overdue, the page no longer asks for ANOTHER full report (that added load exactly when ESP1 was struggling);
+ * it sends a link ping instead, at most once a minute for all open pages together, to tell "connected, report late"
+ * from "not connected". */
+// How long Refresh waits for ESP1's report: ESP1 reads the request within ~6 s and answers at most every 10 s (30 s busy).
 function refreshWaitMs() { return liveData.meta?.linkMode === "busy" ? 45000 : 20000; }
-let refreshAskedAt = 0, refreshBaseStamp = 0, refreshTimeout = null, refreshClearTimer = null;
-let pageWasVisible = false, lastAutoRefreshAt = 0;
+let refreshAskedAt = 0, refreshBaseStamp = 0, refreshBaseAnswer = 0, refreshAnsweredAt = 0, refreshTimeout = null, refreshClearTimer = null;
+let pageWasVisible = false, lastAutoPingAt = 0;
+
+/* ---- Link pings ------------------------------------------------------------------------------------------------- */
+const LINK_PING_EVERY_MS = 60000;     // the automatic check, for all open pages together
+const LINK_PING_WAIT_MS = 20000;      // an unanswered ping is withdrawn after this: ESP1 isn't reading the queue
+const LINK_PING_KEEP_MS = 120000;     // answered / withdrawn pings are deleted after this, by whichever page sees them
+const myLinkPings = new Set();        // the pings this page sent
+let lastPingTidyAt = 0;
+
+function canLinkPing() {
+  return Boolean(db && auth?.currentUser && isApprovedUser() && !databaseAccessDenied && firebaseConnected);
+}
+
+// A ping still waiting for ESP1, from any page. One at a time is enough for everyone.
+function pendingLinkPing() {
+  const now = serverNow();
+  return commandRows.find(row => isLinkPingRow(row) && row.type && row.status === "queued"
+    && now - Number(row.requestedAt || now) < LINK_PING_WAIT_MS);
+}
+
+// Resolves with the ping row's id ("" when none could be sent). Not through queueCommand(): no cooldown, toast or
+// activity entry, and any approved account may send it (the rules allow exactly this row, and nothing more).
+function sendLinkPing() {
+  if (!canLinkPing()) return Promise.resolve("");
+  const pending = pendingLinkPing();
+  if (pending) return Promise.resolve(pending.id);
+  const pushed = db.ref("irrigation/commands").push({
+    type: "RECOVER",
+    payload: { action: LINK_PING_ACTION },
+    status: "queued",
+    source: "dashboard",
+    requestedAt: firebase.database.ServerValue.TIMESTAMP
+  });
+  myLinkPings.add(pushed.key);
+  return pushed.then(() => pushed.key).catch(error => {
+    myLinkPings.delete(pushed.key);
+    console.warn("link ping", error);
+    return "";
+  });
+}
+
+// Keeps the queue tidy, from the commands listener and the 1 s tick (at most every 5 s):
+//   - a ping ESP1 hasn't read is withdrawn (this page's own after LINK_PING_WAIT_MS, anyone's after 3x that), so ESP1
+//     skips it later;
+//   - a ping ESP1 has finished with (rejected / completed), or one withdrawn, is deleted once LINK_PING_KEEP_MS old,
+//     by any page, so pings never fill Command status or ESP1's 10-row window.
+// Never a ping ESP1 is still answering ("received"): its last status would land on a deleted row.
+function syncLinkPings() {
+  if (!canLinkPing() || Date.now() - lastPingTidyAt < 5000) return;
+  lastPingTidyAt = Date.now();
+  const now = serverNow();
+  commandRows.filter(isLinkPingRow).forEach(row => {
+    const ref = db.ref(`irrigation/commands/${row.id}`);
+    const asked = Number(row.requestedAt || 0);
+    const answered = Number(row.updatedAt || 0);
+    // Our own after 20 s; anyone's after a minute (its page may have closed), so pings never pile up while ESP1 is away.
+    const waitMs = myLinkPings.has(row.id) ? LINK_PING_WAIT_MS : 3 * LINK_PING_WAIT_MS;
+    if (row.type && row.status === "queued" && asked && now - asked >= waitMs) {
+      ref.update({ status: "withdrawn", detail: "no answer from ESP1", updatedAt: firebase.database.ServerValue.TIMESTAMP })
+        .catch(() => {});   // ESP1 picked it up first: then it's answered, which is better
+      return;
+    }
+    const done = ["rejected", "completed", "withdrawn"].includes(row.status) || (!row.type && row.status !== "queued");
+    if (done && answered && now - answered >= LINK_PING_KEEP_MS) {
+      ref.remove().then(() => myLinkPings.delete(row.id)).catch(() => {});
+    }
+  });
+}
 
 // Ask ESP1 for one report now. The rule takes refreshAt within the last minute and at most every 2 s.
 function askForReport() {
@@ -6853,7 +7055,7 @@ function askForReport() {
 }
 
 // From the 1 s tick and on visibility changes: show Refresh to the accounts that may use it, ask for a report when the
-// page comes (back) into view, and by itself when ESP1's regular report is overdue.
+// page comes (back) into view, and check the link with a ping when ESP1's regular report is overdue.
 function syncAutoRefresh() {
   const allowed = Boolean(auth?.currentUser) && isApprovedUser() && !databaseAccessDenied;
   const refreshButton = document.getElementById("refreshBtn");
@@ -6861,14 +7063,17 @@ function syncAutoRefresh() {
   const visible = allowed && document.visibilityState === "visible";
   const now = Date.now();
   if (visible && !pageWasVisible) {
-    lastAutoRefreshAt = now;
     askForReport();
-  } else if (visible && firebaseConnected && !refreshAskedAt && now - lastAutoRefreshAt >= AUTO_REFRESH_MIN_GAP_MS) {
+  } else if (visible && firebaseConnected && !refreshAskedAt && now - lastAutoPingAt >= LINK_PING_EVERY_MS) {
     const stamp = Number(liveData.meta?.updatedAt || 0);
     const every = Number(liveData.meta?.refreshMs || 60000);
-    if (stamp && serverNow() - stamp > every + 30000) { lastAutoRefreshAt = now; askForReport(); }
+    const overdue = stamp && serverNow() - stamp > every + 30000;
+    const answer = esp1AnswerAt();
+    const answeredLately = answer && serverNow() - answer < LINK_PING_EVERY_MS;
+    if (overdue && !answeredLately && !pendingLinkPing()) { lastAutoPingAt = now; sendLinkPing(); }
   }
   pageWasVisible = visible;
+  syncLinkPings();
 }
 document.addEventListener("visibilitychange", syncAutoRefresh);
 
@@ -6905,37 +7110,62 @@ function requestRefresh() {
   const button = document.getElementById("refreshBtn");
   refreshAskedAt = serverNow();
   refreshBaseStamp = Number(liveData.meta?.updatedAt || 0);
+  refreshBaseAnswer = esp1AnswerAt();
+  refreshAnsweredAt = 0;
   // The label has its own span since 18 Nov 2026: the button also holds Simple mode's icon.
   if (button) { button.disabled = true; (button.querySelector(".refresh-label") || button).textContent = "Refreshing…"; }
-  refreshStatusText(liveData.meta?.linkMode === "busy"
-    ? "Asking ESP1 for a fresh report… The rig is working on a watering, so it may take up to 20 s."
-    : "Asking ESP1 for a fresh report…");
-  askForReport().then(ok => {
-    if (!ok) finishRefresh(false, "Couldn't ask ESP1: this account may not be allowed, or the connection dropped.");
+  refreshStatusText("Asking ESP1…");
+  // Both requests at once (19 Nov 2026): the report brings the data, the ping's answer shows ESP1 is connected.
+  Promise.all([askForReport(), sendLinkPing()]).then(([reportAsked, pingId]) => {
+    if (!reportAsked && !pingId) finishRefresh(false, "Couldn't ask ESP1: this account may not be allowed, or the connection dropped.");
   });
   // Re-read what Firebase already holds, so the page is current even before ESP1 answers.
   liveRef?.once("value").then(snapshot => {
     liveData = snapshot.val() || {};
     lastKnownFresh = deviceIsFresh();
     lastKnownDelayed = deviceDelayMs() > 0;
+    lastKnownOnline = esp1Online();
     updateDashboard();
     setText("liveAge", liveAgeText());
     syncConnection();
     syncControlAvailability();
+    syncRefreshProgress();
   }).catch(() => {});
   if (refreshTimeout) clearTimeout(refreshTimeout);
   refreshTimeout = setTimeout(() => finishRefresh(false), refreshWaitMs());
 }
 
-function finishRefresh(answered, message) {
+// From both listeners while a Refresh is out: ESP1's answer first (a status on the ping, ~3 s), then its report.
+function syncRefreshProgress() {
+  if (!refreshAskedAt) return;
+  if (Number(liveData.meta?.updatedAt || 0) > refreshBaseStamp) { finishRefresh(true); return; }
+  const answer = esp1AnswerAt();
+  if (!refreshAnsweredAt && answer > refreshBaseAnswer && answer >= refreshAskedAt - 1000) {
+    refreshAnsweredAt = answer;
+    const took = Math.max(0, answer - refreshAskedAt);
+    refreshStatusText(liveData.meta?.linkMode === "busy"
+      ? `ESP1 answered in ${(took / 1000).toFixed(1)} s: it's connected. Its report follows (up to 30 s while the rig works on a watering)…`
+      : `ESP1 answered in ${(took / 1000).toFixed(1)} s: it's connected. Its report follows…`);
+    syncFreshness();
+    syncControlAvailability();
+  }
+}
+
+function finishRefresh(gotReport, message) {
   if (!refreshAskedAt) return;
   const took = Math.max(0, serverNow() - refreshAskedAt);
+  const answeredIn = refreshAnsweredAt ? Math.max(0, refreshAnsweredAt - refreshAskedAt) : 0;
+  const answered = Boolean(refreshAnsweredAt);
   refreshAskedAt = 0;
+  refreshAnsweredAt = 0;
   if (refreshTimeout) { clearTimeout(refreshTimeout); refreshTimeout = null; }
   const button = document.getElementById("refreshBtn");
   if (button) { button.disabled = false; (button.querySelector(".refresh-label") || button).textContent = "Refresh"; }
-  if (answered) refreshStatusText(`Fresh report from ESP1 in ${(took / 1000).toFixed(1)} s`, 8000);
-  else refreshStatusText(message || "No new report from ESP1 yet: it may be offline (often a weak Wi-Fi signal at the rig) or busy. Its next regular report will still come.", 15000);
+  if (gotReport) refreshStatusText(`Fresh report from ESP1 in ${(took / 1000).toFixed(1)} s`, 8000);
+  else if (message) refreshStatusText(message, 15000);
+  // Connected, report lost on the way (19 Nov 2026): ESP1 counts as online; the numbers stay as old as they say.
+  else if (answered) refreshStatusText(`ESP1 is connected (it answered in ${(answeredIn / 1000).toFixed(1)} s), but its full report didn't get through: often weak Wi-Fi or low memory at the rig. The controls work; the numbers are from its last report. Its next regular report will still come.`, 20000);
+  else refreshStatusText(`No answer from ESP1 in ${Math.round(took / 1000)} s: it isn't connected to Firebase (${esp1HeardText()}). If this lasts, restart ESP1 at the rig: the power, or its LCD menu.`, 20000);
 }
 document.getElementById("refreshBtn")?.addEventListener("click", requestRefresh);
 
@@ -7076,7 +7306,7 @@ function selectedLogDay() {
 }
 
 function logRequestBlockReason() {
-  if (!deviceIsFresh()) return "ESP1 isn't reporting, so it can't be asked.";
+  if (!esp1Online()) return "ESP1 isn't connected, so it can't be asked.";
   const state = liveData.system?.state || "";
   if (!["IDLE_STATE", "SAFE_MODE"].includes(state)) return `Only while the rig is idle (it reports ${state || "nothing"}).`;
   if (liveData.system?.masterWorkOrderActive || liveData.diagnostics?.system?.workOrderActive) return "Only while no run is in progress.";
@@ -7442,7 +7672,9 @@ function simpleSituation() {
   if (!firebaseConnected) return { tone: "lost", icon: "si-unlink", title: "Connection lost", text: "This browser has lost its connection, so what the system is doing now is unknown. The numbers below are the last ones received." };
   // No running age in this sentence: the card is a live region, and the age (in the Controller chip) changes every
   // minute, which would make a screen reader repeat the whole card.
-  if (!deviceIsFresh()) return { tone: "lost", icon: "si-unlink", title: "Controller not reporting", text: "It has stopped sending reports, so what the system is doing now is unknown. The numbers below are from its last report." };
+  // Connected, old report (19 Nov 2026): online, but what it is doing right now is only as new as that report.
+  if (!deviceIsFresh() && esp1Online()) return { tone: "warn", icon: "si-clock", title: "Connected, report delayed", text: "The controller answers, but its full report hasn't come through (often weak Wi-Fi or low memory at the rig). Controls work; the numbers below are from its last report." };
+  if (!deviceIsFresh()) return { tone: "lost", icon: "si-unlink", title: "Controller not connected", text: "It isn't answering, so what the system is doing now is unknown. The numbers below are from its last report." };
   const bad = [];
   const warn = [];
   if (d.fault?.held) bad.push("A problem stopped the system and is waiting for someone to decide what to do. See the red banner at the top.");
@@ -7552,7 +7784,8 @@ function renderSimpleActivity(fresh) {
   else if (!fresh) {
     title = "Unknown right now"; tone = "lost";
     text = run.active ? `Its last report showed column ${rawText(run.zone, "?")} being ${run.operation === "fertigation" ? "fed" : "watered"}. This page can't tell whether that is still going.`
-      : "The controller isn't reporting, so this page can't tell what it is doing.";
+      : esp1Online() ? "The controller is connected, but its full report is late, so this page can't tell what it is doing right now."
+      : "The controller isn't connected, so this page can't tell what it is doing.";
   } else if (run.active && (run.phase === "starting" || run.phase === "running")) {
     tone = "run";
     title = `${run.operation === "fertigation" ? "Feeding" : "Watering"} column ${rawText(run.zone, "?")}`;
@@ -8205,7 +8438,8 @@ function updateSimpleDiagram(fresh, stale) {
     words.push(`column ${id} ${off ? "switched off" : has ? `${Math.round(pct)} % moist${pct >= lines.wetPct ? ", too wet" : ""}` : "no reading"}`);
   });
   const note = !known ? "Waiting for the controller's report."
-    : !fresh ? "The controller isn't reporting, so this is its last report and nothing is shown moving."
+    : !fresh ? (esp1Online() ? "The controller is connected, but its full report is late, so this is its last report and nothing is shown moving."
+      : "The controller isn't connected, so this is its last report and nothing is shown moving.")
     : booster ? `Water is flowing from the mixing tank to column ${columnList([...zone].filter(ch => "ABC".includes(ch))) || "?"}.`
     : mixer ? "The mixer is stirring the water and nutrients."
     : doseNow ? `${NUTRIENT_WORDS[doseNow]} is being added to the mixing tank.`
