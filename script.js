@@ -4642,10 +4642,15 @@ function linkHealthRows(fb) {
   return [
     ["Reports since start", attempts > 0 ? `${attempts - failures} of ${attempts} sent${failedPct}` : "None yet"],
     ["New connections since start", hasValue(fb.handshakes) ? String(fb.handshakes) : "Unavailable"],
-    ["Free memory", hasValue(fb.freeHeap) ? `${kb(fb.freeHeap)}${hasValue(fb.maxAllocHeap) ? `, largest block ${kb(fb.maxAllocHeap)}` : ""}` : "Unavailable"],
+    // Free memory: since web v.4 of 18 Nov 2026 h the memory text and buffers can use (ESP1 needs ~24 KB, with one 17 KB
+    // block, to open a connection). Before it the figure included ~40 KB of code memory: "largest block" read 40 KB always.
+    ["Free memory", hasValue(fb.freeHeap) ? `${kb(fb.freeHeap)}${hasValue(fb.maxAllocHeap) ? `, largest block ${kb(fb.maxAllocHeap)}` : ""}${hasValue(fb.tlsSkips) ? "" : " (counts code memory on this firmware)"}` : "Unavailable"],
     // Recovery (web v.4 of 18 Nov 2026 e): ESP1 starts a fresh connection after failed reports, and rejoins Wi-Fi after more.
     ...(hasValue(fb.linkResets) ? [["Recoveries since start",
-      `${fb.linkResets} fresh connection${Number(fb.linkResets) === 1 ? "" : "s"}, ${fb.wifiRejoins || 0} Wi-Fi rejoin${Number(fb.wifiRejoins) === 1 ? "" : "s"}`]] : [])
+      `${fb.linkResets} fresh connection${Number(fb.linkResets) === 1 ? "" : "s"}, ${fb.wifiRejoins || 0} Wi-Fi rejoin${Number(fb.wifiRejoins) === 1 ? "" : "s"}`]] : []),
+    // 18 Nov 2026 h: connections not tried because memory was short, and reports whose text was cleaned of noise bytes.
+    ...(hasValue(fb.tlsSkips) ? [["Waited for memory", `${fb.tlsSkips} connection${Number(fb.tlsSkips) === 1 ? "" : "s"}`]] : []),
+    ...(Number(fb.textFixes) > 0 ? [["Reports with noise cleaned", String(fb.textFixes)]] : [])
   ];
 }
 
