@@ -385,8 +385,8 @@ function deviceIsFresh() {
 }
 
 // How late ESP1's report is (18 Nov 2026): 0 while it is on time, else its age. ESP1 reports every meta.refreshMs (web v.4
-// of 18 Nov e: 30 s while a page like this one is open and the rig is idle, 60 s otherwise), so a report older than one
-// more interval, and at least 5 s more, is late. Only while deviceIsFresh(): past that the page says ESP1 has stopped.
+// of 18 Nov g: once a minute), so a report older than one more interval, and at least 5 s more, is late. Only while
+// deviceIsFresh(): past that the page says ESP1 has stopped.
 function deviceDelayMs() {
   const stamp = Number(liveData.meta?.updatedAt || 0);
   if (!stamp || !deviceIsFresh()) return 0;
@@ -6822,44 +6822,50 @@ const contributorsDialog = document.getElementById("contributorsDialog");
 document.getElementById("contributorsBtn")?.addEventListener("click", () => contributorsDialog?.showModal());
 contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () => contributorsDialog.close());
 
-/* ---- Viewing and Refresh (2026-11-17; no realtime since 18 Nov 2026 e) ------------------------------------------------
- * The owner, 18 Nov 2026: "don't show realtime, but a refresh button to request live data; still refresh every 20 or
- * 30 s or longer, only while idle; during an operation or an upcoming schedule the system should focus on the operation".
- * While this page is open and on screen it tells ESP1 someone is watching (irrigation/viewer/at, every VIEWER_TOUCH_MS);
- * ESP1 (web v.4 of 18 Nov e) then reports every 30 s while idle, and every 60 s while a run is on or coming up. Opening
- * the page, or bringing it back to the front, asks for one report at once; so does Refresh, which also says how long
- * ESP1 took. The pace itself is ESP1's (meta.refreshMs / meta.linkMode): nothing here assumes a number.
- * Firmware of 17-18 Nov d still reports every second while watched; an older ESP1 ignores the node. */
-const VIEWER_TOUCH_MS = 15000;
-// How long Refresh waits for ESP1's answer: while busy ESP1 answers at most every 20 s (FB_REFRESH_GAP_BUSY_MS).
-function refreshWaitMs() { return liveData.meta?.linkMode === "busy" ? 30000 : 15000; }
-let viewerTouchTimer = null;
+/* ---- Refresh (2026-11-17; "link lite" since 18 Nov 2026 g) ----------------------------------------------------------
+ * The owner, 18 Nov 2026 (evening): "make the website communication back to before, no longer high realtime update ...
+ * but still it automatically refreshes to request data from the system, and add a refresh button. To lessen the load of
+ * ESP1." ESP1 (web v.4 of 18 Nov g) reports by itself once a minute (meta.refreshMs), and this page shows each report as
+ * it arrives. On top of that it asks ESP1 for one report at once (irrigation/viewer/refreshAt):
+ *   - when the page opens or comes back to the front,
+ *   - by itself when ESP1's regular report is overdue (one interval + 30 s), at most every AUTO_REFRESH_MIN_GAP_MS,
+ *   - and when Refresh is pressed (which also says how long ESP1 took).
+ * It no longer tells ESP1 that someone is watching (irrigation/viewer/at every 15 s, 17 Nov to 18 Nov f): that set a
+ * faster pace, the load this undoes. The pace itself is ESP1's; nothing here assumes a number. */
+const AUTO_REFRESH_MIN_GAP_MS = 120000;
+// How long Refresh waits for ESP1's answer: ESP1 reads the request within ~6 s and answers at most every 10 s (30 s busy).
+function refreshWaitMs() { return liveData.meta?.linkMode === "busy" ? 45000 : 20000; }
 let refreshAskedAt = 0, refreshBaseStamp = 0, refreshTimeout = null, refreshClearTimer = null;
+let pageWasVisible = false, lastAutoRefreshAt = 0;
 
-function viewerTouch(extra) {
+// Ask ESP1 for one report now. The rule takes refreshAt within the last minute and at most every 2 s.
+function askForReport() {
   if (!db || !auth?.currentUser || !isApprovedUser() || databaseAccessDenied) return Promise.resolve(false);
-  const update = Object.assign({ at: firebase.database.ServerValue.TIMESTAMP }, extra || {});
-  return db.ref("irrigation/viewer").update(update).then(() => true).catch(error => {
+  return db.ref("irrigation/viewer").update({ refreshAt: firebase.database.ServerValue.TIMESTAMP }).then(() => true).catch(error => {
     console.warn("irrigation/viewer", error);
     return false;
   });
 }
 
-function syncViewerTouch() {
+// From the 1 s tick and on visibility changes: show Refresh to the accounts that may use it, ask for a report when the
+// page comes (back) into view, and by itself when ESP1's regular report is overdue.
+function syncAutoRefresh() {
   const allowed = Boolean(auth?.currentUser) && isApprovedUser() && !databaseAccessDenied;
   const refreshButton = document.getElementById("refreshBtn");
   if (refreshButton) refreshButton.hidden = !allowed;
-  const want = allowed && document.visibilityState === "visible";
-  if (want && !viewerTouchTimer) {
-    // Opening the page (or coming back to it) asks for a fresh report once, so it never starts on an old picture.
-    viewerTouch({ refreshAt: firebase.database.ServerValue.TIMESTAMP });
-    viewerTouchTimer = setInterval(() => viewerTouch(), VIEWER_TOUCH_MS);
-  } else if (!want && viewerTouchTimer) {
-    clearInterval(viewerTouchTimer);
-    viewerTouchTimer = null;
+  const visible = allowed && document.visibilityState === "visible";
+  const now = Date.now();
+  if (visible && !pageWasVisible) {
+    lastAutoRefreshAt = now;
+    askForReport();
+  } else if (visible && firebaseConnected && !refreshAskedAt && now - lastAutoRefreshAt >= AUTO_REFRESH_MIN_GAP_MS) {
+    const stamp = Number(liveData.meta?.updatedAt || 0);
+    const every = Number(liveData.meta?.refreshMs || 60000);
+    if (stamp && serverNow() - stamp > every + 30000) { lastAutoRefreshAt = now; askForReport(); }
   }
+  pageWasVisible = visible;
 }
-document.addEventListener("visibilitychange", syncViewerTouch);
+document.addEventListener("visibilitychange", syncAutoRefresh);
 
 /* Quick reconnect (18 Nov 2026, the owner: "very realtime connection"). While its connection keeps failing, the Firebase
  * SDK waits longer and longer between attempts (x1.3 each time, up to 5 minutes), so on patchy mobile data a page could
@@ -6899,7 +6905,7 @@ function requestRefresh() {
   refreshStatusText(liveData.meta?.linkMode === "busy"
     ? "Asking ESP1 for a fresh report… The rig is working on a watering, so it may take up to 20 s."
     : "Asking ESP1 for a fresh report…");
-  viewerTouch({ refreshAt: firebase.database.ServerValue.TIMESTAMP }).then(ok => {
+  askForReport().then(ok => {
     if (!ok) finishRefresh(false, "Couldn't ask ESP1: this account may not be allowed, or the connection dropped.");
   });
   // Re-read what Firebase already holds, so the page is current even before ESP1 answers.
@@ -7142,8 +7148,8 @@ setInterval(() => {
 // re-prompt is the whole point of the option.
 setInterval(() => {
   syncFreshness();
-  setText("liveAge", liveAgeText());   // the age moves every second, now that reports come every few seconds
-  syncViewerTouch();                   // start / stop telling ESP1 someone is watching (sign-in, approval, tab hidden)
+  setText("liveAge", liveAgeText());   // the age moves every second
+  syncAutoRefresh();                   // Refresh button, and a report asked for on opening / when one is overdue
   nudgeFirebaseReconnect(false);       // offline a while on screen: don't wait out the SDK's growing delay (18 Nov 2026)
   syncLogsListener();                  // the SD card logs list, for the accounts that may see it
   renderLogRequest();                  // Diagnostics > SD card logs: idle-only request, today's state

@@ -99,18 +99,22 @@ The page works with web v.3 firmware too (no litres shown).
     50; never under 18, where the reservoir's sensor stops seeing water).
   - Needs ESP1's firmware of 18 Nov 2026 (b) (`system.firmware` "web v.4 (2026-11-18b)") for the own lines,
     Too wet and the pause; on older firmware those parts say so and stay off.
-- **Link pace, no realtime** (18 Nov 2026 e, the owner: "don't show realtime, but a refresh button to request live
-  data; still refresh every 20 or 30 s or longer, only while idle; during an operation or an upcoming schedule the
-  system should focus on the operation"). The 1 s reports of 17–18 Nov are gone: with them the site lost ESP1 about
-  a minute after every restart. ESP1 (web v.4 of 18 Nov e) reports every **30 s** while idle and a page is open,
-  **60 s** while idle and nobody watches, and **60 s** while it is *busy*: a run, its warm-up, a pump exercise, an
-  armed forced run, a dosed tank waiting, or a watering window that is open and not yet served or opens within
-  10 minutes. While busy it also answers Refresh at most every 20 s and holds the SD log upload; commands and every
-  stop are still read every 3 s. Opening the page, or bringing it back to the front, asks for one report at once,
-  and **Refresh** asks again. ESP1 publishes its pace and mode as `meta.refreshMs` / `meta.linkMode`
-  ("idle" / "watched" / "busy"); the page takes every threshold from them (`linkPaceText()`, `deviceDelayMs()`,
-  `deviceIsFresh()`), so a pace change in the firmware needs no website change. After failed reports ESP1 opens a
-  fresh connection (every 2 failures) and rejoins Wi-Fi (after 8); Diagnostics shows both counts.
+- **Link lite, no realtime** (18 Nov 2026 g, the owner: "make the website communication back to before, no longer
+  high realtime update ... but still it automatically refreshes to request data from the system, and a refresh
+  button. To lessen the load of ESP1"). ESP1 (web v.4 of 18 Nov g) reports **once a minute** by itself, as before
+  17 Nov; it is *busy* during a run, its warm-up, a pump exercise, an armed forced run, a dosed tank waiting, or a
+  watering window that is open and not yet served or opens within 10 minutes, and then answers a refresh at most every
+  30 s (10 s otherwise) and holds any SD log upload. Commands and every stop are still read every 3 s. The page asks
+  ESP1 for one report (`irrigation/viewer/refreshAt`) when it opens or comes back to the front, by itself when the
+  regular report is overdue (at most every 2 minutes), and when **Refresh** is pressed. It no longer touches
+  `viewer/at` (the 17 Nov – 18 Nov f "watched" pace), ESP1 no longer uploads old SD logs by itself (only a day asked
+  for with "Upload from the rig"), and ESP1's two polls from 17 Nov are slower (refresh every 6 s, log requests every
+  30 s). Why: the SD card shows ESP1's reports failing 1–8 % a day from 10 to 17 Nov at −84 to −89 dBm, and 97 % on
+  18 Nov with the extra traffic. ESP1 publishes its pace and mode as `meta.refreshMs` / `meta.linkMode` ("idle" /
+  "busy"); the page takes every threshold from them (`linkPaceText()`, `deviceDelayMs()`, `deviceIsFresh()`),
+  so a pace change in the firmware needs no website change. After failed reports ESP1 opens a fresh connection
+  (every 3 failures) and rejoins Wi-Fi (after 10); Diagnostics shows both counts, and how many reports needed their
+  text cleaned (noise bytes swapped for "?", which Firebase would otherwise refuse with HTTP 400).
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
   once a report is one interval plus at least 5 s late (`deviceDelayMs()`: over 60 s at the 30 s pace, over 120 s
@@ -187,7 +191,7 @@ CIT-U EE Smart Irrigation / Pinamungahan Automated Farm
 |---|---|---|
 | `irrigation/live` | ESP1 only | Telemetry snapshot, faults, event log, `diagnostics.webManual` |
 | `irrigation/commands/$id` | page (queued) → ESP1 (status) | One-shot commands; ESP1 validates every payload. The page may also change a row from `queued` to `withdrawn` (not `EMERGENCY_STOP`, `DISABLE_ACTUATIONS` or `CANCEL_FORCE`), because ESP1 runs a queued row however old it is. While `irrigation/live/diagnostics/system/lcdLocked` is true (the rig lock), a new row must be `EMERGENCY_STOP`, `DISABLE_ACTUATIONS`, `CANCEL_FORCE`, `ACK_FAULT` or `LCD_LOCK`. `LCD_LOCK` needs the privileged tier, and an optional `byName` must be the sender's own name (or `Operator` for an operator account). Since 2026-11-05 a new row needs `controlAccess` (every type but `SET_COLUMN`, the stops included) or `zoneEditAccess` (`SET_COLUMN`), or the privileged tier; withdrawing follows the same split. `SET_COLUMN` may carry `windows` (2026-11-05): every own watering time of the column as `[[start, end], ...]`, 1 to 4 pairs of minutes 0–1439 (the rule checks the shape and range; ESP1 checks the order). The page sends it only to firmware whose snapshot reports each zone's `runs`, and `winStart`/`winEnd` to older firmware. Since 2026-11-06 a new `EMERGENCY_STOP`, `DISABLE_ACTUATIONS` or `CANCEL_FORCE` row is refused when `irrigation/live/meta/updatedAt` is more than 3 minutes old (ESP1 isn't reporting), so a stop never waits in the queue to fire hours later. Since 2026-11-14 `SET_AC_VOLT` (`{ vMin, vMax }`, the AC voltage limits ESP2's PZEM check enforces) needs the privileged tier (operator, approved Sub-operator, or, since 2026-11-16, 1-hour access) and both values as numbers: `vMin` 80–255, `vMax` 85–260, `vMax` at least 5 above `vMin`. Since 2026-11-16 `SET_AC_AMP` (`{ aMin10, aMax10 }`, the AC no-current and overcurrent limits in tenths of an amp) needs the same accounts and both values as numbers: `aMin10` 1–98, `aMax10` 3–100, `aMax10` at least 2 above `aMin10` |
-| `irrigation/viewer` | page (approved accounts) → ESP1 | `{at, refreshAt}`, server timestamps (2026-11-17). An open, visible page touches `at` every 15 s; ESP1 (web v.4 of 18 Nov e) then uploads `live` every 30 s while idle (60 s while busy or unwatched) and reports the pace as `meta.refreshMs` / `meta.linkMode` (firmware of 17 Nov to 18 Nov d: every 1–4 s and `meta.live`). Opening the page and the Refresh button touch `refreshAt`; ESP1 answers with an upload at once (at most every 5 s, 20 s while busy). The rule takes only those two fields, each within the last minute, and `refreshAt` at most every 2 s. ESP1's device account reads it |
+| `irrigation/viewer` | page (approved accounts) → ESP1 | `{at, refreshAt}`, server timestamps (2026-11-17). Until 18 Nov f an open, visible page touched `at` every 15 s; since 18 Nov g the page leaves `at` alone and ESP1 no longer reads it: it uploads `live` once a minute whoever watches, and reports the pace as `meta.refreshMs` / `meta.linkMode` (firmware of 17 Nov to 18 Nov d: every 1–4 s while watched and `meta.live`; 18 Nov e–f: 30 s while watched). The page touches only `refreshAt`: when it opens, when a report is overdue, and on Refresh; ESP1 polls it every 6 s and answers with an upload at once (at most every 10 s, 30 s while busy). The rule takes only those two fields, each within the last minute, and `refreshAt` at most every 2 s. ESP1's device account reads it |
 | `irrigation/logRequest` | page (privileged tier) → ESP1 | `{day, at}` (2026-11-17): "Upload from the rig" for one day's SD CSV (`day` yyyymmdd, `at` a server timestamp at most every 5 s). ESP1 polls it every 10 s |
 | `logs/index/$day`, `logs/files/$day/$n` | ESP1 only | The daily SD CSV logs (2026-11-17, replacing the expired Supabase upload): the file in ~12 KB text pieces, and `{state: uploading/done/missing/failed, size, chunks, partial, at}`. Read by operators and the privileged tier (the logs hold SMS texts and phone numbers); Diagnostics > SD card logs joins the pieces into a download. ESP1 keeps the last 14 days |
 | `irrigation/config/zones` | page only | Each column's website name (`name`, 1 to 60 characters, checked by the rule; the page allows 40), the crop and stage it is growing, and its saved setups (`savedSettings`, whose `windows` hold every watering time as `{from, to}`). Written by accounts with zone editing (or Sub-operator, 1-hour access, operators) since 2026-11-05; every approved account reads it. Dashboard-side notes — the numeric targets reach the rig through `SET_COLUMN`, not from here, and ESP1 keeps its own column names (LCD, SMS) |
