@@ -5064,15 +5064,32 @@ function linkHealthRows(fb) {
     ["Reports since start", attempts > 0 ? `${attempts - failures} of ${attempts} sent${failedPct}` : "None yet"],
     ["New connections since start", hasValue(fb.handshakes) ? String(fb.handshakes) : "Unavailable"],
     // Free memory: since web v.4 of 18 Nov 2026 h the memory text and buffers can use (ESP1 needs ~24 KB, with one 17 KB
-    // block, to open a connection). Before it the figure included ~40 KB of code memory: "largest block" read 40 KB always.
+    // block, to open a connection; with the "link fix" of 20 Nov 2026 only ~16 KB, its two big buffers being reserved at
+    // start). Before 18 Nov h the figure included ~40 KB of code memory: "largest block" read 40 KB always.
     ["Free memory", hasValue(fb.freeHeap) ? `${kb(fb.freeHeap)}${hasValue(fb.maxAllocHeap) ? `, largest block ${kb(fb.maxAllocHeap)}` : ""}${hasValue(fb.tlsSkips) ? "" : " (counts code memory on this firmware)"}` : "Unavailable"],
     // Recovery (web v.4 of 18 Nov 2026 e): ESP1 starts a fresh connection after failed reports, and rejoins Wi-Fi after more.
     ...(hasValue(fb.linkResets) ? [["Recoveries since start",
       `${fb.linkResets} fresh connection${Number(fb.linkResets) === 1 ? "" : "s"}, ${fb.wifiRejoins || 0} Wi-Fi rejoin${Number(fb.wifiRejoins) === 1 ? "" : "s"}`]] : []),
     // 18 Nov 2026 h: connections not tried because memory was short, and reports whose text was cleaned of noise bytes.
     ...(hasValue(fb.tlsSkips) ? [["Waited for memory", `${fb.tlsSkips} connection${Number(fb.tlsSkips) === 1 ? "" : "s"}`]] : []),
+    // 20 Nov 2026 (ESP1 "link fix"): reports that were due but had to wait, the connection memory ESP1 now reserves at
+    // start (the two ~16.7 KB buffers every secure connection needs), and how much of its network task's stack never got used.
+    ...(hasValue(fb.reportWaits) ? [["Reports that waited", `${fb.reportWaits} (memory, sign-in or Wi-Fi)`]] : []),
+    ...(fb.tlsPool && typeof fb.tlsPool === "object" ? [["Connection memory", tlsPoolText(fb.tlsPool)]] : []),
+    ...(hasValue(fb.netStackFree) ? [["Network task stack", `${kb(fb.netStackFree)} never used`]] : []),
     ...(Number(fb.textFixes) > 0 ? [["Reports with noise cleaned", String(fb.textFixes)]] : [])
   ];
+}
+
+// ESP1's TLS buffer pool (firmware "link fix", 20 Nov 2026): slots reserved at start, buffers served (two per connection),
+// and buffers it could not serve (a second connection at the same time; the free memory served those).
+function tlsPoolText(pool) {
+  if (Number(pool.slots || 0) < 2) return "Not reserved at this start: new connections need free memory, as before";
+  const connections = Math.floor(Number(pool.hits || 0) / 2);
+  const missed = Number(pool.misses || 0);
+  const size = Math.round(Number(pool.slotBytes || 16973) / 1024);
+  return `Reserved at start (2 × ${size} KB), used by ${connections} connection${connections === 1 ? "" : "s"}` +
+    (missed ? `; ${missed} buffer${missed === 1 ? "" : "s"} came from free memory` : "");
 }
 
 function renderDiagnostics() {
@@ -7287,6 +7304,8 @@ contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () 
  * from "not connected". */
 // How long Refresh waits for ESP1's report: ESP1 reads the request within ~6 s and answers at most every 10 s (30 s busy).
 function refreshWaitMs() { return liveData.meta?.linkMode === "busy" ? 45000 : 20000; }
+// Opening the page or coming back to it asks ESP1 for a report only when the one on screen is at least this old.
+const REPORT_FRESH_ENOUGH_MS = 20000;
 let refreshAskedAt = 0, refreshBaseStamp = 0, refreshBaseAnswer = 0, refreshAnsweredAt = 0, refreshTimeout = null, refreshClearTimer = null;
 let pageWasVisible = false, lastAutoPingAt = 0;
 
@@ -7377,7 +7396,10 @@ function syncAutoRefresh() {
   const visible = allowed && document.visibilityState === "visible";
   const now = Date.now();
   if (visible && !pageWasVisible) {
-    askForReport();
+    // Not when the report on screen is under REPORT_FRESH_ENOUGH_MS old (20 Nov 2026): every tab switch on every open page
+    // asked ESP1 for one more full ~6 KB report, which with a few viewers was several extra reports a minute.
+    const stamp = Number(liveData.meta?.updatedAt || 0);
+    if (!stamp || serverNow() - stamp >= REPORT_FRESH_ENOUGH_MS) askForReport();
   } else if (visible && firebaseConnected && !refreshAskedAt && now - lastAutoPingAt >= LINK_PING_EVERY_MS) {
     const stamp = Number(liveData.meta?.updatedAt || 0);
     const every = Number(liveData.meta?.refreshMs || 60000);

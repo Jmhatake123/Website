@@ -158,6 +158,14 @@ The page works with web v.3 firmware too (no litres shown).
     ESP1 (its reply: …)" under a column card; Simple mode says "Saved on the rig.".
   - Rules: `config/site` and `config/zones/$zone/autoStage` (shape only). Tests: `npm run test:features` (18),
     `npm run test:rules-emu` (56). The full reference: `..\Website_Reference_FINAL.md`.
+- **20 Nov 2026, the link fix** (why ESP1 reported every 30 min to hours, not every minute; the firmware side is in
+  `..\ESP1_PlanB\PLAN_B_README.md`, *web v.4 (2026-11-20 Plan B + link fix)*, not flashed when written):
+  - Rules: `irrigation/commands` gains `".indexOn": ["status"]`, so ESP1 can ask "does anything wait?" (2 bytes) instead
+    of downloading the newest 10 rows every 3 s. Harmless for 18h; the new firmware falls back without it.
+  - Opening the page, or coming back to it, asks ESP1 for a report only when the one on screen is 20 s old or more
+    (`REPORT_FRESH_ENOUGH_MS`): every tab switch on every open page used to ask for one more ~6 KB report.
+  - Diagnostics (link health) also shows *Reports that waited*, *Connection memory* (ESP1's TLS buffer pool, reserved at
+    start) and *Network task stack*, when the firmware publishes them. Test: `npm run test:linkfix` (8).
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
   once a report is one interval plus at least 5 s late (`deviceDelayMs()`: over 60 s at the 30 s pace, over 120 s
