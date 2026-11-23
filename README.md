@@ -175,6 +175,13 @@ The page works with web v.3 firmware too (no litres shown).
   - The age line says "every 10 s, live while the website is open" when the report has `meta.watched`; "late" now
     needs one interval plus at least **30 s** (it was 5 s), so one report lost on weak Wi-Fi doesn't flash amber at the
     10 s pace. Test: `npm run test:livewatch` (13).
+- **23 Nov 2026, bug fix: rows ESP1 never finished.** A command row ESP1 picked up ("received") but never answered,
+  because it restarted in between (the live database had two, since September and 17 Nov), kept "I checked the tank"
+  switched off until 25 newer commands pushed it out of view, and left the pumps-and-valves and column switches on
+  "Sending…" until a reload. `commandStillPending()`: "queued" still counts (ESP1 runs it whenever it next reads the
+  queue), "received" only for 3 minutes (`RECEIVED_ANSWER_MAX_MS`). Command status says **"no final answer"** for such a
+  row, and for one "accepted" (a run or test started) over an hour ago, instead of "pending" for good.
+  Test: `npm run test:stuckrow` (6; 5 fail against the website of before).
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
   once a report is one interval plus at least 5 s late (30 s since 23 Nov) (`deviceDelayMs()`: over 60 s at the 30 s

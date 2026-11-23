@@ -604,6 +604,19 @@ function esp1HeardText() {
 // Proof for the rules that ESP1 is reading the queue, sent with a stop while its report is old: the id of a row ESP1
 // answered within the last 3 minutes (the rules check the row itself). "" when there is none or the report is current.
 const ESP1_ANSWER_STATUSES = new Set(["received", "accepted", "rejected", "completed", "failed"]);   // as the rules list them
+
+// Whether ESP1 may still act on a command row, so a control should keep waiting on it (23 Nov 2026). "queued": yes,
+// whenever ESP1 next reads the queue (or until someone withdraws it). "received": ESP1 answers within seconds (core 1
+// checks the row at once and replies, or moves it on to "accepted"), so a row still "received" after
+// RECEIVED_ANSWER_MAX_MS lost its answer: ESP1 restarted in between. The live database had two such rows on 23 Nov 2026
+// (since September, and since 17 Nov). Before, nothing gave up on them: such a row kept "I checked the tank" switched
+// off until 25 newer commands pushed it out of view, and the pumps-and-valves and column switches on "Sending…" until
+// the page was reloaded.
+const RECEIVED_ANSWER_MAX_MS = 3 * 60 * 1000;
+function commandStillPending(row) {
+  if (row?.status === "queued") return true;
+  return row?.status === "received" && serverNow() - Number(row.updatedAt || row.requestedAt || 0) < RECEIVED_ANSWER_MAX_MS;
+}
 function esp1AnswerProof() {
   if (deviceIsFresh()) return "";
   let best = null;
@@ -1066,7 +1079,7 @@ function renderActuationSwitch() {
   const off = actuationsAreOff();
   const row = actSentKey && commandData.find(c => c.id === actSentKey);
   // The row shows up here the moment it is written, so one missing for longer has been removed: stop waiting.
-  const waiting = Boolean(actSentKey) && (row ? row.status === "queued" || row.status === "received" : Date.now() - actSentAt < 10000);
+  const waiting = Boolean(actSentKey) && (row ? commandStillPending(row) : Date.now() - actSentAt < 10000);
   if (actSentKey && !waiting) actSentKey = null;
   setText("actState", waiting ? "Sending…" : !known ? "--" : off ? "Off" : "On");
   // The owner's words (19 Nov 2026): "The schedule, forced runs and tests can run", without the "On:".
@@ -3388,7 +3401,9 @@ function renderZonePower(id, s = zoneSettings(id)) {
   const state = document.getElementById(`zonePowerState${id}`);
   const sentKey = zonePowerSent[id];
   const row = sentKey && commandData.find(c => c.id === sentKey);
-  const waiting = Boolean(sentKey) && (!row || row.status === "queued" || row.status === "received");
+  // The row is in commandData from the moment it is written (the listener fires before the push resolves), so a missing
+  // one has scrolled out of the newest 25: nothing more will come of it (23 Nov 2026; it waited forever before).
+  const waiting = Boolean(sentKey) && Boolean(row) && commandStillPending(row);
   if (sentKey && !waiting) delete zonePowerSent[id];
   if (state) state.textContent = waiting ? "Sending…" : !s.known ? "Not reported" : s.enabled ? "On" : "Off";
   if (!button) return;
@@ -5310,6 +5325,8 @@ function latestCommandOfType(type) {
 
 // ESP1 picks up one queued row every 3 s, so one still sitting here after this long isn't being read.
 const QUEUED_WARNING_MS = 30000;
+// A row "accepted" (a run or test started) with no final answer after this long never got one (23 Nov 2026).
+const UNFINISHED_ACCEPTED_MS = 60 * 60 * 1000;
 // The stops can't be withdrawn, and the rules refuse it too, so one approved user cannot quietly withdraw
 // another's emergency stop. They are only sent while ESP1 is reporting (stopOfflineReason(), 6 Nov 2026).
 const NOT_WITHDRAWABLE = new Set(["EMERGENCY_STOP", "DISABLE_ACTUATIONS", "CANCEL_FORCE"]);
@@ -5332,8 +5349,13 @@ function renderCommandHistory() {
     const name = document.createElement("strong");
     const badge = document.createElement("span");
     name.textContent = rawText(command.type, "Unknown command").replaceAll("_", " ");
-    badge.className = `command-badge ${commandStatusTone(command.status)}`;
-    badge.textContent = rawText(command.status, "unknown");
+    // A row ESP1 picked up but never finished (it restarted in between) is said so, not shown "pending" for good
+    // (23 Nov 2026: rows from August were still "accepted"). "accepted" means started: a run or test, so an hour.
+    const lastWord = Number(command.updatedAt || command.requestedAt || 0);
+    const unfinished = (command.status === "received" && !commandStillPending(command))
+      || (command.status === "accepted" && serverNow() - lastWord > UNFINISHED_ACCEPTED_MS);
+    badge.className = `command-badge ${unfinished ? "" : commandStatusTone(command.status)}`;
+    badge.textContent = unfinished ? "no final answer" : rawText(command.status, "unknown");
     const queued = command.status === "queued";
     const withdrawable = queued && !NOT_WITHDRAWABLE.has(command.type) && canWithdrawType(command.type);
     const right = document.createElement("span");
@@ -5353,6 +5375,9 @@ function renderCommandHistory() {
     const queuedForMs = serverNow() - Number(command.requestedAt || 0);
     if (queued && queuedForMs > QUEUED_WARNING_MS) {
       detailText = `ESP1 hasn't picked this up for ${formatAge(queuedForMs)}. It will still run when ESP1 next reads it${withdrawable ? ", unless you withdraw it" : ""}.`;
+    }
+    if (unfinished) {
+      detailText = `ESP1 last said "${command.status}${command.detail ? `: ${commandDetailText(command, "")}` : ""}" and never sent a final answer (it restarted or lost its link). The rig's SD log has what happened.`;
     }
     detail.textContent = `${formatTimestamp(command.requestedAt)} — ${detailText}`;
     row.append(top, detail);
@@ -5660,7 +5685,7 @@ function renderTankCheck() {
   const block = tankCheckBlockReason();
   button.hidden = !hasControlAccess();
   const sent = latestCommandOfType("TANK_CHECK_OK");
-  const waiting = sent && ["queued", "received"].includes(sent.status);
+  const waiting = commandStillPending(sent);
   button.disabled = Boolean(block) || Boolean(waiting);
   button.title = block || (waiting ? "Waiting for ESP1." : "");
   const result = document.getElementById("tankCheckResult");
@@ -7768,8 +7793,9 @@ setInterval(() => {
   // no Firebase write happens at the exact expiry moment, so nothing else would re-check this. 15 s
   // granularity matches the existing staleness-recheck cadence this tick already runs.
   refreshOperatorUI();
-  // A queued row's age warning has to appear without waiting for a command update that may never come.
-  if (commandData.some(command => command.status === "queued")) renderCommandHistory();
+  // A queued row's age warning, and "no final answer" on a row ESP1 never finished (23 Nov 2026), have to appear without
+  // waiting for a command update that may never come.
+  if (commandData.some(command => ["queued", "received", "accepted"].includes(command.status))) renderCommandHistory();
 }, 15000);
 
 // 1 s tick: the armed-run countdown has to move between snapshots (ESP1 publishes every 20-60 s),
