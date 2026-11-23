@@ -544,11 +544,13 @@ function liveAgeText() {
 }
 
 // "every 30 s", plus why it is slower while the rig works (18 Nov 2026 e, the owner: "during the operation or an upcoming
-// schedule, the system should focus on the operation than the firebase").
+// schedule, the system should focus on the operation than the firebase"), and whether it is the live pace a watching page
+// gets (meta.watched, ESP1 from 23 Nov 2026: see beatViewer()).
 function linkPaceText() {
   const every = Math.round(Number(liveData.meta?.refreshMs || 60000) / 1000);
   const pace = every >= 60 && every % 60 === 0 ? `every ${every / 60} min` : `every ${every} s`;
-  return liveData.meta?.linkMode === "busy" ? `${pace} while the rig works on a watering` : pace;
+  const live = liveData.meta?.watched === true ? ", live while the website is open" : "";
+  return liveData.meta?.linkMode === "busy" ? `${pace} while the rig works on a watering${live}` : `${pace}${live}`;
 }
 
 // How long one sign of life from ESP1 counts: two report intervals and 15 s, at least 90 s.
@@ -641,14 +643,15 @@ function newerPong() {
 /* ---- Late reports, the stops' gate, firmware generations ----------------------------------------------------------------- */
 
 // How late ESP1's report is (18 Nov 2026): 0 while it is on time, else its age. ESP1 reports every meta.refreshMs (web v.4
-// of 18 Nov g: once a minute), so a report older than one more interval, and at least 5 s more, is late. Only while
-// deviceIsFresh(): past that the page says ESP1 has stopped.
+// of 18 Nov g: once a minute), so a report older than one more interval, and at least 30 s more, is late. Only while
+// deviceIsFresh(): past that the page says ESP1 has stopped. 30 s, not 5 s, since 23 Nov 2026: at the live pace (10 s) one
+// report lost on ESP1's weak Wi-Fi (a 12 s wait, then a retry) would otherwise flash "late" for nothing.
 function deviceDelayMs() {
   const stamp = Number(liveData.meta?.updatedAt || 0);
   if (!stamp || !deviceIsFresh()) return 0;
   const refreshMs = Number(liveData.meta?.refreshMs || 60000);
   const age = Math.max(0, serverNow() - stamp);
-  return age > refreshMs + Math.max(refreshMs, 5000) ? age : 0;
+  return age > refreshMs + Math.max(refreshMs, 30000) ? age : 0;
 }
 
 // The stops (2026-11-06, the owner's choice): Emergency stop, switching pumps and valves off, and Cancel forced run
@@ -7286,8 +7289,10 @@ contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () 
  *   - when the page opens or comes back to the front,
  *   - and when Refresh is pressed (which also says how long ESP1 took).
  * (Until 19 Nov it also asked for one when ESP1's regular report was overdue; that is a link ping now, see below.)
- * It no longer tells ESP1 that someone is watching (irrigation/viewer/at every 15 s, 17 Nov to 18 Nov f): that set a
- * faster pace, the load this undoes. The pace itself is ESP1's; nothing here assumes a number.
+ * From 18 Nov g to 23 Nov it no longer told ESP1 that someone is watching (irrigation/viewer/at every 15 s, 17 Nov to
+ * 18 Nov f, set a faster pace while ESP1's link was failing for want of memory). Since 23 Nov 2026 it does again, every
+ * 30 s and only while on screen (beatViewer(), "live while watched"). The pace itself is ESP1's; nothing here assumes a
+ * number.
  *
  * 19 Nov 2026, the owner: "make the refresh button request to the rig more like manual/test way. But don't show on LCD.
  * In refreshing must request data from rig ... or automatically refresh every 1 min, but takes less heavy work load to
@@ -7387,14 +7392,37 @@ function askForReport() {
   });
 }
 
-// From the 1 s tick and on visibility changes: show Refresh to the accounts that may use it, ask for a report when the
-// page comes (back) into view, and check the link with a ping when ESP1's regular report is overdue.
+/* ---- Live while watched (23 Nov 2026) ------------------------------------------------------------------------------------
+ * The owner, 23 Nov 2026: "Verify the connectivity, that the ESP1 will send almost realtime, without making it heavy work
+ * for ESP1 ... Must be realtime but possible that ESP1 can handle." While this page is open AND on screen it writes
+ * irrigation/viewer/at (Firebase's own time) every VIEWER_BEAT_MS, and at once when it comes (back) into view. ESP1 (web
+ * v.4 of 23 Nov 2026, live_watch.h) reads irrigation/viewer every 6 s anyway; a new `at` makes it report every 10 s (15 s
+ * while it works on a watering) and soon after a pump or its state changes, until 75 s after the last beat it saw, and it
+ * says so in meta.watched. A hidden page (another tab, a minimised window, a locked phone) doesn't beat, so with nobody
+ * watching ESP1 is back to one report a minute. Older ESP1 builds ignore viewer/at. The rules take `at` only as Firebase's
+ * time of the last minute, from approved accounts. */
+const VIEWER_BEAT_MS = 30000;
+let lastViewerBeatAt = 0;
+function beatViewer(atOnce) {
+  if (!db || !auth?.currentUser || !isApprovedUser() || databaseAccessDenied || !firebaseConnected) return;
+  const tick = Date.now();
+  if (!atOnce && tick - lastViewerBeatAt < VIEWER_BEAT_MS) return;
+  lastViewerBeatAt = tick;
+  db.ref("irrigation/viewer").update({ at: firebase.database.ServerValue.TIMESTAMP }).catch(error => {
+    console.warn("irrigation/viewer/at", error);
+  });
+}
+
+// From the 1 s tick and on visibility changes: show Refresh to the accounts that may use it, tell ESP1 this page watches
+// (beatViewer()), ask for a report when the page comes (back) into view, and check the link with a ping when ESP1's
+// regular report is overdue.
 function syncAutoRefresh() {
   const allowed = Boolean(auth?.currentUser) && isApprovedUser() && !databaseAccessDenied;
   const refreshButton = document.getElementById("refreshBtn");
   if (refreshButton) refreshButton.hidden = !allowed;
   const visible = allowed && document.visibilityState === "visible";
   const now = Date.now();
+  if (visible) beatViewer(!pageWasVisible);
   if (visible && !pageWasVisible) {
     // Not when the report on screen is under REPORT_FRESH_ENOUGH_MS old (20 Nov 2026): every tab switch on every open page
     // asked ESP1 for one more full ~6 KB report, which with a few viewers was several extra reports a minute.
@@ -7750,7 +7778,7 @@ setInterval(() => {
 setInterval(() => {
   syncFreshness();
   setText("liveAge", liveAgeText());   // the age moves every second
-  syncAutoRefresh();                   // Refresh button, and a report asked for on opening / when one is overdue
+  syncAutoRefresh();                   // Refresh button, the live beat, a report asked for on opening, the link check
   nudgeFirebaseReconnect(false);       // offline a while on screen: don't wait out the SDK's growing delay (18 Nov 2026)
   syncLogsListener();                  // the SD card logs list, for the accounts that may see it
   renderLogRequest();                  // Diagnostics > SD card logs: idle-only request, today's state

@@ -166,10 +166,20 @@ The page works with web v.3 firmware too (no litres shown).
     (`REPORT_FRESH_ENOUGH_MS`): every tab switch on every open page used to ask for one more ~6 KB report.
   - Diagnostics (link health) also shows *Reports that waited*, *Connection memory* (ESP1's TLS buffer pool, reserved at
     start) and *Network task stack*, when the firmware publishes them. Test: `npm run test:linkfix` (8).
+- **23 Nov 2026, live while watched** (the owner: "must be realtime but possible that ESP1 can handle"; the firmware side
+  is in `..\ESP1_PlanB\PLAN_B_README.md`, *web v.4 (2026-11-23 Plan B + link fix + live)*, not flashed when written):
+  - While the page is open **and on screen** it writes `irrigation/viewer/at` (Firebase's time) every 30 s
+    (`beatViewer()`, `VIEWER_BEAT_MS`), at once when it comes back into view. ESP1 then reports every 10 s (15 s while
+    busy) and soon after a pump or its state changes; with nobody watching, once a minute as before. Older ESP1 builds
+    ignore it. No rules change: `viewer/at` was already allowed (Firebase's time of the last minute, approved accounts).
+  - The age line says "every 10 s, live while the website is open" when the report has `meta.watched`; "late" now
+    needs one interval plus at least **30 s** (it was 5 s), so one report lost on weak Wi-Fi doesn't flash amber at the
+    10 s pace. Test: `npm run test:livewatch` (13).
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
-  once a report is one interval plus at least 5 s late (`deviceDelayMs()`: over 60 s at the 30 s pace, over 120 s
-  at the 60 s pace), and red when this browser is offline or ESP1 has stopped reporting (`deviceIsFresh()`, as
+  once a report is one interval plus at least 5 s late (30 s since 23 Nov) (`deviceDelayMs()`: over 60 s at the 30 s
+  pace, over 120 s at the 60 s pace, over 40 s at the 10 s live pace), and red when this browser is offline or ESP1 has
+  stopped reporting (`deviceIsFresh()`, as
   before). While on screen and offline for 20 s, the page restarts Firebase's reconnect attempt instead of waiting
   out the SDK's growing delay (up to 5 minutes), and again 2 s after the page comes back to the front.
   Diagnostics shows the Wi-Fi signal with what it means for the reports, and, with ESP1's firmware of
