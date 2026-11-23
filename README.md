@@ -182,6 +182,16 @@ The page works with web v.3 firmware too (no litres shown).
   queue), "received" only for 3 minutes (`RECEIVED_ANSWER_MAX_MS`). Command status says **"no final answer"** for such a
   row, and for one "accepted" (a run or test started) over an hour ago, instead of "pending" for good.
   Test: `npm run test:stuckrow` (6; 5 fail against the website of before).
+- **23 Nov 2026 (evening), bug hunt 2** (the firmware side, *web v.4 (2026-11-23 Plan B + link fix + live, fixes 2)*, is
+  in `..\ESP1_PlanB\PLAN_B_README.md`, not flashed when written):
+  - **Rules: an account's own record must name its own sign-in email** (`users/$uid/email`, compared without letter
+    case). User Management shows that email, and approving or deleting an account goes by it, but a new account could
+    write any address into its record. Operators' changes to a record are not affected. Sign-up now stores the sign-in's
+    own email (`credential.user.email`). Test: `npm run test:rules-emu` (57).
+  - Signing out, or losing approval, also drops `commandRows` (the rows `esp1Online()` reads, pings included): the next
+    account to sign in on that browser could otherwise see "ESP1 connected" from the last account's rows for a moment.
+  - SD card logs: ESP1 reads "Upload from the rig" every **30 s** (since 18 Nov 2026 g), not every 10 s as the page said;
+    the day now shows "asked" for 45 s (`LOG_ASK_PICKUP_MS`), so the button doesn't come back on just before ESP1 starts.
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
   once a report is one interval plus at least 5 s late (30 s since 23 Nov) (`deviceDelayMs()`: over 60 s at the 30 s

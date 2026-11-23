@@ -1343,6 +1343,9 @@ function initializeFirebase() {
         wasHeldOrStopped = false;
         liveData = {};
         commandData = [];
+        // 23 Nov 2026 (bug hunt 2): the rows behind esp1Online() and the pings go too. Kept, the next account to sign in
+        // here could see "ESP1 connected" and working controls from the last account's rows until its own arrived.
+        commandRows = [];
         sentCommands.clear();
         renderZonesUI();
         renderCropLibrary();
@@ -1645,6 +1648,7 @@ function syncLiveDataAccess() {
   wasHeldOrStopped = false;      // the data is going away, the fault isn't: don't announce it as cleared
   liveData = {};
   commandData = [];
+  commandRows = [];              // and the rows esp1Online() reads (23 Nov 2026, as at sign-out)
   activeZones = DEFAULT_ZONES.map(zone => ({ ...zone }));
   clearZoneDrafts();
   renderZonesUI();
@@ -6341,9 +6345,11 @@ signupForm?.addEventListener("submit", async event => {
     // New account: forced to status "pending" both here and by the rules -- see /users/{uid} in
     // firebase-rules.json, which refuses any OTHER status on a self-created record. Approval is a
     // separate, operator-only write from this point on.
+    // The sign-in's own email (23 Nov 2026): the rules now check that a record an account writes for itself names the
+    // email it signs in with, so User Management can't be shown somebody else's address.
     await db.ref(`users/${credential.user.uid}`).set({
       name,
-      email,
+      email: credential.user.email || email,
       status: "pending",
       createdAt: firebase.database.ServerValue.TIMESTAMP
     });
@@ -7561,7 +7567,8 @@ document.getElementById("refreshBtn")?.addEventListener("click", requestRefresh)
 /* ---- SD card logs (2026-11-17: the Supabase upload expired; the daily CSV now comes through Firebase) ---------------
  * ESP1 puts each day under logs/files/<yyyymmdd>/<nnnn> (pieces of ~6 KB; 12 KB before 17 Nov evening) with logs/index/<yyyymmdd> saying how far it
  * got. The list follows logs/index live; Download joins the pieces into the CSV; "Upload from the rig" writes
- * irrigation/logRequest, which ESP1 polls every 10 s. Operators and the privileged tier only (the rules agree). */
+ * irrigation/logRequest, which ESP1 polls every 30 s (FB_LOGREQ_POLL_MS; every 10 s only on 17-18 Nov 2026 f). Operators
+ * and the privileged tier only (the rules agree). */
 let logsRef = null, logsIndex = {}, logsDenied = false;
 
 function logDayLabel(day) {
@@ -7665,7 +7672,7 @@ function sendLogRequest(day, noteId) {
   if (!db) return Promise.resolve(false);
   return db.ref("irrigation/logRequest").set({ day, at: firebase.database.ServerValue.TIMESTAMP })
     .then(() => {
-      setText(noteId, `Asked the rig for ${logDayLabel(day)}. It is sent as it goes (about 2–3 minutes per megabyte); ESP1 checks every 10 seconds.`);
+      setText(noteId, `Asked the rig for ${logDayLabel(day)}. It is sent as it goes (about 2–3 minutes per megabyte); ESP1 checks for a request every 30 seconds.`);
       return true;
     })
     .catch(error => {
@@ -7711,11 +7718,14 @@ function logRequestBlockReason() {
   return "";
 }
 
-// A request for `day` is on its way: asked in the last 30 s, or ESP1 is sending it now.
+// A request for `day` is on its way: asked in the last LOG_ASK_PICKUP_MS, or ESP1 is sending it now. 45 s, not 30 s
+// (23 Nov 2026): ESP1 reads the request up to 30 s after it is written, starts the upload up to 5 s after that, and only
+// then marks the day "uploading", so at 30 s the button came back on (and the day read "NOT SENT") just before it did.
+const LOG_ASK_PICKUP_MS = 45000;
 function logDayBeingSent(day) {
   const entry = logsIndex[String(day)];
   if (entry?.state === "uploading" && !logUploadStalled(entry)) return true;
-  return logAskedDay === day && serverNow() - logAskedAt < 30000 && entry?.state !== "done";
+  return logAskedDay === day && serverNow() - logAskedAt < LOG_ASK_PICKUP_MS && entry?.state !== "done";
 }
 
 function renderLogRequest() {

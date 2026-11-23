@@ -194,7 +194,7 @@
         ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('status').val() === 'pending' && !newData.child('subOperator').exists() && !newData.child('tempAccessUntil').exists() && !newData.child('kickToken').exists() && !newData.child('controlAccess').exists() && !newData.child('zoneEditAccess').exists()) || ((auth.uid === 'KaiqrwlOHeVdebbokPxZfcFLZiu2' || auth.uid === 'C8V39t4EDgUgjOt9GA6OeMukMsw2') && $uid !== 'KaiqrwlOHeVdebbokPxZfcFLZiu2' && $uid !== 'C8V39t4EDgUgjOt9GA6OeMukMsw2'))",
         ".validate": "newData.hasChildren(['name', 'email', 'status', 'createdAt'])",
         "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80" },
-        "email": { ".validate": "newData.isString() && newData.val().length > 0" },
+        "email": { ".validate": "newData.isString() && newData.val().length > 0 && (auth.uid !== $uid || (auth.token.email !== null && newData.val().toLowerCase() === auth.token.email.toLowerCase()))" },
         "status": { ".validate": "newData.val() === 'pending' || newData.val() === 'approved' || newData.val() === 'rejected' || newData.val() === 'disabled' || newData.val() === 'restricted'" },
         "createdAt": { ".validate": "newData.isNumber()" },
         "kickToken": {
