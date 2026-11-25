@@ -26,7 +26,10 @@
        style.css falls back to system fonts until this arrives. -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" media="print" onload="this.media='all'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap"></noscript>
-  <link rel="stylesheet" href="style.css">
+  <!-- ?v= names the release (26 Nov 2026): change it, here and on firebase-config.js and script.js at the bottom, on every
+       push. GitHub Pages lets a browser keep these files 10 minutes, and a reload could pair a new page with an old
+       script (an owner saw the new Step down choice still asking for an account); a new ?v= makes it fetch them anew. -->
+  <link rel="stylesheet" href="style.css?v=2026-11-26.3">
 </head>
 <body>
   <!-- Icons for Simple mode (18 Nov 2026): one hidden sprite, drawn for this site, used as <svg class="si"><use href="#si-…"/></svg>.
@@ -1072,19 +1075,23 @@
            delete-user-api/api/operator-code.js; the change is made there, with the Admin SDK, only after the code. Operators
            only (the rules refuse every page a write to operators/). Filled by renderOperatorPanel() in script.js.
            Step down (26 Nov 2026, the owner: "hand my role over without adding some approved account to swap. More like I
-           retire as operator"): no account to pick, so the picker gives way to #opRetireNote. Not for the backup operator. -->
+           retire as operator", then: "If there are 2 operators, each of them have step down button. But if only one
+           operator, it needs to handover or add another"): #opStepDown, shown only while another listed operator stays
+           (the hidden backup isn't counted, and never steps down). -->
       <section class="op-panel" id="opPanel" aria-labelledby="opPanelTitle" hidden>
-        <h3 id="opPanelTitle"><svg class="si" aria-hidden="true"><use href="#si-key"/></svg>Operator role<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the operator role" data-info-title="Operator role" data-info-text="Add: the account you pick becomes an operator too. Hand over: it becomes the operator, and you become a normal approved account. Step down: you become a normal approved account, and nobody new becomes an operator. Each time, a 6-digit code goes to your own email first, and nothing changes until you type it here (it lasts 10 minutes)." data-help="help-operator-role">i</button></h3>
+        <h3 id="opPanelTitle"><svg class="si" aria-hidden="true"><use href="#si-key"/></svg>Operator role<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the operator role" data-info-title="Operator role" data-info-text="Add: the account you pick becomes an operator too. Hand over: it becomes the operator, and you become a normal approved account. Step down: you become a normal approved account and the other operators stay; it shows only when there are 2 or more operators. Each time, a 6-digit code goes to your own email first, and nothing changes until you type it here (it lasts 10 minutes)." data-help="help-operator-role">i</button></h3>
         <p>Operators now:</p>
         <ul class="op-list" id="opList"><li class="muted">Loading…</li></ul>
+        <div class="op-stepdown" id="opStepDown" hidden>
+          <button type="button" class="secondary" id="opStepDownBtn"><svg class="si" aria-hidden="true"><use href="#si-logout"/></svg> Step down</button>
+          <span>You become a normal approved account. The other operators stay.</span>
+        </div>
         <form class="op-form" id="opForm" novalidate>
           <label id="opTargetLabel">Account<select id="opTarget"><option value="">Choose an approved account</option></select></label>
-          <p class="op-retire-note" id="opRetireNote" hidden><svg class="si" aria-hidden="true"><use href="#si-key"/></svg>You stop being an operator and stay an approved account. Nobody new becomes an operator.</p>
           <fieldset class="op-choice">
             <legend class="field-note">What to do</legend>
             <label><input type="radio" name="opAction" value="add" checked>Add as another operator</label>
             <label id="opTransferLabel"><input type="radio" name="opAction" value="transfer">Hand my role over</label>
-            <label id="opRetireLabel"><input type="radio" name="opAction" value="retire">Step down</label>
           </fieldset>
           <button type="submit" id="opSendBtn"><svg class="si" aria-hidden="true"><use href="#si-mail"/></svg> Send code to my email</button>
         </form>
@@ -1364,7 +1371,7 @@
         <details class="help-item" id="help-restore" data-detail data-for="privileged"><summary>Restore factory settings (Restore Defaults)</summary><p>Puts every column's mode, Operation and day plan (back to Automatic, no plan), targets, watering times and ESP1's own name for it, the thresholds, and the AC voltage and current limits, back to the firmware's starting values. It keeps calibration, which columns are on, and the WiFi setup, and the website's own names and crop profiles aren't touched. Only when the system is idle; it can't be undone.</p></details>
         <details class="help-item" id="help-access" data-for="all"><summary>Accounts and what each can do</summary><p><strong>Pending</strong> (new), <strong>rejected</strong> and <strong>restricted</strong> accounts see only a page with a button to ask for approval or to be unrestricted. <strong>Blocked</strong> accounts can't use the site at all. <strong>Approved</strong> accounts can look at the Live dashboard, Zone profiles and Help. With <strong>zone editing</strong> they can change the column cards, and with <strong>control</strong> they can use the Controls tab and the Emergency stop; each is asked for and given separately. <strong>Sub-operators</strong> and <strong>1-hour access</strong> have all of that, plus Manual/Test, System, Diagnostics, the system lock and crop profiles. <strong>Operators</strong> manage the accounts, and can add another operator or hand their role over (confirmed with a code sent to their email).</p></details>
         <details class="help-item" id="help-grants" data-for="privileged"><summary>1-hour access and Sub-operator</summary><p>Ways for an operator to open Manual/Test, System, Diagnostics and the system lock to an approved account: <strong>1-hour access</strong> ends by itself after an hour, and <strong>Sub-operator</strong> lasts until an operator removes it. Restricting, blocking or rejecting the account ends both at once.</p></details>
-        <details class="help-item" id="help-operator-role" data-for="operator"><summary>Add an operator, hand the role over, or step down</summary><ol><li>Open <strong>User Management</strong>. <strong>Operator role</strong> is at the top.</li><li>Choose what to do: <strong>Add as another operator</strong> (you both stay operators), <strong>Hand my role over</strong> (it becomes the operator; you become a normal approved account), or <strong>Step down</strong> (you become a normal approved account, and nobody new becomes an operator). An operator can give you the role again later.</li><li>To add or hand over, pick the account. It must be an approved account (approve it first if it is new).</li><li>Press <strong>Send code to my email</strong>. The 6-digit code goes to the email of the operator who asks: the account you signed in with.</li><li>Type the code and press <strong>Confirm</strong> within 10 minutes. Five wrong codes and you need a new one.</li></ol><p>Nothing changes until the code is typed. Every change is recorded. The email is sent by the website's server (delete-user-api), which needs its email settings (an email service such as Brevo, or Gmail); until they are set, it says so and nothing changes. The code may land in Spam the first time.</p></details>
+        <details class="help-item" id="help-operator-role" data-for="operator"><summary>Add an operator, hand the role over, or step down</summary><ol><li>Open <strong>User Management</strong>. <strong>Operator role</strong> is at the top.</li><li>To add or hand over: pick an approved account (approve it first if it is new), choose <strong>Add as another operator</strong> (you both stay operators) or <strong>Hand my role over</strong> (it becomes the operator; you become a normal approved account), and press <strong>Send code to my email</strong>.</li><li>To leave without picking anyone: press <strong>Step down</strong>. It shows only when there are 2 or more operators, so one always stays. If you are the only one, add another operator or hand the role over first.</li><li>The 6-digit code goes to the email of the operator who asks: the account you signed in with. An operator can give the role back later with Add.</li><li>Type the code and press <strong>Confirm</strong> within 10 minutes. Five wrong codes and you need a new one.</li></ol><p>Nothing changes until the code is typed. Every change is recorded. The email is sent by the website's server (delete-user-api), which needs its email settings (an email service such as Brevo, or Gmail); until they are set, it says so and nothing changes. The code may land in Spam the first time.</p></details>
         <details class="help-item" id="help-account-actions" data-for="operator"><summary>Sign out, Restrict, Block and Delete</summary><p>On each account in <strong>User Management</strong>, under <strong>Account</strong>:</p><ul><li><strong>Sign them out</strong>: ends its open pages now. It can sign in again straight away.</li><li><strong>Restrict</strong>: a pause. It can sign in, but sees only a page asking to be unrestricted: no readings, no controls. Its extra access goes. Undo with <strong>Unrestrict</strong>.</li><li><strong>Block</strong>: shuts it out completely; it can't even ask. Its extra access goes. Undo with <strong>Unblock</strong>.</li><li><strong>Delete</strong>: removes the sign-in, the record and its history for good, after you type its email to confirm. It can't be undone; the person would have to sign up again.</li></ul><p>Operator accounts have none of these. To add another operator, or hand your role over, use <strong>Operator role</strong> at the top of User Management: a 6-digit code is sent to your own email to confirm it.</p></details>
       </div>
 
@@ -1421,12 +1428,12 @@
        runtime, starts empty. aria-live so screen readers announce each one without interrupting. -->
   <div id="toastStack" class="toast-stack" aria-live="polite" role="status"></div>
 
-  <script src="firebase-config.js"></script>
+  <script src="firebase-config.js?v=2026-11-26.3"></script>
   <!-- integrity = SHA-384 of these exact versioned files: the browser refuses a file that was changed in transit
        or on the CDN. Bumping the Firebase version means recomputing all three hashes. -->
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-app-compat.js" integrity="sha384-O5/wNvM7EhstFPbW8EjQ4+EVxt5ssTrrsD5QQXo1WNSnqT8YZTNTNeWqlIn6TZuJ" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-auth-compat.js" integrity="sha384-L2TNKoX7aOgI1Y2tPR6ASBqaTfYTi4YkaNvJB7j88BVTCgE17WojiXpA4whvkpcN" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-database-compat.js" integrity="sha384-w5XaThP2kUS+dFT6tTnrl0aOOSC7uNgvw3O0fcqc+tD7NtkA2vX8ZQX6MfhyuaRD" crossorigin="anonymous"></script>
-  <script src="script.js"></script>
+  <script src="script.js?v=2026-11-26.3"></script>
 </body>
 </html>

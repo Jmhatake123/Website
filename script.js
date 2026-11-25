@@ -2656,7 +2656,9 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
  * the Admin SDK) only then. The rules refuse every page a write to operators/, so the page can't skip the code.
  * Add: the account becomes an operator too. Hand over: it becomes the operator, and this account an approved one. Step
  * down (26 Nov 2026, the owner: "hand my role over without adding some approved account to swap. More like I retire as
- * operator"): this account becomes an approved one, and nobody new an operator. The hidden backup operator can only add.
+ * operator"): this account becomes an approved one, and nobody new an operator; a button of its own, shown only while
+ * another listed operator stays (the owner, later that day: "If there are 2 operators, each of them have step down
+ * button. But if only one operator, it needs to handover or add another"). The hidden backup operator can only add.
  * The code always goes to the operator who asks (the owner's choice, 26 Nov 2026). The registry is read live, so a
  * change shows at once on every open page. */
 let myOperatorRef = null;      // operators/<my uid>: a role added or handed over, live
@@ -2776,25 +2778,16 @@ function renderOperatorPanel() {
   }
   // The backup operator can only add: it is the way back in, so it never stops being an operator.
   const backup = me === BACKUP_OPERATOR_UID;
-  for (const id of ["opTransferLabel", "opRetireLabel"]) {
-    const choice = document.getElementById(id);
-    if (choice && choice.hidden !== backup) choice.hidden = backup;
-  }
+  const transferLabel = document.getElementById("opTransferLabel");
+  if (transferLabel && transferLabel.hidden !== backup) transferLabel.hidden = backup;
   if (backup) { const add = document.querySelector('#opForm input[name="opAction"][value="add"]'); if (add) add.checked = true; }
-  syncOperatorActionView();
+  // Step down: only while another listed operator stays (the hidden backup isn't counted). The registry is read live, so
+  // when one of two operators steps down, the other's button goes at once; the server checks the same at the confirm.
+  const stepDown = document.getElementById("opStepDown");
+  const canStepDown = !backup && operators.includes(me) && operators.length >= 2;
+  if (stepDown && stepDown.hidden !== !canStepDown) stepDown.hidden = !canStepDown;
   renderOperatorCodeBox();
 }
-// Step down needs no account: the account picker gives way to a line saying what happens.
-function syncOperatorActionView() {
-  const retire = document.querySelector('#opForm input[name="opAction"]:checked')?.value === "retire";
-  const picker = document.getElementById("opTargetLabel");
-  if (picker && picker.hidden !== retire) picker.hidden = retire;
-  const note = document.getElementById("opRetireNote");
-  if (note && note.hidden !== !retire) note.hidden = !retire;
-}
-document.getElementById("opForm")?.addEventListener("change", event => {
-  if (event.target?.name === "opAction") syncOperatorActionView();
-});
 const OP_ACTION_WORDS = {
   add: p => ({ what: `add ${p.name} as an operator`, log: `Added an operator: ${p.name}`, done: `Done: ${p.name} is an operator now too.` }),
   transfer: p => ({ what: `hand your operator role over to ${p.name}`, log: `Handed the operator role to ${p.name}`, done: `Done: ${p.name} is the operator now. Your account stays approved.` }),
@@ -2805,29 +2798,22 @@ function renderOperatorCodeBox() {
   const p = opFlow.pending;
   if (p && Date.now() > p.expiresAt) opFlow.pending = null;
   if (box) box.hidden = !opFlow.pending;
-  const send = document.getElementById("opSendBtn");
-  if (send) send.disabled = Boolean(opFlow.pending);
+  for (const id of ["opSendBtn", "opStepDownBtn"]) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = Boolean(opFlow.pending);
+  }
   if (!opFlow.pending) return;
   setText("opCodeNote", `Sent to ${p.sentTo}, to ${OP_ACTION_WORDS[p.action](p).what}. It works until ${timeOfDayText(new Date(p.expiresAt))}.`);
 }
 
-document.getElementById("opForm")?.addEventListener("submit", async event => {
-  event.preventDefault();
+// Asks the server to email the code, then shows the code box. add / transfer name an account; retire is this one.
+async function sendOperatorCode(action, target = "", name = "") {
   const show = resultLine("opResult");
-  if (!isOperator()) { show("Only an operator can do this.", true); return; }
-  const select = document.getElementById("opTarget");
-  const action = document.querySelector('#opForm input[name="opAction"]:checked')?.value || "add";
-  const retire = action === "retire";
-  const target = retire ? auth?.currentUser?.uid || "" : select?.value || "";
-  if (!target) { show("Choose an approved account first.", true); return; }
-  const name = retire ? "" : select.selectedOptions[0]?.textContent || "that account";
-  if (action === "transfer" && !confirm(`Hand your operator role over to ${name}? You will become a normal approved account, and only an operator can give you access again. A code is sent to your email to confirm.`)) return;
-  if (retire && !confirm("Step down as operator? You will become a normal approved account, and nobody new becomes an operator. Only an operator can give you the role back. A code is sent to your email to confirm.")) return;
-  const button = document.getElementById("opSendBtn");
-  if (button) button.disabled = true;
+  const buttons = ["opSendBtn", "opStepDownBtn"].map(id => document.getElementById(id)).filter(Boolean);
+  buttons.forEach(button => { button.disabled = true; });
   show("Sending a code to your email…");
   try {
-    const answer = await operatorApi(retire ? { step: "send", action } : { step: "send", action, target });
+    const answer = await operatorApi(action === "retire" ? { step: "send", action } : { step: "send", action, target });
     opFlow.pending = { action, target, name, sentTo: answer.sentTo || "your email", expiresAt: Date.now() + Number(answer.expiresInS || 600) * 1000 };
     show(`A 6-digit code was sent to ${opFlow.pending.sentTo}. Type it below.`);
     renderOperatorCodeBox();
@@ -2835,8 +2821,25 @@ document.getElementById("opForm")?.addEventListener("submit", async event => {
   } catch (error) {
     show(error.message, true);
   } finally {
-    if (button) button.disabled = Boolean(opFlow.pending);
+    buttons.forEach(button => { button.disabled = Boolean(opFlow.pending); });
   }
+}
+document.getElementById("opForm")?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const show = resultLine("opResult");
+  if (!isOperator()) { show("Only an operator can do this.", true); return; }
+  const select = document.getElementById("opTarget");
+  const target = select?.value || "";
+  const action = document.querySelector('#opForm input[name="opAction"]:checked')?.value || "add";
+  if (!target) { show("Choose an approved account first.", true); return; }
+  const name = select.selectedOptions[0]?.textContent || "that account";
+  if (action === "transfer" && !confirm(`Hand your operator role over to ${name}? You will become a normal approved account, and only an operator can give you access again. A code is sent to your email to confirm.`)) return;
+  await sendOperatorCode(action, target, name);
+});
+document.getElementById("opStepDownBtn")?.addEventListener("click", async () => {
+  if (!isOperator()) { resultLine("opResult")("Only an operator can do this.", true); return; }
+  if (!confirm("Step down as operator? You will become a normal approved account, and the other operators stay. Only an operator can give you the role back. A code is sent to your email to confirm.")) return;
+  await sendOperatorCode("retire");
 });
 document.getElementById("opConfirmBtn")?.addEventListener("click", async () => {
   const show = resultLine("opResult");
@@ -2857,7 +2860,9 @@ document.getElementById("opConfirmBtn")?.addEventListener("click", async () => {
     renderOperatorCodeBox();
   } catch (error) {
     show(error.message, true);
-    if (/expired|new one|last try/i.test(error.message)) { opFlow.pending = null; renderOperatorCodeBox(); }
+    // The server has thrown the code away (expired, used up, or the change can't be made any more: e.g. the other
+    // operator stepped down first, so this one is the only one left).
+    if (/expired|new one|last try|Nothing was changed/i.test(error.message)) { opFlow.pending = null; renderOperatorCodeBox(); }
   } finally {
     if (button) button.disabled = false;
   }

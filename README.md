@@ -220,9 +220,10 @@ The page works with web v.3 firmware too (no litres shown).
     `DIAG_SWEEP` needs the same tier in the rules.
   - **User Management**: each account's actions in labelled groups (Decide, Access, Extra access, Account), every button
     with its (i), Restrict / Block / Delete included. **Operator role** panel: **add** another operator, **hand the role
-    over**, or (26 Nov 2026) **step down** with nobody new, each confirmed by a 6-digit code emailed to the operator who
-    asks (`..\delete-user-api\api\operator-code.js`, email settings in Vercel: see its README). The backup operator is
-    offered Add only. Operators now come from the database: the backup operator always, the original operator
+    over**, or (26 Nov 2026) **Step down** with nobody new (a button, shown only while 2 or more operators are listed,
+    so one always stays), each confirmed by a 6-digit code emailed to the operator who asks
+    (`..\delete-user-api\api\operator-code.js`, email settings in Vercel: see its README). The backup operator is
+    offered Add only and isn't counted. Operators now come from the database: the backup operator always, the original operator
     unless `operators/<uid>` is false, anyone `operators/<uid>` names true; the rules (`operators`, `operatorCodes`,
     `operatorLog`), the page (`isOperatorUid()`) and the API use the same rule. No data needs adding first.
   - **Simple mode, simpler**: plain hints; the watering plan, the zone readings and crop pickers ("Show readings") and
@@ -290,6 +291,11 @@ Vanilla HTML/CSS/JS, no framework or build step · Firebase Realtime Database + 
 GitHub Pages, auto-deployed on push to `main` (see `.github/workflows/static.yml`) · a small Vercel
 function (`delete-user-api`) for the one operation Firebase Auth can't do client-side — permanently
 deleting a user account.
+
+**On every push, change the release in `index.html`** (`?v=` on `style.css`, `firebase-config.js` and `script.js`, e.g.
+`?v=2026-11-26.3` → `?v=2026-11-27.1`; 26 Nov 2026). GitHub Pages lets a browser keep those files for 10 minutes, and
+a reload could pair the new page with the old script: the owner saw the new Step down choice still asking for an
+account. A new `?v=` makes the browser fetch them with the page.
 
 ## Contributors
 
