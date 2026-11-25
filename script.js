@@ -482,14 +482,6 @@ function numberFromInput(id) {
   return raw ? Number(raw) : NaN;
 }
 
-// ESP1 publishes signed current as + = discharging. Below half a rounding step there is no direction
-// worth claiming.
-function signedCurrentText(amps, signed) {
-  const text = numberText(amps, 2, "A");
-  if (!hasValue(signed) || Math.abs(Number(signed)) < 0.005) return text;
-  return `${text} ${Number(signed) > 0 ? "discharging" : "charging"}`;
-}
-
 // web v.3 publishes all zeros when the RTC's time cannot be trusted. Older firmware could publish
 // whatever a wedged I2C bus returned, with rtcOk still true (seen live: "2165-85-165 165:165").
 function deviceTimeText(value) {
@@ -550,7 +542,7 @@ function linkPaceText() {
   const every = Math.round(Number(liveData.meta?.refreshMs || 60000) / 1000);
   const pace = every >= 60 && every % 60 === 0 ? `every ${every / 60} min` : `every ${every} s`;
   const live = liveData.meta?.watched === true ? ", live while the website is open" : "";
-  return liveData.meta?.linkMode === "busy" ? `${pace} while the rig works on a watering${live}` : `${pace}${live}`;
+  return liveData.meta?.linkMode === "busy" ? `${pace} while the system works on a watering${live}` : `${pace}${live}`;
 }
 
 // How long one sign of life from ESP1 counts: two report intervals and 15 s, at least 90 s.
@@ -703,11 +695,25 @@ function currentUserIsSignedIn() {
  * firebase-rules.json. This constant and these two helpers are for UI purposes only (showing/
  * hiding the pending banner and the User Management tab, greying out buttons); the REAL
  * enforcement is the rules themselves, which check the identical literal UID server-side. */
-// The operator accounts, granted identically by firebase-rules.json's own matching literals. Client-side use is
-// UI-only (which tab/actions to show); the real enforcement is server-side, keyed on these same UIDs. Only the first
-// is ever shown on this page: the other is never listed, named or mentioned anywhere a person can see.
-const OPERATOR_UIDS = ["KaiqrwlOHeVdebbokPxZfcFLZiu2", "C8V39t4EDgUgjOt9GA6OeMukMsw2"];
+// The operator accounts. Since 25 Nov 2026 an operator can add another, or hand the role over, confirmed with a code sent
+// to their own email (User Management, delete-user-api/api/operator-code.js), so who is an operator comes from the
+// database's operators registry, by the SAME rule as firebase-rules.json and delete-user-api/lib/operators.js:
+//   - the backup operator: always (it can't be handed over; it is the way back in), and it is never listed, named or
+//     mentioned anywhere a person can see on this page;
+//   - the original operator: unless operators/<its uid> is false (it handed the role over);
+//   - anyone operators/<uid> names true.
+// Client-side use is UI-only (which tabs and actions to show); the rules enforce the same, server-side.
+const ORIGINAL_OPERATOR_UID = "KaiqrwlOHeVdebbokPxZfcFLZiu2";
 const BACKUP_OPERATOR_UID = "C8V39t4EDgUgjOt9GA6OeMukMsw2";
+// operators/<uid> as this page knows it: this account's own entry, plus the whole registry while it is an operator.
+let operatorRegistry = {};
+function isOperatorUid(uid) {
+  if (!uid) return false;
+  if (uid === BACKUP_OPERATOR_UID) return true;
+  const entry = operatorRegistry[uid];
+  if (entry === true) return true;
+  return uid === ORIGINAL_OPERATOR_UID && entry !== false;
+}
 // Same literal UID firebase-rules.json's ESP1-only branches use -- referenced here only for the
 // User Management defense-in-depth exclusion (renderUserManagement()), never for any gating logic.
 const ESP1_DEVICE_UID = "6hNg56ldAaSmpnodG1Xla0vn61O2";
@@ -720,7 +726,7 @@ let myAccountRef = null;
 let lastHandledKickToken = 0;
 
 function isOperator() {
-  return Boolean(auth?.currentUser && OPERATOR_UIDS.includes(auth.currentUser.uid));
+  return Boolean(auth?.currentUser && isOperatorUid(auth.currentUser.uid));
 }
 function isApprovedUser() {
   return isOperator() || myAccountStatus === "approved";
@@ -903,7 +909,7 @@ let forceArmedShown = false;    // the "Forced run armed" panel is up (see updat
 function rigBusyReason() {
   const d = liveData.diagnostics || {};
   const state = liveData.system?.state || "";
-  if (rigLocked()) return "the rig is locked";
+  if (rigLocked()) return "the system is locked";
   if (actuationsAreOff()) return "actuations are disabled (pumps and valves are switched off)";
   if (d.fault?.held) return "a fault is held";
   if (state === "EMERGENCY_STOP") return "the emergency stop is active";
@@ -960,7 +966,7 @@ function actuationsAreOff() {
  * reading the same flag from the same snapshot, so the page switches those controls off and says why. Operators and
  * privileged accounts can lock and unlock. Automatic watering is not affected: the lock only gates controls. */
 const LOCK_EXEMPT = new Set(["EMERGENCY_STOP", "DISABLE_ACTUATIONS", "CANCEL_FORCE", "ACK_FAULT", "LCD_LOCK"]);
-const LOCKED_TITLE = "The rig is locked. Unlock it first: operators, and accounts with 1-hour access or Sub-operator, can.";
+const LOCKED_TITLE = "The system is locked. Unlock it first: operators, and accounts with 1-hour access or Sub-operator, can.";
 // A snapshot can carry state from a moment before its own stamp (see ZONE_CONFIRM_SETTLE_MS).
 const LOCK_SETTLE_MS = 3000;
 // ESP1 forces a report after LCD_LOCK, so the switch stops saying "Locking…" well before this.
@@ -1007,7 +1013,7 @@ function lockSourceText() {
   if (row?.payload?.action === "lock" && lockSeenOpenAt <= at + LOCK_SETTLE_MS) {
     return `Locked from this website${row.byName ? ` by ${row.byName}` : ""} ${lockTimeText(at)}.`;
   }
-  return "Locked at the rig, from its Settings menu (Lock Screen).";
+  return "Locked at the system, from its Settings menu (Lock Screen).";
 }
 
 function renderRigLock() {
@@ -1017,7 +1023,7 @@ function renderRigLock() {
   if (known && !locked && stamp > lockSeenOpenAt) lockSeenOpenAt = stamp;
   const waiting = lockWaitingText();
   const privileged = canAccessPrivilegedTabs();
-  const block = !privileged ? "Only operators, and accounts with 1-hour access or Sub-operator, can lock or unlock the rig."
+  const block = !privileged ? "Only operators, and accounts with 1-hour access or Sub-operator, can lock or unlock the system."
     : !known ? "ESP1 hasn't reported its lock yet."
     : waiting ? "Waiting for ESP1's report."
     : !firebaseConnected ? "This browser has lost its connection to Firebase."
@@ -1054,8 +1060,8 @@ function toggleRigLock() {
   if (!canAccessPrivilegedTabs() || !lockKnown() || lockSentKey) return;
   const lock = !rigLocked();
   const question = lock
-    ? "Lock the rig? Controls on this website switch off for everyone, and the buttons on the rig's screen lock too. Automatic watering carries on, and Emergency stop still works. At the rig, UP and DOWN held together unlock it."
-    : "Unlock the rig? Controls on this website and the buttons on the rig's screen work again.";
+    ? "Lock the system? Controls on this website switch off for everyone, and the buttons on the system's screen lock too. Automatic watering carries on, and Emergency stop still works. At the system, UP and DOWN held together unlock it."
+    : "Unlock the system? Controls on this website and the buttons on the system's screen work again.";
   if (!confirm(question)) return;
   const name = myDisplayName();
   sendFromPanel(resultLine("sysLockResult"), "LCD_LOCK", { action: lock ? "lock" : "unlock" }, { operatorOnly: true, byName: name || undefined })
@@ -1147,7 +1153,7 @@ function syncControlAvailability() {
   // is not idle, and without live data the page cannot tell "idle" from "device offline".
   // The pulse and the ESP2 sweep both reach the rig, so they belong with the other actuating
   // controls rather than looking alive and then failing inside queueCommand().
-  ["transferPumpBtn", "boosterPumpBtn", "mixerBtn", "pulseBtn", "mtSweepBtn", "sweepBtn", "exSaveBtn", "sysClockSendBtn", "sysThreshSendBtn"].forEach(id => {
+  ["transferPumpBtn", "boosterPumpBtn", "mixerBtn", "pulseBtn", "sweepBtn", "exSaveBtn", "sysClockSendBtn", "sysThreshSendBtn"].forEach(id => {
     const button = document.getElementById(id);
     if (!button) return;
     button.disabled = !normalAllowed;
@@ -1174,7 +1180,7 @@ function syncControlAvailability() {
     const offColumns = normalAllowed && !general ? ["A", "B", "C"].filter(id => liveData.sensors?.zones?.[id]?.enabled === false) : [];
     // A column that is simply switched off (C, on this rig) is a standing fact, not a problem, so it reads as a
     // plain note rather than an error.
-    holdNote.textContent = general ? `ESP1 won't start a hold right now: ${general}.${general === "the rig is locked" ? " Unlock it first." : ""}`
+    holdNote.textContent = general ? `ESP1 won't start a hold right now: ${general}.${general === "the system is locked" ? " Unlock it first." : ""}`
       : offColumns.length > 1 ? `ESP1 has columns ${offColumns.join(" and ")} disabled, so their hold buttons are off.`
       : offColumns.length ? `ESP1 has column ${offColumns[0]} disabled, so its hold button is off.`
       : "";
@@ -1186,8 +1192,9 @@ function syncControlAvailability() {
   const fd = liveData.diagnostics || {};
   if (!normalAllowed || actuationsAreOff() || fd.fault?.held || liveData.system?.state === "EMERGENCY_STOP") mtHoldStop(true);
 
-  // Zone profiles: each column's ON/OFF switch and Save to rig reach the rig, so they share the same gate.
-  activeZones.forEach(zone => { renderZonePower(zone.id); syncZoneSaveButton(zone.id); });
+  // Zone profiles: each column's ON/OFF switch and Save to rig reach the rig, so they share the same gate. Their waiting
+  // changes (25 Nov 2026) are re-checked here too: this runs when ESP1 goes quiet or comes back, not only on a report.
+  activeZones.forEach(zone => { renderZonePower(zone.id); syncZoneSaveButton(zone.id); renderZonePending(zone.id); });
 
   const forceButton = document.querySelector("#forceRunForm button[type=submit]");
   if (forceButton) {
@@ -1445,6 +1452,7 @@ function attachDatabaseListeners() {
     renderPulseResult();          // the pulse verdict rides on its command status detail
     renderColumnCommandResults(); // each zone's own SET_COLUMN outcome, inline under its own button
     renderPanelCommandResults();  // the same, for the Controls, Manual/Test and System panels
+    renderAcWaits();              // an AC pump start picked up or answered (25 Nov 2026)
     updateForceArmed();           // a FORCE_RUN row turning "accepted" is the first sign it is armed
     renderUpNext();               // ...and Up next lists it, and a completed SET_COLUMN or SET_THRESH changes the times
     syncControlAvailability();    // a reply can settle the lock switch or the pumps-and-valves switch before a report does
@@ -1724,6 +1732,7 @@ function attachUserStatusListener(uid) {
     refreshOperatorUI();
   });
   attachMyRequestsListener(uid);
+  attachOperatorRegistry(uid);   // a role added or handed over (25 Nov 2026) shows at once
 }
 function detachUserStatusListener() {
   if (myAccountRef) myAccountRef.off();
@@ -1733,6 +1742,7 @@ function detachUserStatusListener() {
   myControlAccess = false;
   myZoneEditAccess = false;
   detachMyRequestsListener();
+  detachOperatorRegistry();
 }
 
 const ACCOUNT_STATUS_TEXT = {
@@ -1816,9 +1826,9 @@ const REQUEST_WORDS = {
   control:    { ask: "Request control",               asked: "control access",                  what: "control access",                     log: "Asked for control" }
 };
 const WAITING_TEXT = {
-  pending: ["Waiting for approval", "Your account is created. An operator has to approve it before you can see the rig. Ask for approval below, and this page opens by itself once you are approved."],
+  pending: ["Waiting for approval", "Your account is created. An operator has to approve it before you can see the system. Ask for approval below, and this page opens by itself once you are approved."],
   rejected: ["Not approved", "An operator looked at this account and didn't approve it. You can ask again below."],
-  restricted: ["Restricted", "An operator has restricted this account, so the rig can't be seen from it for now. You can ask to be unrestricted below."]
+  restricted: ["Restricted", "An operator has restricted this account, so the system can't be seen from it for now. You can ask to be unrestricted below."]
 };
 let myRequestsRef = null;
 let myRequests = {};
@@ -1943,6 +1953,8 @@ function refreshOperatorUI() {
   const op = isOperator();
   if (tab) tab.hidden = !op;
   if (op) attachUserManagementListener(); else detachUserManagementListener();
+  syncAllOperatorsListener();   // the operator registry (25 Nov 2026), for operators only
+  renderOperatorPanel();
   if (!op && document.querySelector('.tab[data-view="users"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
@@ -1974,12 +1986,12 @@ function refreshOperatorUI() {
   if (!privileged && document.querySelector('.tab[data-view="manualtest"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
-  // Diagnostics comes with Control (2026-11-05). The Controls tab stays for every approved account: without Control
-  // it holds only the request for it.
-  const control = hasControlAccess();
+  // Diagnostics (25 Nov 2026, the owner: "available only for operators, backdoor, 1hr and sub operators"): the same
+  // tier as Manual/Test and System. Until then it came with Control (2026-11-05). The Controls tab stays for every
+  // approved account: without Control it holds only the request for it.
   const diagnosticsTab = document.getElementById("diagnosticsTab");
-  if (diagnosticsTab) diagnosticsTab.hidden = !control;
-  if (!control && document.querySelector('.tab[data-view="diagnostics"]')?.classList.contains("active")) {
+  if (diagnosticsTab) diagnosticsTab.hidden = !privileged;
+  if (!privileged && document.querySelector('.tab[data-view="diagnostics"]')?.classList.contains("active")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
   // Changing crop profiles is for the same tier: redraw the list (and drop a half-made edit) only when that flips,
@@ -2103,7 +2115,7 @@ function detachRequestsWatch() {
 function waitingRequests() {
   const list = [];
   Object.entries(requestsData).forEach(([uid, kinds]) => {
-    if (OPERATOR_UIDS.includes(uid)) return;
+    if (isOperatorUid(uid)) return;
     Object.entries(kinds || {}).forEach(([kind, request]) => {
       if (request?.state === "waiting" && REQUEST_WORDS[kind]) list.push({ uid, kind, at: Number(request.at) || 0 });
     });
@@ -2173,7 +2185,7 @@ function requestsSectionHtml() {
 // Accepting gives the access (or the status) and clears the request in one write; declining keeps it, marked, so the
 // account sees the answer and can ask again.
 function answerAccessRequest(uid, kind, accept) {
-  if (!isOperator() || OPERATOR_UIDS.includes(uid) || !REQUEST_WORDS[kind]) return Promise.resolve();
+  if (!isOperator() || isOperatorUid(uid) || !REQUEST_WORDS[kind]) return Promise.resolve();
   const name = requesterName(uid);
   const updates = {};
   if (accept) {
@@ -2301,15 +2313,37 @@ const USER_ACTION_LABEL = {
   granttemp: "Give 1-hour access", revoketemp: "End 1-hour access",
   grantsubop: "Make Sub-operator", withholdsubop: "Remove Sub-operator"
 };
+// Which Help entry each action's (i) opens.
+const USER_ACTION_HELP = action => /zones$|control$/.test(action) ? "help-access"
+  : /temp$|subop$/.test(action) ? "help-grants"
+  : action === "approve" || action === "reject" ? "help-approve"
+  : "help-account-actions";
+// The actions under each account, in labelled groups and this order (25 Nov 2026, the owner: "properly arrange").
+const USER_ACTION_GROUPS = [
+  ["Decide", ["approve", "reject", "unrestrict", "unblock"]],
+  ["Access", ["givezones", "takezones", "givecontrol", "takecontrol"]],
+  ["Extra access", ["granttemp", "revoketemp", "grantsubop", "withholdsubop"]],
+  ["Account", ["kick", "restrict", "block", "delete"]]
+];
+// Every action has its (i) (25 Nov 2026, the owner: "add a small i on restrict, block and delete"): what it does, and how
+// it is undone. Short words; the Help entries say more.
 const USER_ACTION_INFO = {
+  approve: ["Approve", "Lets this account sign in and look at the Dashboard, Zone profiles and Help. Give it zone editing or control separately."],
+  reject: ["Reject", "Says no to this account. It sees only a page where it can ask again, and you can still approve it later."],
   givezones: ["Zone editing", "Lets this account change the column cards on Zone profiles: settings, watering times, targets, on or off, crop and name. It lasts until you take it back."],
   takezones: ["Zone editing", "Ends this account's zone editing now. It can still see everything, and can ask again."],
-  givecontrol: ["Control", "Lets this account use the Controls tab (Emergency stop, pumps and valves, forced runs, restarts) and see Diagnostics. It lasts until you take it back."],
-  takecontrol: ["Control", "Ends this account's control access now. It can still see the Live dashboard and Zone profiles, and can ask again."],
-  granttemp: ["1-hour access", "Opens Manual/Test, System (the AC voltage and current limits included) and the rig lock to this account for exactly 1 hour, then it ends by itself. Use it for a one-off job."],
+  givecontrol: ["Control", "Lets this account use the Controls tab: Emergency stop, pumps and valves, forced runs and restarts. It lasts until you take it back."],
+  takecontrol: ["Control", "Ends this account's control access now. It can still see the Dashboard and Zone profiles, and can ask again."],
+  granttemp: ["1-hour access", "Opens Manual/Test, System (the AC voltage and current limits included), Diagnostics and the system lock to this account for exactly 1 hour, then it ends by itself. Use it for a one-off job."],
   revoketemp: ["1-hour access", "Ends this account's 1-hour access now, instead of waiting for its hour to run out."],
   grantsubop: ["Sub-operator", "The same access as 1-hour access, with no end: it lasts until an operator removes it. Use it for someone who needs it all the time."],
-  withholdsubop: ["Sub-operator", "Ends this account's Sub-operator access now. Nothing else ever ends it."]
+  withholdsubop: ["Sub-operator", "Ends this account's Sub-operator access now. Nothing else ever ends it."],
+  kick: ["Sign them out", "Signs this account out on every device right now. It can sign in again straight away; use Restrict or Block to keep it out."],
+  restrict: ["Restrict", "Pauses this account: it can still sign in, but sees only a page asking to be unrestricted, with no readings or controls. Its extra access is taken away. Undo with Unrestrict."],
+  unrestrict: ["Unrestrict", "Gives this account back its normal approved access (looking only). Give zone editing or control again if it needs them."],
+  block: ["Block", "Shuts this account out completely: it can't use the website or ask for access. Its extra access is taken away. Undo with Unblock."],
+  unblock: ["Unblock", "Lets this account back in as approved (looking only)."],
+  delete: ["Delete", "Removes the account for good: its sign-in, its record and its history here. It can't be undone; the person would have to sign up again."]
 };
 /* ---- User Management: the account list and its actions ------------------------------------------------------------------- */
 
@@ -2333,7 +2367,7 @@ function renderUserManagement() {
     // Same exclusion for ESP1's device UID as defense-in-depth, though nothing today ever creates a
     // /users record for it. Kept separate from "is this row the person actually viewing the screen"
     // below -- with more than one operator account, a row is not automatically "you" just because it's *an* operator.
-    const isAnyOperator = OPERATOR_UIDS.includes(uid) || uid === ESP1_DEVICE_UID;
+    const isAnyOperator = isOperatorUid(uid) || uid === ESP1_DEVICE_UID;
     const isViewerSelf = uid === auth.currentUser?.uid;
     // Temporary Manual/Test + System access (see canAccessPrivilegedTabs() in the capability-check
     // section above) -- only ever meaningful for an approved, non-operator account; an operator
@@ -2374,27 +2408,43 @@ function renderUserManagement() {
     }
     const tone = status === "approved" ? "active" : (status === "pending" || status === "restricted") ? "off" : "danger";
     const tones = { delete: " danger", block: " warn", revoketemp: " warn", withholdsubop: " warn", takezones: " warn", takecontrol: " warn" };
-    const buttons = actions.map(action => {
+    // Every button with its (i) beside it (25 Nov 2026, the owner: "a small i on restrict, block and delete"). The icon is
+    // a sibling, never inside the button, as everywhere else on this page.
+    const button = action => {
       const btn = `<button type="button" class="user-action${tones[action] || ""}" data-user-action="${action}" data-uid="${escapeHtml(uid)}">${escapeHtml(USER_ACTION_LABEL[action])}</button>`;
-      // The two grants look alike at a glance, so each says how it ends. The icon is a sibling, never inside the
-      // button, as everywhere else on this page.
       const info = USER_ACTION_INFO[action];
       return info
-        ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${info[0]}" data-info-title="${info[0]}" data-info-text="${info[1]}" data-help="${/zones$|control$/.test(action) ? "help-access" : "help-grants"}">i</button></span>`
+        ? `<span class="btn-with-info">${btn}<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${escapeHtml(info[0])}" data-info-title="${escapeHtml(info[0])}" data-info-text="${escapeHtml(info[1])}" data-help="${USER_ACTION_HELP(action)}">i</button></span>`
         : btn;
+    };
+    // Arranged by what they are about (25 Nov 2026, the owner: "properly arrange"): a decision on the account, what it
+    // may do, extra access, and the account itself (signing out, restricting, blocking, deleting) last, apart.
+    const groupsOfActions = USER_ACTION_GROUPS.map(([label, list]) => {
+      const present = list.filter(action => actions.includes(action));
+      if (!present.length) return "";
+      return `<div class="ua-group${label === "Account" ? " is-account" : ""}"><span class="ua-label">${escapeHtml(label)}</span><div class="ua-buttons">${present.map(button).join("")}</div></div>`;
     }).join("");
     // Zone editing and Control aren't spelled out here (the owner's choice, 6 Nov 2026): the Give / Take back buttons
-    // beside the row already say which the account has.
-    const access = [];
-    if (tempActive) access.push(`Can use Manual/Test, System and the rig lock until ${timeOfDayText(new Date(u.tempAccessUntil))} (1-hour access).`);
-    if (subOpActive) access.push("Sub-operator: can use Manual/Test, System (including the AC voltage and current limits) and the rig lock until you remove it.");
-    return `<article class="user-row" data-email="${escapeHtml(u?.email || "")}">
+    // already say which the account has. The two time-limited or standing extras are, as short chips.
+    const grants = [];
+    if (tempActive) grants.push([`1-hour access until ${timeOfDayText(new Date(u.tempAccessUntil))}`, "Can use Manual/Test, System, Diagnostics and the system lock until then."]);
+    if (subOpActive) grants.push(["Sub-operator", "Can use Manual/Test, System (including the AC voltage and current limits), Diagnostics and the system lock until you remove it."]);
+    const name = u?.name || "(no name)";
+    const rowTone = ["disabled", "rejected"].includes(status) ? " is-danger" : ["pending", "restricted"].includes(status) ? " is-waiting" : "";
+    return `<article class="user-row${rowTone}" data-email="${escapeHtml(u?.email || "")}">
       <div class="user-row-info">
-        <strong>${escapeHtml(u?.name || "(no name)")}${isViewerSelf ? " (you, the operator)" : ""}</strong>
-        <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
-        <span class="${presence.active ? "user-online" : isOnline ? "user-idle" : "muted"}">${escapeHtml(presenceLabel)}</span>
-        <span class="muted">Signed up ${escapeHtml(created)}</span>
-        ${access.map(line => `<span class="user-access">${escapeHtml(line)}</span>`).join("")}
+        <div class="user-row-head">
+          <span class="user-avatar" aria-hidden="true">${escapeHtml(String(name).trim().charAt(0).toUpperCase() || "?")}</span>
+          <span class="user-row-names">
+            <strong>${escapeHtml(name)}${isViewerSelf ? " (you, the operator)" : ""}</strong>
+            <span class="muted">${escapeHtml(u?.email || "(no email)")}</span>
+          </span>
+        </div>
+        <div class="user-row-meta">
+          <span class="${presence.active ? "user-online" : isOnline ? "user-idle" : "muted"}">${escapeHtml(presenceLabel)}</span>
+          <span class="muted">Signed up ${escapeHtml(created)}</span>
+        </div>
+        ${grants.length ? `<div class="user-grants">${grants.map(([label, title]) => `<span class="user-grant is-extra" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`).join("")}</div>` : ""}
         ${recent.length
           ? `<details class="user-activity" data-uid="${escapeHtml(uid)}"${expandedActivityUids.has(uid) ? " open" : ""}>
               <summary>Last action: ${escapeHtml(rawText(recent[0]?.what, "?"))}, ${escapeHtml(formatAge(serverNow() - Number(recent[0]?.at || 0)))} ago${recent.length > 1 ? ` (${recent.length} in the list)` : ""}</summary>
@@ -2405,12 +2455,12 @@ function renderUserManagement() {
           : `<span class="muted">No recent actions on the website.</span>`}
       </div>
       <span class="device-status ${isAnyOperator ? "active" : tone}">${escapeHtml(isAnyOperator ? "OPERATOR" : STATUS_DISPLAY_LABEL[status] || status.toUpperCase())}</span>
-      <div class="user-row-actions">${buttons}</div>
+      ${groupsOfActions ? `<div class="user-actions user-row-actions">${groupsOfActions}</div>` : ""}
     </article>`;
   };
   // An operator's own sign-in can leave a "pending" record (the sign-in path recreates a missing one for any
   // account), so operator accounts get a group of their own, rather than being counted as waiting for approval.
-  const isOperatorRow = ([uid]) => OPERATOR_UIDS.includes(uid);
+  const isOperatorRow = ([uid]) => isOperatorUid(uid);
   const known = new Set(USER_GROUPS.map(([status]) => status));
   const groups = [...USER_GROUPS, ["", "Other"], ["operator", "Operator accounts"]].map(([status, title]) => {
     const members = status === "operator" ? rows.filter(isOperatorRow)
@@ -2423,6 +2473,7 @@ function renderUserManagement() {
     </section>`;
   });
   container.innerHTML = requestsSectionHtml() + groups.join("");
+  renderOperatorPanel();   // its account picker follows the same list
 }
 /* The one privileged operation this static site cannot do itself: deleting another user's
  * Firebase Auth identity. Calls the operator-only endpoint in delete-user-api/ (a separate Vercel
@@ -2495,7 +2546,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   if (!button) return;
   const uid = button.dataset.uid;
   const action = button.dataset.userAction;
-  if (!uid || !action || OPERATOR_UIDS.includes(uid) || uid === ESP1_DEVICE_UID) return; // matches renderUserManagement()'s own guard
+  if (!uid || !action || isOperatorUid(uid) || uid === ESP1_DEVICE_UID) return; // matches renderUserManagement()'s own guard
   const row = button.closest(".user-row");
   const name = row?.querySelector(".user-row-info strong")?.textContent || "this account";
   const email = row?.dataset.email || "";
@@ -2520,7 +2571,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     const zones = action === "takezones";
     if (!confirm(zones
       ? `Take back ${name}'s zone editing? They can still see every column, and can ask again.`
-      : `Take back ${name}'s control access? They lose the Controls and Diagnostics tabs and the Emergency stop, and can ask again.`)) return;
+      : `Take back ${name}'s control access? They lose the Controls tab and the Emergency stop, and can ask again.`)) return;
     run(() => db.ref(`users/${uid}/${zones ? "zoneEditAccess" : "controlAccess"}`).remove(), zones ? "Took back zone editing" : "Took back control");
     return;
   }
@@ -2551,7 +2602,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // TEMP_ACCESS_DURATION_MS from the moment the write actually lands, so a slow request can't
     // grant longer than intended. grantTempAccess() anchors to Firebase's own server clock rather
     // than this browser's Date.now() -- see its own comment (bug report, 2026-09-10) for why.
-    if (!confirm(`Give ${name} 1-hour access to Manual/Test, System and the rig lock? It ends by itself after an hour.`)) return;
+    if (!confirm(`Give ${name} 1-hour access to Manual/Test, System, Diagnostics and the system lock? It ends by itself after an hour.`)) return;
     run(() => grantTempAccess(uid), "Gave 1-hour access");
     return;
   }
@@ -2563,7 +2614,7 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
     // Persistent elevation, not a role change -- status stays "approved" throughout, same as temp
     // access above. No expiry: stays in effect until an operator withholds it again. Given by an operator, never
     // asked for (the owner's design): a Sub-operator has no request buttons.
-    if (!confirm(`Make ${name} a Sub-operator? They can use Manual/Test, System (including the AC voltage and current limits) and the rig lock until you remove it.`)) return;
+    if (!confirm(`Make ${name} a Sub-operator? They can use Manual/Test, System (including the AC voltage and current limits), Diagnostics and the system lock until you remove it.`)) return;
     run(() => db.ref().update({
       [`users/${uid}/subOperator`]: true,
       [`accessRequests/${uid}/zones`]: null,
@@ -2596,6 +2647,207 @@ document.getElementById("usersContainer")?.addEventListener("click", event => {
   Object.keys(REQUEST_WORDS).forEach(kind => { updates[`accessRequests/${uid}/${kind}`] = null; });
   const done = { approve: "Approved", reject: "Rejected", block: "Blocked", unblock: "Unblocked", restrict: "Restricted", unrestrict: "Unrestricted" }[action];
   run(() => db.ref().update(updates), done);
+});
+
+/* ---- Operator role: add an operator, or hand the role over (25 Nov 2026) ----------------------------------------------
+ * The owner: "a function that you can transfer or add an operator account to other account. That needs confirmation thru
+ * email of the current operator account, like code." This page asks delete-user-api/api/operator-code.js to email a
+ * 6-digit code to this operator's own address, then sends the code back; the server makes the change in operators/ (with
+ * the Admin SDK) only then. The rules refuse every page a write to operators/, so the page can't skip the code.
+ * Add: the account becomes an operator too. Hand over: it becomes the operator, and this account an approved one. The
+ * hidden backup operator can only add. The registry is read live, so a change shows at once on every open page. */
+let myOperatorRef = null;      // operators/<my uid>: a role added or handed over, live
+let allOperatorsRef = null;    // operators/: the whole registry, while this account is an operator
+let lastOperatorRole;          // undefined until the first answer after a sign-in
+const opFlow = { pending: null };   // { action, target, name, sentTo, expiresAt } while a code is out
+
+function attachOperatorRegistry(uid) {
+  detachOperatorRegistry();
+  myOperatorRef = db.ref(`operators/${uid}`);
+  myOperatorRef.on("value", snapshot => {
+    const entry = snapshot.val();
+    if (entry === null) delete operatorRegistry[uid]; else operatorRegistry[uid] = entry;
+    onOperatorRoleChanged();
+  }, error => console.warn("Could not read this account's operator entry", error));
+}
+function detachOperatorRegistry() {
+  myOperatorRef?.off();
+  myOperatorRef = null;
+  allOperatorsRef?.off();
+  allOperatorsRef = null;
+  operatorRegistry = {};
+  lastOperatorRole = undefined;
+  opFlow.pending = null;
+}
+// Who else is an operator, for User Management: the whole registry, which the rules let only operators read.
+function syncAllOperatorsListener() {
+  const op = isOperator();
+  if (op && !allOperatorsRef && db) {
+    allOperatorsRef = db.ref("operators");
+    allOperatorsRef.on("value", snapshot => {
+      operatorRegistry = { ...(snapshot.val() || {}) };
+      onOperatorRoleChanged();
+      renderUserManagement();
+    }, error => {
+      allOperatorsRef = null;
+      if (error?.code !== "PERMISSION_DENIED") console.warn("Could not read the operator registry", error);
+    });
+  } else if (!op && allOperatorsRef) {
+    allOperatorsRef.off();
+    allOperatorsRef = null;
+    const me = auth?.currentUser?.uid;
+    operatorRegistry = me && me in operatorRegistry ? { [me]: operatorRegistry[me] } : {};
+  }
+}
+// Everything that follows from being an operator or not, redone when that changes mid-session.
+function onOperatorRoleChanged() {
+  const op = isOperator();
+  if (op === lastOperatorRole) { renderOperatorPanel(); return; }
+  const was = lastOperatorRole;
+  lastOperatorRole = op;
+  if (was !== undefined) {
+    showToast(op ? "You are now an operator: User Management is open to you." : "You are no longer an operator. Your account stays approved.", op ? "completed" : "");
+  }
+  syncLiveDataAccess();
+  renderAccountStatus();
+  renderBlockedScreen();
+  renderWaitingScreen();
+  refreshOperatorUI();
+  syncControlAvailability();
+  syncZoneEditCapability();
+}
+
+function operatorApiUrl() {
+  if (window.OPERATOR_API_URL) return window.OPERATOR_API_URL;
+  const del = window.DELETE_USER_API_URL;   // the same Vercel project as the delete-user function
+  return del && !del.includes("YOUR-PROJECT") ? del.replace(/\/delete-user\/?$/, "/operator-code") : "";
+}
+async function operatorApi(body) {
+  const url = operatorApiUrl();
+  if (!url) throw new Error("The operator service isn't set up yet (OPERATOR_API_URL in firebase-config.js).");
+  const idToken = await auth.currentUser.getIdToken();
+  let response;
+  try {
+    response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` }, body: JSON.stringify(body) });
+  } catch {
+    throw new Error("Could not reach the operator service. Check this browser's connection and try again.");
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || `The operator service answered ${response.status}.`);
+  return result;
+}
+
+// The panel: who is an operator now, the account picker (approved accounts that aren't operators), and the code box.
+let opTargetsSig = "";
+function renderOperatorPanel() {
+  const panel = document.getElementById("opPanel");
+  if (!panel) return;
+  const op = isOperator();
+  if (panel.hidden !== !op) panel.hidden = !op;
+  if (!op) return;
+  const me = auth?.currentUser?.uid;
+  const users = lastKnownUsers || {};
+  const label = uid => users[uid]?.name || users[uid]?.email || "An operator account";
+  // The backup operator is never listed.
+  const operators = [...new Set([ORIGINAL_OPERATOR_UID, ...Object.keys(operatorRegistry), ...Object.keys(users)])]
+    .filter(uid => uid !== BACKUP_OPERATOR_UID && isOperatorUid(uid));
+  const list = document.getElementById("opList");
+  if (list) {
+    const html = operators.length ? operators.map(uid => `<li><span class="user-avatar" aria-hidden="true">${escapeHtml(String(label(uid)).trim().charAt(0).toUpperCase() || "?")}</span><span>${escapeHtml(label(uid))}${uid === me ? " (you)" : ""}</span></li>`).join("")
+      : `<li class="muted">Only you.</li>`;
+    if (list.innerHTML !== html) list.innerHTML = html;
+  }
+  const select = document.getElementById("opTarget");
+  if (select) {
+    const candidates = Object.entries(users)
+      .filter(([uid, u]) => u?.status === "approved" && !isOperatorUid(uid) && uid !== ESP1_DEVICE_UID && uid !== BACKUP_OPERATOR_UID)
+      .sort((a, b) => String(a[1]?.name || "").localeCompare(String(b[1]?.name || "")));
+    const sig = JSON.stringify(candidates.map(([uid, u]) => [uid, u?.name, u?.email]));
+    if (sig !== opTargetsSig) {
+      opTargetsSig = sig;
+      const keep = select.value;
+      select.replaceChildren(new Option(candidates.length ? "Choose an approved account" : "No approved account to choose", ""),
+        ...candidates.map(([uid, u]) => new Option(`${u?.name || "(no name)"}${u?.email ? ` (${u.email})` : ""}`, uid)));
+      if (candidates.some(([uid]) => uid === keep)) select.value = keep;
+    }
+  }
+  // The backup operator can only add: it is the way back in, so it never stops being an operator.
+  const backup = me === BACKUP_OPERATOR_UID;
+  const transferLabel = document.getElementById("opTransferLabel");
+  if (transferLabel) transferLabel.hidden = backup;
+  if (backup) { const add = document.querySelector('#opForm input[name="opAction"][value="add"]'); if (add) add.checked = true; }
+  renderOperatorCodeBox();
+}
+function renderOperatorCodeBox() {
+  const box = document.getElementById("opCodeBox");
+  const p = opFlow.pending;
+  if (p && Date.now() > p.expiresAt) opFlow.pending = null;
+  if (box) box.hidden = !opFlow.pending;
+  const send = document.getElementById("opSendBtn");
+  if (send) send.disabled = Boolean(opFlow.pending);
+  if (!opFlow.pending) return;
+  setText("opCodeNote", `Sent to ${p.sentTo}, to ${p.action === "add" ? `add ${p.name} as an operator` : `hand your operator role over to ${p.name}`}. ` +
+    `It works until ${timeOfDayText(new Date(p.expiresAt))}.`);
+}
+
+document.getElementById("opForm")?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const show = resultLine("opResult");
+  if (!isOperator()) { show("Only an operator can do this.", true); return; }
+  const select = document.getElementById("opTarget");
+  const target = select?.value || "";
+  const action = document.querySelector('#opForm input[name="opAction"]:checked')?.value || "add";
+  if (!target) { show("Choose an approved account first.", true); return; }
+  const name = select.selectedOptions[0]?.textContent || "that account";
+  if (action === "transfer" && !confirm(`Hand your operator role over to ${name}? You will become a normal approved account, and only an operator can give you access again. A code is sent to your email to confirm.`)) return;
+  const button = document.getElementById("opSendBtn");
+  if (button) button.disabled = true;
+  show("Sending a code to your email…");
+  try {
+    const answer = await operatorApi({ step: "send", action, target });
+    opFlow.pending = { action, target, name, sentTo: answer.sentTo || "your email", expiresAt: Date.now() + Number(answer.expiresInS || 600) * 1000 };
+    show(`A 6-digit code was sent to ${opFlow.pending.sentTo}. Type it below.`);
+    renderOperatorCodeBox();
+    document.getElementById("opCode")?.focus();
+  } catch (error) {
+    show(error.message, true);
+  } finally {
+    if (button) button.disabled = Boolean(opFlow.pending);
+  }
+});
+document.getElementById("opConfirmBtn")?.addEventListener("click", async () => {
+  const show = resultLine("opResult");
+  const input = document.getElementById("opCode");
+  const code = String(input?.value || "").replace(/\s+/g, "");
+  if (!/^\d{6}$/.test(code)) { show("Type the 6 digits from the email.", true); input?.focus(); return; }
+  const p = opFlow.pending;
+  if (!p) { show("No code is waiting. Send a new one.", true); return; }
+  const button = document.getElementById("opConfirmBtn");
+  if (button) button.disabled = true;
+  try {
+    await operatorApi({ step: "confirm", code });
+    opFlow.pending = null;
+    if (input) input.value = "";
+    logActivity(p.action === "add" ? `Added an operator: ${p.name}`.slice(0, 80) : `Handed the operator role to ${p.name}`.slice(0, 80));
+    show(p.action === "add" ? `Done: ${p.name} is an operator now too.` : `Done: ${p.name} is the operator now. Your account stays approved.`);
+    renderOperatorCodeBox();
+  } catch (error) {
+    show(error.message, true);
+    if (/expired|new one|last try/i.test(error.message)) { opFlow.pending = null; renderOperatorCodeBox(); }
+  } finally {
+    if (button) button.disabled = false;
+  }
+});
+document.getElementById("opCode")?.addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); document.getElementById("opConfirmBtn")?.click(); }
+});
+document.getElementById("opCancelBtn")?.addEventListener("click", () => {
+  opFlow.pending = null;
+  const input = document.getElementById("opCode");
+  if (input) input.value = "";
+  renderOperatorCodeBox();
+  resultLine("opResult")("Cancelled. Nothing was changed.");
+  operatorApi({ step: "cancel" }).catch(() => {});   // the server forgets the code too (it would expire anyway)
 });
 
 /* ---- Column profiles (website only) and the activity log ----------------------------------------------------------------- */
@@ -2708,7 +2960,7 @@ function queueCommand(type, payload = {}, options = {}) {
   // individually. Firebase rules enforce the identical check server-side; this is the client-side
   // half, for a clean message instead of a silent rules rejection.
   if (!isApprovedUser()) {
-    setCommandStatus("Your account is awaiting operator approval before it can send commands to the rig.", "error");
+    setCommandStatus("Your account is awaiting operator approval before it can send commands to the system.", "error");
     return Promise.resolve(false);
   }
   // Access levels (2026-11-05): a column's own settings need Edit zones, everything else Control (the rules agree).
@@ -2734,7 +2986,7 @@ function queueCommand(type, payload = {}, options = {}) {
   }
   // The rules refuse everything but the stops while ESP1 reports the rig locked: say so instead of a bare refusal.
   if (rigLocked() && !LOCK_EXEMPT.has(type)) {
-    setCommandStatus(`${type.replaceAll("_", " ")} not sent: the rig is locked. Unlock it first (operators, and accounts with 1-hour access or Sub-operator, can).`, "error");
+    setCommandStatus(`${type.replaceAll("_", " ")} not sent: the system is locked. Unlock it first (operators, and accounts with 1-hour access or Sub-operator, can).`, "error");
     return Promise.resolve(false);
   }
   // A stop is never queued while ESP1 isn't reading the queue (2026-11-06, stopOfflineReason()); the rules refuse it
@@ -2755,7 +3007,9 @@ function queueCommand(type, payload = {}, options = {}) {
     setCommandStatus(`${type.replaceAll("_", " ")} not sent.`);
     return Promise.resolve(false);
   }
-  if (!emergency && !esp1Online()) {
+  // A column's settings may wait for ESP1 (25 Nov 2026, the owner): options.queueOffline, SET_COLUMN only.
+  const waitsForEsp1 = Boolean(options.queueOffline) && type === "SET_COLUMN";
+  if (!emergency && !waitsForEsp1 && !esp1Online()) {
     setCommandStatus(`Not sent: ESP1 isn't connected (${esp1HeardText()}).`, "error");
     return Promise.resolve(false);
   }
@@ -2852,7 +3106,7 @@ function activitySummary(type, payload) {
     case "RESTORE_DEFAULTS":   return "Restored factory settings";
     case "CLEAR_BATT_SWITCH":  return "Cleared the battery switch fault";
     case "TANK_CHECK_OK":      return "Confirmed the mixing tank was checked";
-    case "LCD_LOCK":           return p.action === "unlock" ? "Unlocked the rig" : "Locked the rig";
+    case "LCD_LOCK":           return p.action === "unlock" ? "Unlocked the system" : "Locked the system";
     default:                   return type;
   }
 }
@@ -2866,9 +3120,11 @@ function activitySummary(type, payload) {
 function queuedStatusText(type, payload, emergency) {
   // A stop only gets this far while ESP1 is reporting (stopOfflineReason() in queueCommand()).
   if (type === "EMERGENCY_STOP") return "Emergency stop queued. This is not physical-stop confirmation; wait for ESP1 status.";
-  if (type === "RECOVER") return `Recovery (${rawText(payload.action, "?")}) queued. This is not confirmation the rig has resumed; wait for ESP1 status.`;
+  if (type === "RECOVER") return `Recovery (${rawText(payload.action, "?")}) queued. This is not confirmation the system has resumed; wait for ESP1 status.`;
   if (type === "ESTOP_RECOVER") return "Return to normal queued. This is not confirmation ESP1 has recovered; wait for ESP1 status.";
   if (emergency) return `${type.replaceAll("_", " ")} queued. This is not confirmation it has taken effect; wait for ESP1 status.`;
+  // A column's settings while ESP1 is offline (25 Nov 2026): they wait for it, on purpose.
+  if (type === "SET_COLUMN" && !esp1Online()) return "Saved. The system is offline, so the change waits and is applied as soon as it is back online.";
   return `${type.replaceAll("_", " ")} queued. Waiting for ESP1 validation.`;
 }
 
@@ -2884,7 +3140,8 @@ function queuedStatusText(type, payload, emergency) {
 // midnight. ESP1 only publishes the window a column is using, so the page keeps the defaults to name
 // them while a column is on its own time.
 const DEFAULT_WINDOWS = { A: [360, 480], B: [480, 600], C: [360, 480] };
-const MODE_TEXT = { AUTO: "Water + nutrients when the soil needs them", IRRIGATION_ONLY: "Water only" };
+// "Water + Nutrients" (25 Nov 2026, the owner; it was "Water + nutrients when the soil needs them").
+const MODE_TEXT = { AUTO: "Water + Nutrients", IRRIGATION_ONLY: "Water only" };
 // ESP1's own limits for a target (columnTargetInRange() in its main.cpp).
 const TARGET_FIELDS = [
   { key: "targetN",  input: "cfgN",  label: "N",  unit: "ppm", min: 0, max: 2000, step: "1" },
@@ -3105,10 +3362,17 @@ function zoneSettings(id) {
   if (!s.windows && s.ws !== null && s.we !== null) s.windows = [[s.ws, s.we]];
   // ESP1 applies a SET_COLUMN all at once or not at all, so a completed one is exactly what it now has.
   const stamp = Number(liveData.meta?.updatedAt || 0);
-  commandData
+  const confirmed = commandData
     .filter(c => c.type === "SET_COLUMN" && c.status === "completed" && c.payload?.col === id &&
                  Number(c.updatedAt || 0) + ZONE_CONFIRM_SETTLE_MS > stamp)
-    .sort((a, b) => Number(a.updatedAt || 0) - Number(b.updatedAt || 0))
+    .sort((a, b) => Number(a.updatedAt || 0) - Number(b.updatedAt || 0));
+  // Offline edits (25 Nov 2026, the owner: "when the ESP is offline, I must be able to adjust the zone profiles and they will
+  // be sent later"): a change still waiting in the queue is shown as if made, marked pending (s.pending), so the card and
+  // the editor start from it. ESP1 runs queued rows in order whenever it reads the queue again, so the result is the same.
+  s.pending = commandData
+    .filter(c => c.type === "SET_COLUMN" && c.payload?.col === id && commandStillPending(c))
+    .sort((a, b) => Number(a.requestedAt || 0) - Number(b.requestedAt || 0));
+  [...confirmed, ...s.pending]
     .forEach(({ payload: p }) => {
       if (hasValue(p.enabled)) { s.known = true; s.enabled = p.enabled === true || Number(p.enabled) === 1; }
       if (p.mode === "AUTO" || p.mode === "IRRIGATION_ONLY") s.mode = p.mode;
@@ -3147,7 +3411,7 @@ function windowListText(windows) {
 function scheduleText(id, sched, windows) {
   if (sched === 0) {
     const [ds, de] = DEFAULT_WINDOWS[id] || windows?.[0] || [null, null];
-    return `${clockSpan(ds, de)} (rig default)`;
+    return `${clockSpan(ds, de)} (default)`;
   }
   if (sched === 1 && windows?.length) return `${windowListText(windows)} (${windows.length > 1 ? "my own times" : "my own time"})`;
   return "Unavailable";
@@ -3161,15 +3425,16 @@ function targetsText(targets) {
     : `N ${t.targetN} · P ${t.targetP} · K ${t.targetK} ppm · pH ${t.targetPH}`;
 }
 // What it does, in two words (the long form is in its (i)).
-const MODE_SHORT = { AUTO: "Water + nutrients", IRRIGATION_ONLY: "Water only" };
+const MODE_SHORT = MODE_TEXT;   // the same two words since 25 Nov 2026
 
-// The same gate as every other control that reaches the rig (normalAllowed in syncControlAvailability()), as words:
-// why a column's switch or Save to rig is off, or "" when they can be used.
+// Why a column's switch or Save to rig is off, as words, or "" when they can be used. Since 25 Nov 2026 a column's
+// settings are NOT held back while ESP1 is offline (the owner): they wait in the queue and ESP1 applies them when it
+// reads it again (queueCommand's queueOffline). Only this browser being offline still stops them, because Firebase
+// would hold such a write in this page only, and lose it if the page closes.
 function rigControlBlock() {
   if (!currentUserIsSignedIn() || !isApprovedUser()) return "Needs an approved account.";
   if (!hasZoneEditAccess()) return NO_ZONE_EDIT_TITLE;
   if (!firebaseConnected) return "This browser has lost its connection to Firebase.";
-  if (!esp1Online()) return `ESP1 isn't connected (${esp1HeardText()}).`;
   if (rigLocked()) return LOCKED_TITLE;
   return "";
 }
@@ -3189,25 +3454,52 @@ function dayTallyText(t) {
 // How far through today the column is, in a few words: "Not watered yet", "Done for today · Watered once (5.0 L)",
 // "Manual day: no scheduled watering". Only ESP1 from 5 Nov 2026 reports runsToday, from 6 Nov the tally (zones.today).
 // "Done" rather than "watered": ESP1 also closes the rest of the day on a STOP reply or a lost fault.
-function zoneTodayText(id, s, runs) {
-  if (s.known && !s.enabled) return "Switched off: not watered";
-  const tally = dayTallyText(liveData.sensors?.zones?.[id]?.today).replace(/^Today: /, "").replace(/\.$/, "");
+// In parts (25 Nov 2026), joined with " · " on the card: the one that says whether it was watered today carries state
+// "done" (Watered ..., Done for today) or "todo" (Not watered yet), and the card shows it as a coloured pill (the owner:
+// "highlight 'Not watered yet' or 'Watered'"). The words are unchanged.
+function zoneTodayParts(id, s, runs) {
+  if (s.known && !s.enabled) return [{ text: "Switched off: not watered", state: "off" }];
+  const todayTally = liveData.sensors?.zones?.[id]?.today;
+  const tally = dayTallyText(todayTally).replace(/^Today: /, "").replace(/\.$/, "");
   const parts = [];
   // Why ESP1 is passing a due column over (firmware of 18 Nov 2026), first.
-  if (s.skippedToday) parts.push("Skipped for the rest of today: a STOP reply or a lost fault closed the day");
-  else if (s.restMin) parts.push(`Resting ${s.restMin} more min after repeated faults`);
+  if (s.skippedToday) parts.push({ text: "Skipped for the rest of today: a STOP reply or a lost fault closed the day" });
+  else if (s.restMin) parts.push({ text: `Resting ${s.restMin} more min after repeated faults` });
   let fedNote = "";
-  if (s.operationToday === "MANUAL") parts.push("Manual day: no scheduled watering");
+  if (s.operationToday === "MANUAL") parts.push({ text: "Manual day: no scheduled watering", state: tally ? "" : "manual" });
   else if (s.runsToday !== null && s.sched !== null && !s.skippedToday) {
     const done = Math.min(s.runsToday, runs);
-    if (runs > 1) parts.push(`${done} of ${runs} watering times done`);
-    else if (done) parts.push("Done for today");
-    else if (!tally) parts.push("Not watered yet");
+    if (runs > 1) parts.push({ text: `${done} of ${runs} watering times done` });
+    else if (done) parts.push({ text: "Done for today", state: tally ? "" : "done" });
+    else if (!tally) parts.push({ text: "Not watered yet", state: "todo" });
     if (s.fedToday && s.mode === "AUTO" && done < runs) fedNote = "nutrients already in, the rest is plain water";
   }
-  if (tally) parts.push(tally.charAt(0).toUpperCase() + tally.slice(1));
-  if (fedNote) parts.push(fedNote);
-  return parts.length ? parts.join(" · ") : "Nothing reported yet";
+  if (tally) parts.push({ text: tally.charAt(0).toUpperCase() + tally.slice(1), state: Number(todayTally?.waterings) > 0 ? "done" : "todo" });
+  if (fedNote) parts.push({ text: fedNote });
+  return parts.length ? parts : [{ text: "Nothing reported yet" }];
+}
+// The Today line with its pill. Built from text nodes only: nothing from Firebase goes in as HTML.
+function renderZoneToday(id, s, runs) {
+  const el = document.getElementById(`zoneToday${id}`);
+  if (!el) return;
+  const parts = zoneTodayParts(id, s, runs);
+  const signature = JSON.stringify(parts);
+  if (el.dataset.sig === signature) return;          // runs on every report: only touch the page on a change
+  el.dataset.sig = signature;
+  let pilled = false;
+  const nodes = [];
+  parts.forEach((part, i) => {
+    if (i) nodes.push(" · ");
+    if (part.state && !pilled) {
+      pilled = true;
+      const pill = document.createElement("span");
+      pill.className = "zt-pill";
+      pill.dataset.state = part.state;
+      pill.textContent = part.text;
+      nodes.push(pill);
+    } else nodes.push(part.text);
+  });
+  el.replaceChildren(...nodes);
 }
 
 // The card's own words for what ESP1 does with the column (18 Nov 2026, the owner's second round: short, under this
@@ -3232,7 +3524,7 @@ function renderZoneSummary(zone) {
   if (ops) ops.dataset.op = off ? "off" : (s.operationToday || s.operation) === "MANUAL" ? "manual" : s.known ? "auto" : "none";
   renderZoneWeek(id, s);
   renderPlanView(id, s);
-  setText(`zoneToday${id}`, zoneTodayText(id, s, runs));
+  renderZoneToday(id, s, runs);
   setText(`zoneTargets${id}`, targetsText(s.targets));
   const offNote = document.getElementById(`zoneOffNote${id}`);
   if (offNote) offNote.hidden = !(s.known && !s.enabled);
@@ -3345,6 +3637,27 @@ function renderPlanEditor(id) {
   box.innerHTML = planCalendarHtml(id, { month: d.planMonth, marks: d.plan, defaultOp: d.operation || "AUTOMATIC", today, editable: true, locked });
   const clear = document.getElementById(`cfgPlanClear${id}`);
   if (clear) clear.disabled = locked || !plannedDays(d.plan, today).length;
+  syncAutoSettings(id);
+}
+
+// The Automatic settings group (25 Nov 2026, the owner): gone while the column is Manual, unless the day plan still has an
+// Automatic day, where those settings are used. Hiding never changes a value: nothing in it is sent unless changed.
+function syncAutoSettings(id) {
+  const d = zoneDrafts[id];
+  const group = document.getElementById(`cfgAuto${id}`);
+  const hint = document.getElementById(`cfgManualHint${id}`);
+  if (!d || !group) return;
+  const today = rigTodayYmd();
+  const autoDays = plannedDays(d.plan, today).filter(ymd => d.plan[ymd] === "A").length;
+  const manual = d.operation === "MANUAL";
+  const hide = manual && autoDays === 0;
+  if (group.hidden !== hide) {
+    group.hidden = hide;
+    if (!hide) group.classList.add("is-revealed");   // a short fold-in (style.css), only when it comes back
+  }
+  if (hint) hint.hidden = !hide;
+  setText(`cfgAutoNote${id}`, !manual ? "Used whenever this column runs Automatic."
+    : `Used only on the ${autoDays === 1 ? "Automatic day" : `${autoDays} Automatic days`} in the day plan above.`);
 }
 
 // default -> Manual -> Automatic -> default (the user's choice, 18 Nov 2026).
@@ -3409,13 +3722,17 @@ function renderZonePower(id, s = zoneSettings(id)) {
   // one has scrolled out of the newest 25: nothing more will come of it (23 Nov 2026; it waited forever before).
   const waiting = Boolean(sentKey) && Boolean(row) && commandStillPending(row);
   if (sentKey && !waiting) delete zonePowerSent[id];
-  if (state) state.textContent = waiting ? "Sending…" : !s.known ? "Not reported" : s.enabled ? "On" : "Off";
+  // Offline (25 Nov 2026): the switch already shows the new position (zoneSettings() applies the waiting row); it says it
+  // is waiting for the system rather than "Sending…" for hours.
+  const offline = waiting && !esp1Online();
+  if (state) state.textContent = offline ? "Waiting" : waiting ? "Sending…" : !s.known ? "Not reported" : s.enabled ? "On" : "Off";
   if (!button) return;
   button.setAttribute("aria-checked", String(s.known && s.enabled));
   button.dataset.waiting = waiting ? "1" : "";
   const block = rigControlBlock();
   button.disabled = waiting || Boolean(block);
-  button.title = waiting ? "Waiting for ESP1." : block;
+  button.title = offline ? "Waiting for the system to come back online. Cancel the waiting change under the card to undo it."
+    : waiting ? "Waiting for the system." : block;
 }
 
 function toggleZonePower(id) {
@@ -3429,7 +3746,7 @@ function toggleZonePower(id) {
     result("Nothing was sent.");
     return;
   }
-  sendFromPanel(result, "SET_COLUMN", { col: id, enabled: turnOn ? 1 : 0 }).then(key => {
+  sendFromPanel(result, "SET_COLUMN", { col: id, enabled: turnOn ? 1 : 0 }, { queueOffline: true }).then(key => {
     if (!key) return;
     zonePowerSent[id] = key;
     renderZonePower(id);
@@ -3689,7 +4006,7 @@ function zoneEditPlan(id) {
     if (wins.some(([a, b]) => a === null || b === null)) {
       problems.push(count > 1 ? "Pick a start and an end for each watering time." : "Pick both a start and an end time for My own time.");
     } else if (wins.some(([a, b]) => a >= b)) {
-      problems.push(`${count > 1 ? "Each watering time" : "The watering time"} must start before it ends, on the same day: the rig can't water past midnight.`);
+      problems.push(`${count > 1 ? "Each watering time" : "The watering time"} must start before it ends, on the same day: the system can't water past midnight.`);
     } else if (late > 0) {
       problems.push(`The ${ORDINALS[late]} watering time must start after the ${ORDINALS[late - 1]} one ends. Put them in order through the day, without overlapping.`);
     } else if (s.sched !== 1 || !sameWindows(wins, s.windows)) {
@@ -3721,7 +4038,7 @@ function renderZoneChanges(id) {
   box.classList.toggle("error", problems.length > 0);
   box.textContent = problems.length ? problems.join(" ")
     : words.length ? `You changed ${words.join("; ")}.`
-    : "Nothing changed yet. ESP1 keeps what it has until you press Save to rig.";
+    : "Nothing changed yet. ESP1 keeps what it has until you press Save to system.";
   const save = document.getElementById(`cfgSave${id}`);
   if (save) save.dataset.nothing = words.length && !problems.length ? "" : "1";
   syncZoneSaveButton(id);
@@ -3746,7 +4063,8 @@ function saveZoneEditor(id) {
       !confirm(`Soil start ${payload.soilStart} % is at or under ${NPK_MIN_MOIST} %, where the NPK probe can't read the soil, so column ${id} would get water but never nutrients. Save it anyway?`)) {
     show("Nothing was sent."); return;
   }
-  sendFromPanel(show, "SET_COLUMN", payload).then(key => { if (key) closeZoneEditor(id); });
+  // While ESP1 is offline the change waits in the queue (25 Nov 2026, the owner); the card shows it as waiting.
+  sendFromPanel(show, "SET_COLUMN", payload, { queueOffline: true }).then(key => { if (key) closeZoneEditor(id); });
 }
 
 // The crop profile is the page's own planning note; the rig only learns a target through SET_COLUMN. This
@@ -3758,7 +4076,7 @@ function fillTargetsFromCrop(zone) {
   if (!crop || !stage || !zoneDrafts[id]) { show("That crop and stage has no stored profile. Nothing was filled in.", true); return; }
   Object.assign(zoneDrafts[id].targets, { targetN: String(stage.n), targetP: String(stage.p), targetK: String(stage.k), targetPH: String(stage.ph) });
   fillZoneForm(id);
-  zoneNote(id)(`Filled from ${cropLabel(crop)}, ${stage.name}. Check them, then press Save to rig.`);
+  zoneNote(id)(`Filled from ${cropLabel(crop)}, ${stage.name}. Check them, then press Save to system.`);
 }
 
 // Saved setups: the editor's values under a name, kept with the page's own zone config (ESP1 never reads
@@ -3787,7 +4105,7 @@ function saveColumnSettings(id) {
       if (zoneDrafts[id]) zoneDrafts[id].saveName = "";
       const name = document.getElementById(`cfgSaveName${id}`);
       if (name) name.value = "";
-      zoneNote(id)(`Saved as "${snapshot.name}". It isn't on the rig until you press Save to rig.`);
+      zoneNote(id)(`Saved as "${snapshot.name}". It isn't on the system until you press Save to system.`);
       logActivity(`Column ${id}: saved setup "${snapshot.name}"`);
     })
     .catch(error => show(`Could not save the setup: ${error.message}`, true));
@@ -3812,7 +4130,7 @@ function loadSavedSetup(zone, key) {
   }
   TARGET_FIELDS.forEach(f => { if (hasValue(chosen[f.key])) d.targets[f.key] = String(chosen[f.key]); });
   fillZoneForm(zone.id);
-  zoneNote(zone.id)(`Loaded "${rawText(chosen.name, "Untitled")}". Check it, then press Save to rig.`);
+  zoneNote(zone.id)(`Loaded "${rawText(chosen.name, "Untitled")}". Check it, then press Save to system.`);
 }
 
 /* ---- Zone cards: building them, their readings and gauges ---------------------------------------------------------------- */
@@ -3822,6 +4140,7 @@ function loadSavedSetup(zone, key) {
 function renderColumnCommandResults() {
   activeZones.forEach(zone => {
     renderZoneSummary(zone);
+    renderZonePending(zone.id);
     const result = document.getElementById(`cfgResult${zone.id}`);
     if (!result) return;
     const latest = commandData
@@ -3840,13 +4159,39 @@ function renderColumnCommandResults() {
     // COL_B: enabled=1)"; the card itself shows the new values), and a plain "Saved on the rig." in Simple mode
     // (.zone-saved, see style.css). A refusal or a wait still says so in both.
     const saved = latest.status === "completed";
-    result.textContent = saved ? "Saved on the rig."
+    const waitingOffline = latest.status === "queued" && !esp1Online();
+    result.textContent = saved ? "Saved on the system."
       : latest.status === "rejected" || latest.status === "failed" ? `ESP1 refused it: ${reply || "no reason given"}.`
-      : latest.status === "withdrawn" ? "Withdrawn before ESP1 read it."
+      : latest.status === "withdrawn" ? "Cancelled before the system read it."
+      : waitingOffline ? "Saved here. It is sent when the system is back online."
       : "Sent. Waiting for ESP1…";
     result.className = `control-result${saved ? " zone-saved" : ""}${commandStatusTone(latest.status) === "error" ? " error" : ""}`;
   });
 }
+
+// Changes waiting for ESP1 (25 Nov 2026): while it is offline, a column's saved changes wait in the queue. The card says so,
+// with a way to take them back (withdrawCommand(): only while still "queued"; the rules allow the same).
+function renderZonePending(id) {
+  const box = document.getElementById(`zonePending${id}`);
+  if (!box) return;
+  const rows = (zoneSettings(id).pending || []).filter(c => c.status === "queued");
+  const show = rows.length > 0 && !esp1Online();
+  box.hidden = !show;
+  if (!show) return;
+  const since = Math.min(...rows.map(c => Number(c.requestedAt || serverNow())));
+  sSet(`zonePendingText${id}`, `${rows.length === 1 ? "1 change is" : `${rows.length} changes are`} waiting: the system is offline (${esp1HeardText()}). ` +
+    `${rows.length === 1 ? "It is" : "They are"} applied as soon as it is back online. Saved ${agoText(Math.max(0, serverNow() - since))}.`);
+  const cancel = box.querySelector("[data-zone-cancel]");
+  if (cancel) cancel.hidden = !hasZoneEditAccess();
+}
+document.getElementById("dynamic-zones-container")?.addEventListener("click", event => {
+  const button = event.target.closest("button[data-zone-cancel]");
+  if (!button) return;
+  const id = button.dataset.zoneCancel;
+  const rows = (zoneSettings(id).pending || []).filter(c => c.status === "queued");
+  if (!rows.length || !confirm(`Cancel ${rows.length === 1 ? "the waiting change" : `the ${rows.length} waiting changes`} for column ${id}? The system never gets ${rows.length === 1 ? "it" : "them"}.`)) return;
+  rows.forEach(c => withdrawCommand(c.id));
+});
 
 function renderZonesUI() {
   const container = document.getElementById("dynamic-zones-container");
@@ -3872,7 +4217,7 @@ function renderZonesUI() {
     const resolved = zoneCrop(zone);
     const crop = resolved.crop ? cropLabel(resolved.crop) : "--";
     const stage = resolved.stage ? resolved.stage.name : "--";
-    const reading = (label, valueId, noteId, infoText, help, note = "Crop profile: --", extra = "") => `
+    const reading = (label, valueId, noteId, infoText, help, note = "Target: --", extra = "") => `
         <div class="reading${extra ? ` ${extra}` : ""}">
           <dt>${label}${info(label, infoText, help)}</dt>
           <dd class="reading-value" id="${valueId}">Unavailable</dd>
@@ -3891,25 +4236,26 @@ function renderZonesUI() {
 
     // Auto stage (19 Nov 2026): Complete mode only, under the crop and stage it moves on.
     const autoBox = `<div class="auto-stage complete-only" id="autoStage${id}" aria-live="polite" hidden></div>`;
+    // "Crops" (25 Nov 2026, the owner; it was "Compared with"): the crop and stage the readings' targets come from.
     const compare = canEdit
       ? `<div class="zone-compare">
-          <span class="label-row">Compared with${info("Crop profile", "Pick the crop and stage growing here. A reading turns red when it is below that crop's number. This stays on the website: ESP1 never sees it. The crops and their numbers are under Crop profiles, below the columns. Auto stage (Complete mode) moves the stage on by itself, by the Days of each stage.", "help-crop-profile")}</span>
+          <span class="label-row">Crops${info("Crops", "Pick the crop and stage growing here. Each reading's Target comes from it, and a reading turns red when it is below its target. This stays on the website: the system never sees it. The crops and their numbers are under Crop profiles, below the columns. Auto stage (Complete mode) moves the stage on by itself, by the Days of each stage.", "help-crop-profile")}</span>
           <select id="cropSelect${id}" aria-label="Crop growing in column ${id}"></select>
           <select id="growthStage${id}" aria-label="Growth stage in column ${id}"></select>
         </div>${autoBox}`
-      : `<p class="zone-compare">Compared with ${escapeHtml(crop)}, ${escapeHtml(stage)}</p>${autoBox}`;
+      : `<p class="zone-compare">Crops: ${escapeHtml(crop)}, ${escapeHtml(stage)}</p>${autoBox}`;
 
     // This week's plan and today, read-only, in place of the old "What ESP1 does with it" list (the owner's second round,
     // 18 Nov 2026): the same ids, in short words; what they mean is in the (i) icons. Changes go through Edit settings.
     const week = `
-        <div class="zone-section-head">
+        <div class="zone-section-head zone-week-head">
           <h4><svg class="si" aria-hidden="true"><use href="#si-calendar"/></svg>This week${info("This week", "Each day this week, by the controller's own date: A is Automatic (it waters at its watering times when the soil is dry), M is Manual (no scheduled watering that day). Today has a ring. Change the days in Edit settings, Day plan.", "help-operation")}</h4>
         </div>
         <ol class="zone-week" id="zoneWeek${id}" aria-label="Column ${id}: this week"></ol>
         <p class="zone-week-note" id="zoneWeekNote${id}"></p>
         <div class="zone-today-box">
           <p class="zone-today-line"><strong>Today</strong><span id="zoneWhen${id}" title="Watering times">Unavailable</span><span class="zt-dot" aria-hidden="true">·</span><span id="zoneToday${id}">Unavailable</span></p>
-          <p class="zone-today-line zt-sub"><span id="zoneDoes${id}" title="What it does">Unavailable</span>${info("What it does", "Water + nutrients: the controller adds nutrients when the soil is short of them, at most once a day. Water only: it never adds any.", "help-what-it-does")}<span class="zt-dot" aria-hidden="true">·</span><span id="zoneTargets${id}" title="Nutrient targets">Unavailable</span>${info("Targets", "The N, P and K levels the controller aims for, in ppm, and the pH. It adds nutrients when a reading falls short of one by the Fertigation gap. pH is recorded, not corrected.", "help-npk")}</p>
+          <p class="zone-today-line zt-sub"><span id="zoneDoes${id}" title="What it does">Unavailable</span>${info("What it does", "Water + Nutrients: the controller adds nutrients when the soil is short of them, at most once a day. Water only: it never adds any.", "help-what-it-does")}<span class="zt-dot" aria-hidden="true">·</span><span id="zoneTargets${id}" title="Nutrient targets">Unavailable</span>${info("Targets", "The N, P and K levels the controller aims for, in ppm, and the pH. It adds nutrients when a reading falls short of one by the Fertigation gap. pH is recorded, not corrected.", "help-npk")}</p>
         </div>`;
     const summary = `
         <div class="zone-ops-row">
@@ -3935,7 +4281,7 @@ function renderZonesUI() {
             ${lineRow("Wet", "Too wet above", THRESH_MIN_GAP)}
             <div class="line-preview" id="cfgLinePreview${id}" aria-hidden="true"><span class="lp-dry"></span><span class="lp-ok"></span><span class="lp-wet"></span><i class="lp-now"></i></div>
             <p class="line-legend" id="cfgLineLegend${id}"></p>
-            ${linesOn ? "" : `<p class="plan-wait">A column's own lines need ESP1's firmware of 18 Nov 2026 (b). Until the rig runs it, every column uses the System tab's Soil start, and Save to rig leaves these out.</p>`}
+            ${linesOn ? "" : `<p class="plan-wait">A column's own lines need ESP1's firmware of 18 Nov 2026 (b). Until the system runs it, every column uses the System tab's Soil start, and Save to system leaves these out.</p>`}
           </fieldset>`;
 
     const form = `
@@ -3946,23 +4292,34 @@ function renderZonesUI() {
               <label class="seg-opt"><input type="radio" name="cfgOps${id}" value="AUTOMATIC"${planOn ? "" : " disabled"}><span>Automatic</span></label>
               <label class="seg-opt"><input type="radio" name="cfgOps${id}" value="MANUAL"${planOn ? "" : " disabled"}><span>Manual</span></label>
             </div>
-            ${planOn ? "" : `<p class="plan-wait">ESP1 hasn't reported Manual or Automatic yet: it needs its firmware of 18 Nov 2026. Until it runs that, these stay off and Save to rig leaves them out; the rest of this form works as usual.</p>`}
+            ${planOn ? "" : `<p class="plan-wait">ESP1 hasn't reported Manual or Automatic yet: it needs its firmware of 18 Nov 2026. Until it runs that, these stay off and Save to system leaves them out; the rest of this form works as usual.</p>`}
           </fieldset>
           <fieldset class="plan-fieldset">
             <legend>Day plan${info("Day plan", "Click a day to set it for that date only: once for Manual, twice for Automatic, a third time to go back to the default above. Up to about two months ahead, by ESP1's own clock.", "help-operation")}</legend>
             <div id="cfgPlan${id}" class="plan-edit"></div>
             <button type="button" id="cfgPlanClear${id}" class="secondary small"${planOn ? "" : " disabled"}>Clear the day plan</button>
           </fieldset>
+          <!-- Manual (25 Nov 2026, the owner: "when the operation is switched to manual, all the settings below the calendar
+               ... that adjust the automatic must disappear"): shown instead of the Automatic settings group below. -->
+          <p class="manual-hint" id="cfgManualHint${id}" hidden><svg class="si" aria-hidden="true"><use href="#si-hand"/></svg><span>Manual: the system won't water this column by itself. Water it with <strong>Water a column now</strong> on Controls. Switch to Automatic, or plan an Automatic day, to see the automatic settings.</span></p>
+          <!-- Automatic settings (25 Nov 2026, the owner: "separate or add title to automatic settings"): everything that only
+               matters when the system waters by itself. Hidden while the column is Manual with no Automatic day planned;
+               what is in it stays as it is and is not sent. syncAutoSettings() shows or hides it. -->
+          <section class="auto-settings" id="cfgAuto${id}" aria-labelledby="cfgAutoTitle${id}">
+            <header class="auto-settings-head">
+              <h5 id="cfgAutoTitle${id}"><svg class="si" aria-hidden="true"><use href="#si-clock"/></svg>Automatic settings${info("Automatic settings", "What the system does by itself on Automatic days: water + nutrients or water only, when it waters, how dry the soil must be, and the nutrient targets. Manual days ignore them.", "help-operation")}</h5>
+              <p class="auto-settings-note" id="cfgAutoNote${id}">Used whenever this column runs Automatic.</p>
+            </header>
           <fieldset>
-            <legend>What it does${info("What it does", "Water + nutrients lets ESP1 add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</legend>
-            <label class="choice"><input type="radio" name="cfgMode${id}" value="AUTO">Water + nutrients when the soil needs them</label>
+            <legend>What it does${info("What it does", "Water + Nutrients lets the system add nutrients when the soil is short of them. Water only never adds any.", "help-what-it-does")}</legend>
+            <label class="choice"><input type="radio" name="cfgMode${id}" value="AUTO">Water + Nutrients</label>
             <label class="choice"><input type="radio" name="cfgMode${id}" value="IRRIGATION_ONLY">Water only</label>
           </fieldset>
           <fieldset>
             <legend>When it runs${info("When it runs", multi
-              ? "Rig default uses the one window built into the firmware. My own time uses up to 4 times you pick, in order through the day, each ending the same day."
-              : "Rig default uses the window built into the firmware. My own time uses the start and end you pick, and must end the same day.", "help-set-time")}</legend>
-            <label class="choice"><input type="radio" name="cfgSched${id}" value="0">Rig default, ${clockSpan(defStart, defEnd)}, once a day</label>
+              ? "Default uses the one window built into the firmware. My own time uses up to 4 times you pick, in order through the day, each ending the same day."
+              : "Default uses the window built into the firmware. My own time uses the start and end you pick, and must end the same day.", "help-set-time")}</legend>
+            <label class="choice"><input type="radio" name="cfgSched${id}" value="0">Default: ${clockSpan(defStart, defEnd)} (once a day)</label>
             <label class="choice"><input type="radio" name="cfgSched${id}" value="1">My own time</label>
             ${multi ? `<label class="runs-pick">Waterings a day<select id="cfgRuns${id}">${ORDINALS.map((_, w) => `<option value="${w + 1}">${w + 1}</option>`).join("")}</select></label>` : ""}
             ${Array.from({ length: multi ? MAX_RUNS_PER_DAY : 1 }, (_, w) => `
@@ -3972,19 +4329,20 @@ function renderZonesUI() {
               <label>To<input id="${winInputId("cfgWinEnd", id, w)}" type="time"></label>
             </div>`).join("")}
             <p class="field-note">${multi
-              ? "At most once in each time, and only when the soil is drier than its Soil start. Nutrients go in at most once a day: later waterings that day are plain water. Times follow the rig's clock."
-              : "At most once a day, inside this time, when the soil is drier than its Soil start. Times follow the rig's clock."}</p>
+              ? "At most once in each time, and only when the soil is drier than its Soil start. Nutrients go in at most once a day: later waterings that day are plain water. Times follow the system's clock."
+              : "At most once a day, inside this time, when the soil is drier than its Soil start. Times follow the system's clock."}</p>
           </fieldset>
           ${lines}
           <fieldset>
-            <legend>Targets${info("Targets", "N, P and K in ppm (0 to 2000), pH from 3 to 9. A blank box leaves ESP1's value as it is.", "help-targets")}</legend>
+            <legend>Targets${info("Targets", "N, P and K in ppm (0 to 2000), pH from 3 to 9. A blank box leaves the system's value as it is.", "help-targets")}</legend>
             <div class="target-row">
               ${TARGET_FIELDS.map(f => `<label>${f.label}${f.unit ? ` (${f.unit})` : ""}<input id="${f.input}${id}" type="number" min="${f.min}" max="${f.max}" step="${f.step}" inputmode="decimal"></label>`).join("")}
             </div>
             <button type="button" id="cfgFromCrop${id}" class="secondary">Fill from crop profile (${escapeHtml(crop)}, ${escapeHtml(stage)})</button>
           </fieldset>
+          </section>
           <details class="zone-setups" id="zoneSetups${id}">
-            <summary>Saved setups${info("Saved setups", "Named copies of this form, kept on the website. Loading one fills the form; nothing reaches the rig until you press Save to rig.", "help-saved-setups")}</summary>
+            <summary>Saved setups${info("Saved setups", "Named copies of this form, kept on the website. Loading one fills the form; nothing reaches the system until you press Save to system.", "help-saved-setups")}</summary>
             <label>Load a saved setup<select id="cfgSavedList${id}"><option value="">Choose one</option></select></label>
             <div class="setup-save">
               <label>Save these as a setup<input id="cfgSaveName${id}" type="text" maxlength="40" placeholder="Name, for example Vegetative high-N"></label>
@@ -3993,7 +4351,7 @@ function renderZonesUI() {
           </details>
           <p class="zone-changes" id="zoneChanges${id}" aria-live="polite"></p>
           <div class="config-actions">
-            <button type="submit" id="cfgSave${id}">Save to rig</button>
+            <button type="submit" id="cfgSave${id}">Save to system</button>
             <button type="button" id="cfgCancel${id}" class="secondary">Cancel</button>
           </div>
         </form>`;
@@ -4025,19 +4383,21 @@ function renderZonesUI() {
           <div class="zone-section-head">
             <h4><svg class="si" aria-hidden="true"><use href="#si-beaker"/></svg>Readings</h4>
             <button type="button" class="zone-fold" data-z-readings="${id}" aria-expanded="${!hidden}" aria-controls="zoneReadings${id}">${hidden ? "Show" : "Hide"}</button>
+            <!-- Simple mode (25 Nov 2026, "only the essentials"): the readings and the crop picker stay folded until asked. -->
+            <button type="button" class="secondary zone-details-toggle" data-z-details="${id}" aria-expanded="${Boolean(zoneDetailsOpen[id])}" aria-controls="zoneReadings${id}"><span>${zoneDetailsOpen[id] ? "Hide readings" : "Show readings"}</span><svg class="si s-chev" aria-hidden="true"><use href="#si-chevron"/></svg></button>
           </div>
           <p class="zone-off-note" id="zoneOffNote${id}" hidden>This column is off. ESP1 isn't watering it, and isn't sending its readings. Its settings are kept.</p>
           <dl class="reading-grid" id="zoneReadings${id}">
             <div class="reading reading-gauge complete-only">
-              <dt>Soil moisture${info("Soil moisture", "The column's main moisture figure. ESP1 waters it when this is below its Soil start, the marked line on the gauge. The other mark is what the crop profile wants.", "help-moisture")}</dt>
+              <dt>Soil moisture${info("Soil moisture", "The column's main moisture figure. The system waters it when this is below its Soil start, the marked line on the gauge. The other mark is the crop's target.", "help-moisture")}</dt>
               <dd class="gauge-wrap">${moistureGaugeSvg(id)}</dd>
               <dd class="reading-value" id="soil${id}">Unavailable</dd>
-              <dd class="reading-note note-crop" id="targetMoisture${id}">Crop profile: --</dd>
+              <dd class="reading-note note-crop" id="targetMoisture${id}">Target: --</dd>
               <dd class="reading-note note-start" id="soilStartNote${id}">Waters below 35 %</dd>
             </div>
-            ${reading("Nitrogen (N)", `nitrogen${id}`, `targetN${id}`, "Nitrogen in the soil, in ppm, from the 7-in-1 probe. Red: below the crop profile's number.", "help-npk")}
-            ${reading("Phosphorus (P)", `phosphorus${id}`, `targetP${id}`, "Phosphorus in the soil, in ppm. Red: below the crop profile's number.", "help-npk")}
-            ${reading("Potassium (K)", `potassium${id}`, `targetK${id}`, "Potassium in the soil, in ppm. Red: below the crop profile's number.", "help-npk")}
+            ${reading("Nitrogen (N)", `nitrogen${id}`, `targetN${id}`, "Nitrogen in the soil, in ppm, from the 7-in-1 probe. Red: below the target.", "help-npk")}
+            ${reading("Phosphorus (P)", `phosphorus${id}`, `targetP${id}`, "Phosphorus in the soil, in ppm. Red: below the target.", "help-npk")}
+            ${reading("Potassium (K)", `potassium${id}`, `targetK${id}`, "Potassium in the soil, in ppm. Red: below the target.", "help-npk")}
             ${reading("Soil pH", `soilPH${id}`, `targetPH${id}`, "How acidic (under 7) or alkaline (over 7) the soil is.", "help-soil-ec")}
             ${reading("Soil EC", `soilEC${id}`, `targetEC${id}`, "Dissolved nutrients in the soil, in µS/cm. Higher means richer.", "help-soil-ec")}
             ${reading("NPK probe moisture", `npkMoist${id}`, "", "The NPK probe's own moisture reading. It counts toward Soil moisture when the two agree.", "help-moisture", "Counts toward soil moisture when it agrees", "complete-only")}
@@ -4050,9 +4410,15 @@ function renderZonesUI() {
           <div class="plan-view complete-only" id="planView${id}" hidden></div>
           ${draft ? form : summary}
           <p id="cfgResult${id}" class="control-result" aria-live="polite"></p>
+          <div class="zone-pending" id="zonePending${id}" hidden>
+            <svg class="si" aria-hidden="true"><use href="#si-clock"/></svg>
+            <p id="zonePendingText${id}" aria-live="polite"></p>
+            <button type="button" class="secondary small" data-zone-cancel="${id}">Cancel it</button>
+          </div>
         </section>
       </div>`;
     block.classList.toggle("readings-hidden", hidden);
+    block.classList.toggle("s-details-open", Boolean(zoneDetailsOpen[id]));
     block.dataset.stage = resolved.stage?.key || "";      // what the card shows, for syncAutoStages()
     container.appendChild(block);
     renderAutoStage(zone);
@@ -4168,16 +4534,16 @@ function populateStageOptions(zone, stageSelect) {
 }
 
 // The crop profile's reference numbers, under each reading. Planning only: ESP1's own targets are the
-// card's Targets line.
+// card's Targets line. Called "Target" on the card since 25 Nov 2026 (the owner: change "crop profile" to "Target").
 function updateZoneTargets(zone) {
   const target = zoneCrop(zone).stage;
   if (!target) return;
-  setText(`targetN${zone.id}`, `Crop profile: ${target.n} ppm`);
-  setText(`targetP${zone.id}`, `Crop profile: ${target.p} ppm`);
-  setText(`targetK${zone.id}`, `Crop profile: ${target.k} ppm`);
-  setText(`targetPH${zone.id}`, `Crop profile: ${target.ph}`);
-  setText(`targetEC${zone.id}`, `Crop profile: ${Math.round(target.ec * 1000)} µS/cm`);
-  setText(`targetMoisture${zone.id}`, `Crop profile: ${target.moisture} %`);
+  setText(`targetN${zone.id}`, `Target: ${target.n} ppm`);
+  setText(`targetP${zone.id}`, `Target: ${target.p} ppm`);
+  setText(`targetK${zone.id}`, `Target: ${target.k} ppm`);
+  setText(`targetPH${zone.id}`, `Target: ${target.ph}`);
+  setText(`targetEC${zone.id}`, `Target: ${Math.round(target.ec * 1000)} µS/cm`);
+  setText(`targetMoisture${zone.id}`, `Target: ${target.moisture} %`);
 }
 
 function zoneMetric(zone, metric, id, digits, unit, targetKey) {
@@ -4312,6 +4678,24 @@ function cropNumber(value) {
   return hasValue(value) ? String(Number(value)) : "";
 }
 
+// What each number in a crop profile is for (25 Nov 2026, the owner: "add the small i circle, in each nutrient,
+// indicating what's this for. And also with other."). The same words in the table and in the editor.
+const CROP_FIELD_INFO = {
+  stage: ["Stage", "A growth stage of the crop, in order: for example Seedling, Vegetative, Flowering, Fruiting. A column picks one, and its numbers become that column's targets on the card."],
+  n: ["N: nitrogen (ppm)", "For leaves and stems: green, leafy growth. Needed most while the plant is growing leaves (vegetative). Too little: pale or yellow older leaves. On this system it comes mainly from Nutrient A (calcium nitrate)."],
+  p: ["P: phosphorus (ppm)", "For roots, flowers and fruit setting, and the plant's energy. Needed most by young seedlings and at flowering. Too little: slow growth, dark or purplish leaves. Nutrient B (ammonium phosphate) adds it."],
+  k: ["K: potassium (ppm)", "For fruit size and taste, strong stems, water balance and resistance to disease. Needed most at flowering and fruiting. Too little: brown, scorched leaf edges. Nutrient C (potassium nitrate) adds it."],
+  ph: ["pH", "How acidic (under 7) or alkaline (over 7) the soil should be. Most vegetables take up their nutrients best at about pH 6 to 7. The system records pH; it doesn't correct it by itself."],
+  ec: ["EC (mS/cm)", "Electrical conductivity: how much dissolved nutrient the soil should hold. Higher means richer; too high can burn the roots. The column card shows soil EC in µS/cm (1 mS/cm = 1000 µS/cm)."],
+  moisture: ["Moisture (%)", "How wet the soil should be at this stage. It is the Target mark on the column's soil moisture bar. Watering itself starts when the soil is drier than the column's Soil start."],
+  days: ["Days", "How long this stage lasts. A column's Auto stage moves to the next stage after this many days; 0 skips the stage. Leave it blank if you don't know."],
+  notes: ["Notes", "Anything worth remembering for this stage, for example when to transplant or to add a trellis. Shown in the table only."]
+};
+function cropInfoIcon(key) {
+  const [title, text] = CROP_FIELD_INFO[key] || [];
+  return title ? `<button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About ${escapeHtml(title)}" data-info-title="${escapeHtml(title)}" data-info-text="${escapeHtml(text)}" data-help="help-crop-library">i</button>` : "";
+}
+
 function stageTableHtml(crop) {
   const rows = crop.stages.map(s => `
           <tr>
@@ -4321,10 +4705,11 @@ function stageTableHtml(crop) {
             <td>${escapeHtml(cropNumber(s.days))}</td>
             <td class="stage-notes">${escapeHtml(s.notes || "")}</td>
           </tr>`).join("");
+  const head = (key, label) => `<th scope="col"><span class="th-info">${label}${cropInfoIcon(key)}</span></th>`;
   return `
       <div class="table-scroll">
         <table class="stage-table">
-          <thead><tr><th scope="col">Stage</th><th scope="col">N (ppm)</th><th scope="col">P (ppm)</th><th scope="col">K (ppm)</th><th scope="col">pH</th><th scope="col">EC (mS/cm)</th><th scope="col">Moisture (%)</th><th scope="col">Days</th><th scope="col">Notes</th></tr></thead>
+          <thead><tr>${head("stage", "Stage")}${head("n", "N (ppm)")}${head("p", "P (ppm)")}${head("k", "K (ppm)")}${head("ph", "pH")}${head("ec", "EC (mS/cm)")}${head("moisture", "Moisture (%)")}${head("days", "Days")}${head("notes", "Notes")}</tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
@@ -4360,8 +4745,9 @@ function cropCardHtml(crop, showActions) {
 }
 
 function cropEditorHtml(draft) {
+  // Each box with its (i) beside the words (25 Nov 2026); the icon sits in .label-row, never inside the input's click area.
   const number = (field, label, min, max, step) =>
-    `<label>${label}<input data-field="${field}" type="number" min="${min}" max="${max}" step="${step}" inputmode="decimal"></label>`;
+    `<label><span class="label-row">${label}${cropInfoIcon(field)}</span><input data-field="${field}" type="number" min="${min}" max="${max}" step="${step}" inputmode="decimal"></label>`;
   const stages = draft.stages.map((s, index) => `
           <div class="stage-edit" data-stage-index="${index}">
             <div class="stage-edit-head">
@@ -4373,7 +4759,7 @@ function cropEditorHtml(draft) {
               </span>
             </div>
             <div class="stage-fields">
-              <label class="stage-name">Name<input data-field="name" maxlength="30" placeholder="e.g. Seedling"></label>
+              <label class="stage-name"><span class="label-row">Name${cropInfoIcon("stage")}</span><input data-field="name" maxlength="30" placeholder="e.g. Seedling"></label>
               ${number("n", "N (ppm)", 0, 2000, "any")}
               ${number("p", "P (ppm)", 0, 2000, "any")}
               ${number("k", "K (ppm)", 0, 2000, "any")}
@@ -4382,7 +4768,7 @@ function cropEditorHtml(draft) {
               ${number("moisture", "Moisture (%)", 0, 100, "1")}
               ${number("days", "Days (auto stage; 0 skips)", 0, 365, "1")}
             </div>
-            <label class="stage-notes-field">Notes (optional)<input data-field="notes" maxlength="200" placeholder="e.g. Transplant at 3 to 4 true leaves"></label>
+            <label class="stage-notes-field"><span class="label-row">Notes (optional)${cropInfoIcon("notes")}</span><input data-field="notes" maxlength="200" placeholder="e.g. Transplant at 3 to 4 true leaves"></label>
           </div>`).join("");
   return `
     <form class="crop-form" id="cropForm" novalidate>
@@ -4740,36 +5126,9 @@ function updateDashboard() {
   setText("lightLevel", numberText(sensors.lightLevel, 0, "lux"));
   setText("waterPH", numberText(sensors.waterPH, 2));
   setText("waterEC", numberText(sensors.waterEC, 2, "mS/cm"));
-  setText("batteryVoltage", numberText(sensors.batteryVoltage, 2, "V"));
-  setText("batteryPercent", numberText(sensors.batteryPercent, 0, "%"));
-  // batteryCurrent is a magnitude; the signed copy only exists while the main INA226 is the source.
-  setText("batteryCurrent", signedCurrentText(sensors.batteryCurrent, sensors.batteryCurrentSigned));
-  // Watts comes from the diagnostics tree, not sensors -- ESP1 publishes battP there alongside the
-  // low/critical flags. Also shown under Diagnostics > Power; this is the front-page copy.
-  setText("batteryPower", numberText(diagnostics.power?.batteryPower, 1, "W"));
-  setText("powerSource", rawText(system.powerSource));
   setText("liveAge", snapshotAgeText());
-
-  // Solar and secondary battery. One note instead of ten "Not reported" cards on older firmware. On
-  // web v.3 each reading is only left out while its own sensor isn't answering, so it reads Unavailable.
-  const oldFirmware = Boolean(liveData.system) && !isV3Firmware();
-  const powerGrid = document.getElementById("powerGrid");
-  if (powerGrid) powerGrid.hidden = oldFirmware;
-  const powerGridNote = document.getElementById("powerGridNote");
-  if (powerGridNote) powerGridNote.hidden = !oldFirmware;
-  setText("solarVoltage", numberText(sensors.solarVoltage, 2, "V"));
-  setText("solarCurrent", numberText(sensors.solarCurrent, 2, "A"));
-  setText("solarPower", numberText(sensors.solarPower, 1, "W"));
-  setText("solarEnergyToday", numberText(sensors.solarEnergyTodayWh, 0, "Wh"));
-  setText("boardSupply", boardSupplyText());
-  setText("secondaryBatteryVoltage", numberText(sensors.secondaryBatteryVoltage, 2, "V"));
-  setText("secondaryBatteryPercent", numberText(sensors.secondaryBatteryPercent, 0, "%"));
-  // ESP1 publishes this one signed only (+ = discharging), so the size comes from it as well. Passed as it
-  // was, a charging pack read "-0.50 A charging".
-  const secondaryAmps = sensors.secondaryBatteryCurrent;
-  setText("secondaryBatteryCurrent", signedCurrentText(hasValue(secondaryAmps) ? Math.abs(Number(secondaryAmps)) : secondaryAmps, secondaryAmps));
-  setText("secondaryBatteryPower", numberText(sensors.secondaryBatteryPower, 1, "W"));
-  setText("secondaryBatteryStatus", booleanText(sensors.secondaryBatteryLow, "Low", "OK"));
+  // The battery and solar readings (main battery, solar, second battery) left the page on 25 Nov 2026: the owner,
+  // "remove the solar reading and battery reading ... maybe the sensors may not be installed".
   syncForceColumnOptions();
   syncPulseTargetOptions();
 
@@ -4779,8 +5138,8 @@ function updateDashboard() {
 
   // Pump lamps. A stale snapshot must never be drawn as a live "ON" -- if ESP1 has gone quiet we
   // do not know what the pumps are doing, and "OFF" is the only claim the page can defend.
-  setPumpLamp("transferPumpStatus", fresh && Boolean(actuators.transferRunning), fresh);
-  setPumpLamp("boosterPumpStatus", fresh && Boolean(actuators.boosterRunning), fresh);
+  setAcPumpLamp("transferPumpStatus", "TRANSFER", Boolean(actuators.transferRunning), fresh);
+  setAcPumpLamp("boosterPumpStatus", "BOOSTER", Boolean(actuators.boosterRunning), fresh);
   setPumpLamp("mixerPumpStatus", fresh && Boolean(actuators.mixerRunning), fresh);
   // The column editor offers several watering times a day only to firmware that has them, and the first snapshot
   // usually lands after the cards are built.
@@ -4790,7 +5149,6 @@ function updateDashboard() {
 
   renderDiagnostics();
   renderRawSensors();
-  renderFlowMeters();
   renderExercise();
   renderManualHold();
   updateFaultBanner();
@@ -4800,6 +5158,7 @@ function updateDashboard() {
   updateSystemTab();
   syncControlAvailability();
   renderSimpleDashboard();               // Simple mode's dashboard, from the same report
+  renderAcWaits();                       // "The motor is now running." as soon as the report says so (25 Nov 2026)
 }
 
 // On an old report the lamps say UNKNOWN, never OFF (18 Nov 2026): a stale snapshot must not read as "definitely idle".
@@ -4807,10 +5166,15 @@ function setPumpLamp(id, on, fresh = true) {
   if (!fresh && liveData.meta?.updatedAt) { setDeviceStatus(id, "UNKNOWN", "off"); return; }
   setDeviceStatus(id, on ? "ON" : "OFF", on ? "active" : "off");
 }
-
-function boardSupplyText() {
-  const supply = liveData.system?.boardSupply;
-  return supply === "secondary" ? "Secondary battery" : supply === "main" ? "Main battery" : "Unavailable";
+// The transfer and booster lamps (25 Nov 2026): with ESP1's report of the motor itself (acPumpNow()), STARTING while the
+// step has begun and the selector and inverter are still coming on, ON only once ESP2 really powers it (a test or an
+// exercise counts). Older firmware: the step's flag, as before.
+function setAcPumpLamp(id, kind, stepOn, fresh) {
+  const now = fresh ? acPumpNow() : null;
+  if (now === null) { setPumpLamp(id, fresh && stepOn, fresh); return; }
+  if (now === kind) setDeviceStatus(id, "ON", "active");
+  else if (stepOn) setDeviceStatus(id, "STARTING", "warn");
+  else setDeviceStatus(id, "OFF", "off");
 }
 
 // ESP1 only waters the enabled columns in a request: "AB" with B disabled sends the full volume to A
@@ -5010,7 +5374,7 @@ function healthItems() {
   if (f.held) add("bad", `A fault is held and waiting for a decision: ${rawText(heldFaultCode || f.code, "see the banner")}. Use the banner at the top of the page.`);
   else if (state === "EMERGENCY_STOP") add("bad", "The emergency stop is on. Use Return to normal in the banner when it is safe.");
   if (actuationsAreOff()) add("warn", "Pumps and valves are switched off (actuations disabled), so nothing runs, not even the schedule.");
-  if (rigLocked()) add("warn", "The rig is locked: this website's controls and the rig's screen buttons are off. Automatic watering carries on.");
+  if (rigLocked()) add("warn", "The system is locked: this website's controls and the system's screen buttons are off. Automatic watering carries on.");
   if (d.esp2?.communicationLost) add("bad", "ESP1 has lost contact with ESP2, the pump and valve board. It is trying to bring it back.");
   const nanoStale = hasValue(d.nano?.lastSampleAgeMs) && ageFlag(d.nano.lastSampleAgeMs) !== "ok";
   if (nanoStale) add("bad", `No sensor readings from the Nano for ${formatAge(d.nano.lastSampleAgeMs)}. Watering decisions need them.`);
@@ -5020,9 +5384,7 @@ function healthItems() {
   }
   if (d.peripherals?.rtcOk === false) add("bad", "The clock (RTC) isn't working, so the watering times can't be trusted. Check it on the System tab.");
   if (d.peripherals?.sdOk === false) add("warn", "The SD card isn't working, so ESP1 can't keep its daily log.");
-  if (d.peripherals?.batterySensorOk === false) add("warn", "The battery sensor isn't answering, so the battery readings are missing.");
-  if (d.power?.batteryCritical) add("bad", "The battery is critically low.");
-  else if (d.power?.batteryLow) add("warn", "The battery is low.");
+  // (The battery sensor and battery level lines left on 25 Nov 2026, with the battery readings.)
   if (liveData.system?.battSwitchFault === true) add("warn", "A battery switch fault is latched, so the inverter can't be used. Clear it on the System tab after checking the hold-up.");
   // ESP1 from 18 Nov 2026: the tank check, and how often it has started today.
   if (d.tankCheck?.needed === true) add("bad", "The mixing tank must be checked: ESP1 starts no scheduled run until someone confirms it. Use the banner at the top of the page.");
@@ -5128,13 +5490,14 @@ function renderDiagnostics() {
     ["Link to this website (Firebase)", [["Enabled", booleanText(d.firebase?.enabled, "Enabled", "Disabled")], ["RTDB URL", booleanText(d.firebase?.urlConfigured, "Configured", "Not configured")], ["Device account", booleanText(d.firebase?.deviceCredentialsConfigured, "Configured", "Not configured")], ["Signed in", booleanText(d.firebase?.signedIn, "Yes", "No")], ["Last upload", Number(d.firebase?.attempts || 0) > 0 ? booleanText(d.firebase?.lastUploadOk, "OK", "Failed") : "Not attempted"], ["Last HTTP", Number(d.firebase?.attempts || 0) > 0 ? rawText(d.firebase?.lastHttp) : "Not attempted"], ["TLS validation", booleanText(d.firebase?.tlsValidationEnabled, "Enabled", "Disabled")], ["Last auth issue", rawText(d.firebase?.lastAuthError, "None")], ...linkHealthRows(d.firebase)]],
     ["ThingSpeak graphs", [["Configured", booleanText(d.thingspeak?.configured, "Configured", "Not configured")], ["Last upload", d.thingspeak?.attempted ? booleanText(d.thingspeak?.lastUploadOk, "OK", "Failed") : "Not attempted"]]],
     ["Log upload", [["Goes to", d.logUpload?.target === "firebase" ? "Firebase (SD card logs, below)" : d.logUpload?.target === "supabase" || (!d.logUpload && d.supabase?.configured) ? "Supabase" : "Not configured"], ["Upload", booleanText(d.logUpload ? d.logUpload.busy : d.supabase?.uploadBusy, "In progress", "Idle")], ["Last uploaded day", Number(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay || 0) > 0 ? rawText(d.logUpload?.lastUploadedDay || d.supabase?.lastUploadedDay) : "No completed upload"]]],
-    ["Runs and faults", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Run waiting to start", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rigTimeText(rawText(d.system?.lastFaultTime, "None"))], ["Rig lock", booleanText(d.system?.lcdLocked, "Locked", "Unlocked")], ["Tank check", !d.tankCheck ? "Not reported by this firmware" : d.tankCheck.needed ? "Needed: scheduled runs wait" : "Not needed"]]],
+    ["Runs and faults", [["Work order", booleanText(d.system?.workOrderActive, "Active", "Inactive")], ["Run waiting to start", booleanText(d.system?.pendingRun, "Yes", "No")], ["Last fault", rawText(d.system?.lastFault === "none" ? "" : d.system?.lastFault, "None") + (explainFaultCode(d.system?.lastFault) ? ` — ${explainFaultCode(d.system?.lastFault)}` : "")], ["Fault time", rigTimeText(rawText(d.system?.lastFaultTime, "None"))], ["System lock", booleanText(d.system?.lcdLocked, "Locked", "Unlocked")], ["Tank check", !d.tankCheck ? "Not reported by this firmware" : d.tankCheck.needed ? "Needed: scheduled runs wait" : "Not needed"]]],
     ["ESP2 (pumps and valves)", [["Available", booleanText(d.esp2?.available, "Available", "Unavailable")], ["Power", booleanText(d.esp2?.powered, "On", "Off")], ["Communication", booleanText(d.esp2?.communicationLost, "Lost", "OK")], ["Last reply", agoText(d.esp2?.lastResponseAgeMs)]]],
     ["Nano (sensors)", [["Last reading", agoText(d.nano?.lastSampleAgeMs)], ["Air", booleanText(d.nano?.environmentValid, "Valid", "Invalid")], ["Tank", booleanText(d.nano?.tankValid, "Valid", "Invalid")], ["Light", booleanText(d.nano?.lightValid, "Valid", "Invalid")]]],
-    ["Clock, SD card and power sensors", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")], ["Battery sensor", booleanText(d.peripherals?.batterySensorOk, "OK", "Not OK")], ["Main battery INA226", v3Only(booleanText(d.peripherals?.mainInaOk, "In use", "Not in use"))], ["ACS758 fallback", v3Only(booleanText(d.peripherals?.batteryAdsOk, "OK", "Not OK"))], ["Solar INA226", v3Only(booleanText(d.peripherals?.solarSensorOk, "OK", "Not answering"))], ["Secondary INA226", v3Only(booleanText(d.peripherals?.secondaryBatterySensorOk, "OK", "Not answering"))]]],
-    ["Battery switching", [["Boards powered from", v3Only(boardSupplyText())], ["Switching", v3Only(booleanText(liveData.system?.secondaryBattSwitching, "On", "Off in this firmware"))], ["Switch fault", v3Only(booleanText(liveData.system?.battSwitchFault, "Latched: inverter use blocked", "None"))], ["Reset strikes", v3Only(rawText(liveData.system?.battSwitchStrikes))], ["Backup mode", v3Only(booleanText(liveData.system?.backupEnabled, "On", "Off in this firmware"))], ["Backup state", v3Only(rawText(liveData.system?.backupState))]]],
+    // 25 Nov 2026: the battery and solar sensors (and the Battery group) are left out, as on the dashboard; the owner says
+    // they may not be installed. The battery switch fault stays: a latched one blocks the AC pumps.
+    ["Clock and SD card", [["RTC", booleanText(d.peripherals?.rtcOk, "OK", "Not OK")], ["SD card", booleanText(d.peripherals?.sdOk, "OK", "Not OK")]]],
+    ["Battery switching", [["Switching", v3Only(booleanText(liveData.system?.secondaryBattSwitching, "On", "Off in this firmware"))], ["Switch fault", v3Only(booleanText(liveData.system?.battSwitchFault, "Latched: AC pumps blocked", "None"))], ["Reset strikes", v3Only(rawText(liveData.system?.battSwitchStrikes))], ["Backup mode", v3Only(booleanText(liveData.system?.backupEnabled, "On", "Off in this firmware"))], ["Backup state", v3Only(rawText(liveData.system?.backupState))]]],
     ["SMS modem (GSM)", [["SIM", booleanText(d.gsm?.simReady, "Ready", "Not ready")], ["Network", booleanText(d.gsm?.networkRegistered, "Registered", "Not registered")], ["Signal", gsmSignalText(d.gsm?.rssi)], ["Registration", GSM_REGISTRATION_TEXT[d.gsm?.creg] ?? rawText(d.gsm?.creg)], ["Last checked", agoText(d.gsm?.lastHealthAgeMs)]]],
-    ["Battery", [["Battery low", booleanText(d.power?.batteryLow, "Yes", "No")], ["Battery critical", booleanText(d.power?.batteryCritical, "Yes", "No")], ["Current", numberText(d.power?.batteryCurrent, 2, "A")], ["Power", numberText(d.power?.batteryPower, 1, "W")]]],
     ["Pumps and tests", [["Relay feedback", d.actuator?.relayFeedback === "notReported" ? "Not reported by ESP1" : rawText(d.actuator?.relayFeedback)], ["Work order", booleanText(d.actuator?.workOrderActive, "Active", "Inactive")], ["Pump test", booleanText(d.actuator?.pumpTestActive, "Active", "Inactive")], ["Pump under test", rawText(d.actuator?.pumpUnderTest)]]]
   ];
   if (!diagnosticsAvailable) {
@@ -5208,7 +5571,7 @@ function explainNotSafelyIdle() {
   if (Boolean(d.system?.workOrderActive) || Boolean(d.system?.pendingRun)) return "a run is already in progress";
   if (actuationsAreOff()) return "actuations are currently disabled";
   if (state && state !== "IDLE_STATE") return `the controller is not idle (reported state: ${state})`;
-  return "a condition this dashboard cannot see directly (possibly a pump test running, the LCD menu open, or another session's Manual/Test hold) — check the Diagnostics tab or the LCD";
+  return "a condition this dashboard cannot see directly (possibly a pump test running, the LCD menu open, or another session's Manual/Test hold) — check the LCD, or ask an operator to check Diagnostics";
 }
 
 // New-F2 (audit): the 8 short codes forceTick() can pass to forceAbort() (ESP1/src/main.cpp, both
@@ -5274,24 +5637,24 @@ function commandDetailText(command, fallback) {
   let text = explainCommandDetail(rawText(command.detail, fallback));
   // ESP1 from before 5 Nov 2026 has no LCD_LOCK, so it gives every unknown command the same refusal.
   if (command.type === "LCD_LOCK" && /^not a remotely safe control/.test(text)) {
-    return "this ESP1 firmware can't lock the rig from the website yet: it needs the update from 5 Nov 2026. Settings > Lock Screen on the LCD still works";
+    return "this ESP1 firmware can't lock the system from the website yet: it needs the update from 5 Nov 2026. Settings > Lock Screen on the LCD still works";
   }
   if (command.type === "LCD_LOCK" && /^someone is using the LCD menu/.test(text)) {
-    return "someone at the rig is using the LCD's menus, so ESP1 won't lock it now. Try again once they have finished";
+    return "someone at the system is using the LCD's menus, so ESP1 won't lock it now. Try again once they have finished";
   }
   // AC voltage limits, added to ESP1 and ESP2 on 14 Nov 2026: older ESP1 gives every unknown command this refusal.
   if (command.type === "SET_AC_VOLT" && /^not a remotely safe control/.test(text)) {
     return "this ESP1 firmware doesn't have the AC voltage limits yet: ESP1 and ESP2 need the update from 14 Nov 2026";
   }
   if (command.type === "SET_AC_VOLT" && /^being edited on the LCD/.test(text)) {
-    return "someone at the rig has Settings > AC Voltage open on the LCD, so ESP1 left it alone. Try again once they have finished";
+    return "someone at the system has Settings > AC Voltage open on the LCD, so ESP1 left it alone. Try again once they have finished";
   }
   // AC current limits from the website, added to ESP1 on 16 Nov 2026 (the LCD has had them since 15 Nov).
   if (command.type === "SET_AC_AMP" && /^not a remotely safe control/.test(text)) {
     return "this ESP1 firmware can't take the AC current limits from the website yet: ESP1 needs the update from 16 Nov 2026. Settings > AC Current on the LCD still works";
   }
   if (command.type === "SET_AC_AMP" && /^being edited on the LCD/.test(text)) {
-    return "someone at the rig has Settings > AC Current open on the LCD, so ESP1 left it alone. Try again once they have finished";
+    return "someone at the system has Settings > AC Current open on the LCD, so ESP1 left it alone. Try again once they have finished";
   }
   // The pump selector (servoL / servoR). ESP1, ESP2 and the Nano have it from 15 Nov 2026. ESP1 of 15 Nov answers a
   // move in more than the 47 characters it can send, so the side's name arrives cut off: put it back from the request.
@@ -5381,7 +5744,7 @@ function renderCommandHistory() {
       detailText = `ESP1 hasn't picked this up for ${formatAge(queuedForMs)}. It will still run when ESP1 next reads it${withdrawable ? ", unless you withdraw it" : ""}.`;
     }
     if (unfinished) {
-      detailText = `ESP1 last said "${command.status}${command.detail ? `: ${commandDetailText(command, "")}` : ""}" and never sent a final answer (it restarted or lost its link). The rig's SD log has what happened.`;
+      detailText = `ESP1 last said "${command.status}${command.detail ? `: ${commandDetailText(command, "")}` : ""}" and never sent a final answer (it restarted or lost its link). The system's SD log has what happened.`;
     }
     detail.textContent = `${formatTimestamp(command.requestedAt)} — ${detailText}`;
     row.append(top, detail);
@@ -5445,7 +5808,7 @@ const HELD_CLEAR_TEXT = {
   cancelled:       { text: "The run was cancelled.", tone: "" },
   // ESP1 records this on every emergency stop, held fault or not, and "held" may never have applied.
   estop:           { text: "The emergency stop has ended. ESP1 re-checks ESP2 before returning to normal.", tone: "" },
-  auto_cancelled:  { text: "The rig gave up retrying and auto-cancelled the run after repeated identical faults — this was not a successful recovery.", tone: "error" },
+  auto_cancelled:  { text: "The system gave up retrying and auto-cancelled the run after repeated identical faults — this was not a successful recovery.", tone: "error" },
   esp2_restarted:  { text: "ESP2 appears to have restarted rather than confirming the resume — the paused run may not have continued as expected.", tone: "error" }
 };
 
@@ -5643,7 +6006,7 @@ const FAULT_INFO = {
   RESUME_NO_REPLY:      ["No answer to your resume", "Still on hold. Check link, try again"],
   WO_OVERSIZE:          ["Run command too long, not sent", "Run skipped. Check column settings"],
   FORCE_ABORT:          ["Manual run cancelled", ""],
-  MANUAL_REVOKED:       ["Website control ended", "The operator at the rig took over"],
+  MANUAL_REVOKED:       ["Website control ended", "The operator at the system took over"],
   SENSOR_FAIL:          ["Sensor not working", "Check its wiring"],
   SOIL_MISSING:         ["Soil moisture reading missing", "Check that column's soil probes"],
   NPK_FAULT:            ["NPK sensor not reading", "Watering only. Check NPK sensor"],
@@ -5672,7 +6035,7 @@ function tankCheckBlockReason() {
   if (!firebaseConnected) return "This browser is offline.";
   if (!esp1Online()) return "ESP1 isn't connected, so it can't be told. Use SMS TANKCHECK,OK or the LCD.";
   if (rigLocked()) return LOCKED_TITLE;
-  if (liveData.system?.state !== "IDLE_STATE") return "Only while the rig is idle: ESP1 refuses it during a run or a test.";
+  if (liveData.system?.state !== "IDLE_STATE") return "Only while the system is idle: ESP1 refuses it during a run or a test.";
   return "";
 }
 function renderTankCheck() {
@@ -5979,7 +6342,7 @@ function upNextItems(now) {
       items.push({
         day: dayStart(due), at: left <= 0 ? nowMin : due.getHours() * 60 + due.getMinutes(),
         time: left <= 0 ? "Due now" : `About ${clockText(due)}`, what: `${EXERCISE_PUMPS[k]} exercise`,
-        note: `${seconds}, ${left <= 0 ? "once the rig is idle" : "if the rig is idle then"}.`
+        note: `${seconds}, ${left <= 0 ? "once the system is idle" : "if the system is idle then"}.`
       });
     });
   }
@@ -6164,7 +6527,6 @@ const PANEL_COMMAND_RESULTS = [
   ["FORCE_RUN", "forceRunResult"],
   ["SET_EXERCISE", "exResult"],
   ["RUN_PUMP_TEST", "mtExerciseResult"],
-  ["DIAG_SWEEP", "mtSweepResult"],
   ["DIAG_SWEEP", "sweepResult"],
   ["SET_CLOCK", "sysClockResult"],
   ["SET_THRESH", "sysThreshResult"],
@@ -6699,7 +7061,7 @@ function writeManualHold(want) {
   const seq = Math.max(Math.floor(Date.now() / 1000), lastManualSeq + 1);
   lastManualSeq = seq;
   return db.ref("irrigation/manual").set({ seq, want })
-    .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
+    .catch(error => { setCommandStatus(`Could not reach the system: ${error.message}`, "error"); return false; });
 }
 
 /* Hold-to-run (2026-09-10): mirrors writeManualHold()'s own gate/seq pattern, but writes
@@ -6716,7 +7078,7 @@ function writeTestHold(want, bit) {
   if (want && (!isApprovedUser() || !canAccessPrivilegedTabs() || rigLocked())) return Promise.resolve(false);
   const seq = Date.now();
   return db.ref("irrigation/testHold").set({ seq, bit, want })
-    .catch(error => { setCommandStatus(`Could not reach the rig: ${error.message}`, "error"); return false; });
+    .catch(error => { setCommandStatus(`Could not reach the system: ${error.message}`, "error"); return false; });
 }
 
 let mtHoldActiveBtn = null;   // the button currently mid-hold, or null
@@ -6753,6 +7115,7 @@ function mtHoldStop(clearedByRelease, stoppedAtCap = false) {
   const startedMs = Number(btn.dataset.holdStartMs || 0);
   if (startedMs) reportHoldResult(target, Date.now() - startedMs, stoppedAtCap);
   delete btn.dataset.holdStartMs;
+  renderHoldAcWait();                  // the AC pump reminder goes with the hold (25 Nov 2026)
   return released;
 }
 
@@ -6768,6 +7131,7 @@ function mtHoldStart(btn) {
   mtHoldActiveBtn = btn;
   btn.classList.add("holding");
   btn.dataset.holdStartMs = String(Date.now());
+  renderHoldAcWait();                  // transfer or booster: "starting…" at once (25 Nov 2026)
   mtHoldCapTimer = setTimeout(() => { if (mtHoldActiveBtn === btn) mtHoldStop(true, true); }, MT_HOLD_MAX_MS);
   // A confirmed pH arm is consumed by the press it was meant for -- releasing and pressing again
   // needs a fresh confirm(), same one-shot spirit as the Timed-pulses confirm above.
@@ -6847,7 +7211,7 @@ function reportHoldResult(target, ms, stoppedAtCap) {
 
 function requestManualHold() {
   if (rigLocked()) return;                    // the rules refuse it; renderManualHold() says why
-  if (!mtHoldTimer) logActivity("Opened Manual/Test (the rig leaves automatic)");
+  if (!mtHoldTimer) logActivity("Opened Manual/Test (the system leaves automatic)");
   const answer = liveData.diagnostics?.webManual?.state;
   mtStaleAnswer = answer === "refused" || answer === "revoked" ? answer : null;
   mtAskedAt = serverNow();
@@ -6907,18 +7271,18 @@ function renderManualHold() {
     // request is silently never granted (writeManualHold() no-ops), so without this it was
     // indistinguishable from "the page is broken" or "ESP1 is offline."
     else if (!isApprovedUser()) note.textContent = "Your account is awaiting operator approval before it can use this control.";
-    else if (rigLocked()) note.textContent = "The rig is locked, so nothing on this tab can be used. Unlock it first: operators, and accounts with 1-hour access or Sub-operator, can.";
+    else if (rigLocked()) note.textContent = "The system is locked, so nothing on this tab can be used. Unlock it first: operators, and accounts with 1-hour access or Sub-operator, can.";
     // Checked ahead of every state branch, including "held" -- with ESP1 not answering at all, telling the
     // operator "Manual mode active" from old data would be actively misleading.
-    else if (!esp1Online()) note.textContent = `ESP1 is offline: ${esp1HeardText()}. Your request stays in place, and ESP1 grants it as soon as it is connected again (if the rig is idle).`;
+    else if (!esp1Online()) note.textContent = `ESP1 is offline: ${esp1HeardText()}. Your request stays in place, and ESP1 grants it as soon as it is connected again (if the system is idle).`;
     // Connected with an old report (19 Nov 2026, the owner: "make it granted, even if it has no latest snapshot"):
     // ESP1 reads the request every 3 s and grants it from an idle rig, so the page treats it as granted. A Plan B
     // ESP1 says so in its ping answer (newerPong()), which then takes the branches below.
-    else if (!deviceIsFresh() && !newerPong()) note.textContent = `Manual mode granted: ESP1 is connected (it answered ${agoText(Math.max(0, serverNow() - esp1AnswerAt()))}). Its full report hasn't come through yet (${snapshotAgeText().toLowerCase()}), so the rig's state shown here is from then. ESP1 still checks every test itself and refuses one it can't run.`;
-    else if (state === "held")    note.textContent = `Manual mode active — the rig is out of automatic${wm.secondsLeft && deviceIsFresh() ? ` (renews, ${wm.secondsLeft}s left)` : ""}.`;
-    else if (state === "refused") note.textContent = `The rig refused manual mode: ${rawText(wm.reason, "not idle")}. Wait for it to finish, then press Proceed to ask again.`;
-    else if (state === "revoked") note.textContent = "The rig operator took control at the LCD.";
-    else note.textContent = "Requesting manual control from the rig…";
+    else if (!deviceIsFresh() && !newerPong()) note.textContent = `Manual mode granted: ESP1 is connected (it answered ${agoText(Math.max(0, serverNow() - esp1AnswerAt()))}). Its full report hasn't come through yet (${snapshotAgeText().toLowerCase()}), so the system's state shown here is from then. ESP1 still checks every test itself and refuses one it can't run.`;
+    else if (state === "held")    note.textContent = `Manual mode active — the system is out of automatic${wm.secondsLeft && deviceIsFresh() ? ` (renews, ${wm.secondsLeft}s left)` : ""}.`;
+    else if (state === "refused") note.textContent = `The system refused manual mode: ${rawText(wm.reason, "not idle")}. Wait for it to finish, then press Proceed to ask again.`;
+    else if (state === "revoked") note.textContent = "The system operator took control at the LCD.";
+    else note.textContent = "Requesting manual control from the system…";
     // Asking is the normal first step, not an error.
     const refusedOrUnavailable = !isApprovedUser() || rigLocked() || !esp1Online() || state === "refused" || state === "revoked";
     note.className = refusedOrUnavailable ? "control-result error" : state === "held" ? "field-note" : "control-result";
@@ -6952,7 +7316,7 @@ function renderManualHold() {
   if (rigLocked() && (mtArmed || mtHoldTimer)) {
     if (mtArmed) {
       setManualTestArmed(false);
-      if (onTab) setCommandStatus("The rig was locked, so Manual/Test closed and the rig went back to automatic.", "error");
+      if (onTab) setCommandStatus("The system was locked, so Manual/Test closed and the system went back to automatic.", "error");
     }
     releaseManualHold();
   }
@@ -6964,7 +7328,7 @@ function renderManualHold() {
   if (onTab && mtArmed && (state === "revoked" || state === "refused")) {
     setManualTestArmed(false);
     if (state === "revoked") {
-      setCommandStatus("Manual mode was revoked at the rig — the operator there took control.", "error");
+      setCommandStatus("Manual mode was revoked at the system — the operator there took control.", "error");
       document.querySelector('.tab[data-view="dashboard"]')?.click();
     } else if (state === "refused") {
       // Previously only "revoked" stopped the 20s keep-alive (via the dashboard bounce triggering
@@ -6996,7 +7360,7 @@ function renderManualHold() {
       // hold yet. Revoked/refused are handled above (they flip mtArmed off before this note runs), so
       // this branch cannot see them -- nothing here needs to stop an in-progress hold-to-run press.
       // The grant forces a snapshot, but that one can miss it, and then the next is up to a minute away.
-      controlsNote.textContent = "Waiting for the rig to grant manual mode. This can take up to a minute to show here.";
+      controlsNote.textContent = "Waiting for the system to grant manual mode. This can take up to a minute to show here.";
       controlsNote.className = "control-result";
     }
   }
@@ -7154,31 +7518,8 @@ function sendServoMove(target) {
 document.querySelectorAll("#mtServoPanel .servo-option").forEach(button =>
   button.addEventListener("click", () => sendServoMove(button.dataset.servoTarget)));
 
-// Flow-meter table. Shares the sweep with the Diagnostics tab -- one DIAG_SWEEP fills both.
-const MT_FLOW_LABEL = {
-  // web v.4: the reservoir → mix and mix → column meters are gone (the tank ultrasonics meter that water).
-  FLOW_NUTA: "Nutrient A", FLOW_NUTB: "Nutrient B", FLOW_NUTC: "Nutrient C",
-  FLOW_NUTD: "Nutrient D", FLOW_PHUP: "pH up", FLOW_PHDN: "pH down"
-};
-function renderFlowMeters() {
-  const box = document.getElementById("mtFlowGrid");
-  const r = liveData.diagnostics?.sensorsRaw?.esp2;
-  const sweeping = Boolean(r?.sweepActive);
-  const left = Number(r?.sweepSecondsLeft || 0);
-  setDeviceStatus("mtSweepState", sweeping ? (left ? `SWEEPING ${left}s` : "SWEEPING") : "ESP2 IDLE",
-                  sweeping ? "active" : "off");
-  if (!box) return;
-  box.innerHTML = "";
-  const vals = r?.values;
-  const rows = Object.keys(MT_FLOW_LABEL)
-    .filter(id => vals && vals[id])
-    .map(id => [MT_FLOW_LABEL[id], `${numberText(vals[id].raw, 0)} · ${vals[id].valid ? "ok" : "BAD"} · ${formatAge(vals[id].ageMs)}`]);
-  if (!rows.length) {
-    box.innerHTML = '<p class="muted">No flow readings yet. ESP2 is powered down between runs — run a sweep.</p>';
-    return;
-  }
-  box.appendChild(diagnosticGroup("Flow meters (raw pulse counts)", rows));
-}
+// (Manual/Test's Flow meter check and its table, renderFlowMeters(), left on 25 Nov 2026: the owner measures the water
+// with the tank ultrasonics and the pumps' run times only. Diagnostics' ESP2 sensor sweep stays.)
 
 /* Preventive pump exercise. The controls mirror ESP1's current setting rather than assuming a
  * default, so opening the tab shows what the rig is actually doing. Only re-seeded when the operator
@@ -7241,9 +7582,8 @@ document.getElementById("pulseBtn")?.addEventListener("click", () => {
       !confirm(`Dispense pH adjuster for ${seconds} s? This is corrosive and goes into the mixing tank.`)) return;
   queueCommand("TEST_PULSE", { target, seconds }, { operatorOnly: true });
 });
-// The Diagnostics tab has its own sweep button; both queue the same DIAG_SWEEP and fill both tables.
-// Both are plain buttons (not form submits), so the HTML min/max on the paired input never fires --
-// same reason every other actuating numeric field on this page validates in JS before sending.
+// The Diagnostics tab's sweep button (DIAG_SWEEP). A plain button (not a form submit), so the HTML min/max on the paired
+// input never fires -- same reason every other actuating numeric field on this page validates in JS before sending.
 function sweepSecondsOrReject(inputId) {
   const seconds = numberFromInput(inputId);
   if (!Number.isInteger(seconds) || seconds < 10 || seconds > 120) {
@@ -7252,13 +7592,10 @@ function sweepSecondsOrReject(inputId) {
   }
   return seconds;
 }
+// Diagnostics is for the privileged tier since 25 Nov 2026, and so is its sweep (firebase-rules.json agrees).
 document.getElementById("sweepBtn")?.addEventListener("click", () => {
   const seconds = sweepSecondsOrReject("sweepSeconds");
-  if (seconds !== null) sendFromPanel(resultLine("sweepResult"), "DIAG_SWEEP", { seconds });
-});
-document.getElementById("mtSweepBtn")?.addEventListener("click", () => {
-  const seconds = sweepSecondsOrReject("mtSweepSeconds");
-  if (seconds !== null) sendFromPanel(resultLine("mtSweepResult"), "DIAG_SWEEP", { seconds }, { operatorOnly: true });
+  if (seconds !== null) sendFromPanel(resultLine("sweepResult"), "DIAG_SWEEP", { seconds }, { operatorOnly: true });
 });
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
   // Defense-in-depth (2026-09-10, concern raised about non-privileged Manual/Test access): a tab
@@ -7272,7 +7609,7 @@ document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", (
   const view = tab.dataset.view;
   if ((view === "manualtest" || view === "system") && !canAccessPrivilegedTabs()) return;
   if (view === "users" && !isOperator()) return;
-  if (view === "diagnostics" && !hasControlAccess()) return;
+  if (view === "diagnostics" && !canAccessPrivilegedTabs()) return;   // the privileged tier since 25 Nov 2026
   // Leaving Manual/Test re-arms its gate, so you can never land back on live hardware controls
   // already unlocked from a previous visit.
   // Entering Manual/Test asks the rig for the hold; leaving gives it straight back rather than
@@ -7281,9 +7618,22 @@ document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", (
   else { setManualTestArmed(false); releaseManualHold(); mtHoldStop(true); }
   document.querySelectorAll(".tab").forEach(item => item.classList.toggle("active", item === tab));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === view));
+  markViewEntering(view);
   // Don't leave the gate blank until the next snapshot, which can be a minute away.
   if (view === "manualtest") renderManualHold();
 }));
+
+// The cards of a tab rise in one after another as it opens (25 Nov 2026, the owner: "add more animations"), and only
+// then: a card rebuilt later (a report, a presence change, Edit settings) must not jump in again. style.css .is-entering.
+let viewEnterTimer = null;
+function markViewEntering(id) {
+  const view = document.getElementById(id);
+  if (!view) return;
+  document.querySelectorAll(".view.is-entering").forEach(v => v.classList.remove("is-entering"));
+  view.classList.add("is-entering");
+  clearTimeout(viewEnterTimer);
+  viewEnterTimer = setTimeout(() => view.classList.remove("is-entering"), 950);
+}
 
 // Light is the default from 18 Nov 2026 (the owner's choice); a saved choice is kept. The <head> script applies it
 // before the first paint; this repeats it for safety and keeps the button in step. Storage can be blocked (private
@@ -7311,6 +7661,132 @@ themeToggle?.addEventListener("click", () => {
 const contributorsDialog = document.getElementById("contributorsDialog");
 document.getElementById("contributorsBtn")?.addEventListener("click", () => contributorsDialog?.showModal());
 contributorsDialog?.querySelector(".closeDialog")?.addEventListener("click", () => contributorsDialog.close());
+
+/* ---- AC pump start reminder (25 Nov 2026) ----------------------------------------------------------------------------
+ * The owner: "add a reminder after each turning on the AC pumps, that this may take certain seconds, or detect if the
+ * relay of the AC pumps is on, then remove the reminder and put the motor is now running. It is because of the servo
+ * motor switching certain seconds before the AC pump on. Add this reminder to each function that needs to turn on the
+ * AC pump."
+ * The transfer and booster pumps share the inverter: for every start, ESP2 switches the inverter off, the Nano's servo
+ * moves the pump selector, and only then does the inverter relay come on (with ESP2 powered up first when it was off).
+ * So a pump starts some seconds after the step or the test that asked for it.
+ * ESP1 Plan B from 25 Nov 2026 ("AC on") publishes the pump ESP2 really powered as actuators.acPump ("TRANSFER" |
+ * "BOOSTER" | "OFF", from ESP2's PUMP,<p>,ON .. PUMP,OFF) and acOnForMs, and pushes a report at once to a watching page
+ * when it changes. With it the reminder turns into "The motor is now running." With older firmware (no acPump) the page
+ * can't see the motor: it shows the reminder while the start is underway, and says so.
+ * Where: the dashboard's Current activity and Controls' Water a column now (any run, scheduled or forced: the fill uses
+ * the transfer pump, the delivery the booster), and Manual/Test's timed test, hold-to-run test and pump exercise. */
+const AC_PUMP_WORDS = { TRANSFER: "transfer pump", BOOSTER: "booster pump" };
+// Which AC pump each Manual/Test target starts (TEST_PULSE target / testHold bit / RUN_PUMP_TEST pump).
+const AC_TARGET_PUMP = { transfer: "TRANSFER", colA: "BOOSTER", colB: "BOOSTER", colC: "BOOSTER", booster: "BOOSTER" };
+const AC_START_NOTE = "The pump selector switches first, then the inverter turns on, so this can take up to about 30 seconds.";
+// With firmware that can't confirm the motor, the reminder is shown this long after the start was first seen.
+const AC_UNCONFIRMED_SHOW_MS = 45000;
+
+// "TRANSFER" | "BOOSTER" | "OFF" from a current report of firmware that publishes it; null when it can't be known.
+function acPumpNow() {
+  const ac = liveData.actuators?.acPump;
+  if (typeof ac !== "string" || !deviceIsFresh()) return null;
+  return ac === "TRANSFER" || ac === "BOOSTER" ? ac : "OFF";
+}
+function acFeedbackSupported() {
+  return typeof liveData.actuators?.acPump === "string";
+}
+// How long the motor has been on, at this moment (the report's own figure plus its age), or null.
+function acOnForMs() {
+  const ms = Number(liveData.actuators?.acOnForMs);
+  if (!Number.isFinite(ms) || acPumpNow() === null || acPumpNow() === "OFF") return null;
+  return ms + Math.max(0, serverNow() - Number(liveData.meta?.updatedAt || serverNow()));
+}
+
+// The reminder's own markup: a small motor whose blades wait (amber, the selector lever rocking) and then spin (green).
+function ensureAcWait(box) {
+  if (box.dataset.built) return;
+  box.dataset.built = "1";
+  box.innerHTML = `
+      <svg class="ac-wait-art" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+        <circle class="ac-wait-ring" cx="24" cy="24" r="21"/>
+        <g class="ac-wait-blades"><path d="M24 24 L21 9 Q24 6 27 9 Z"/><path d="M24 24 L39 21 Q42 24 39 27 Z"/><path d="M24 24 L27 39 Q24 42 21 39 Z"/><path d="M24 24 L9 27 Q6 24 9 21 Z"/><circle cx="24" cy="24" r="3.6"/></g>
+        <g class="ac-wait-lever"><path d="M24 44 L24 35"/><circle cx="24" cy="34" r="3"/></g>
+        <g class="ac-wait-check"><circle cx="38" cy="10" r="8"/><path d="M34.5 10.2 L37 12.6 L41.6 7.6"/></g>
+      </svg>
+      <span class="ac-wait-words"><strong class="ac-wait-title"></strong><span class="ac-wait-text"></span></span>
+      <button type="button" class="info-icon" aria-haspopup="dialog" aria-expanded="false" aria-label="About the pump starting" data-info-title="Why it takes a moment" data-info-text="The transfer and booster pumps share one inverter. For each start the pump selector (a servo) switches to that pump first, then the inverter turns on, so the motor starts some seconds after the step or test that asked for it." data-help="help-ac-start">i</button>`;
+}
+// state: "starting" | "running" | "unconfirmed"; hide with state null.
+function setAcWait(id, state, title = "", text = "") {
+  const box = document.getElementById(id);
+  if (!box) return;
+  if (!state) { if (!box.hidden) box.hidden = true; delete box.dataset.state; return; }
+  ensureAcWait(box);
+  if (box.dataset.state !== state) box.dataset.state = state;
+  const titleEl = box.querySelector(".ac-wait-title");
+  const textEl = box.querySelector(".ac-wait-text");
+  if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
+  if (textEl && textEl.textContent !== text) textEl.textContent = text;
+  if (box.hidden) box.hidden = false;
+}
+// The words for one start, given the pump it needs and what the report says. run: a watering's step, not a test.
+function acWaitWords(kind, what, run = false) {
+  const name = AC_PUMP_WORDS[kind] || "pump";
+  const now = acPumpNow();
+  if (now === kind) {
+    const on = acOnForMs();
+    return ["running", "The motor is now running.", `${what || name.charAt(0).toUpperCase() + name.slice(1)}${on !== null ? `: on for ${formatAge(on)}` : ""}.`];
+  }
+  if (acFeedbackSupported()) return ["starting", `Starting the ${name}…`, AC_START_NOTE];
+  return ["unconfirmed", `Starting the ${name}…`, `${AC_START_NOTE} This firmware doesn't report the motor itself, ` +
+    (run ? "so this page can't show the moment it starts." : "so the test's result is what tells you it ran.")];
+}
+
+// A run (scheduled or forced): the fill needs the transfer pump, the delivery the booster (ESP1's stage flags).
+const acRunSeen = { key: "", at: 0 };
+function renderRunAcWait() {
+  const a = liveData.actuators || {};
+  const run = liveData.diagnostics?.runProgress || {};
+  const kind = deviceIsFresh() && run.active ? (a.transferRunning ? "TRANSFER" : a.boosterRunning ? "BOOSTER" : null) : null;
+  const ids = ["sActAcWait", "forceAcWait"];
+  if (!kind) { acRunSeen.key = ""; ids.forEach(id => setAcWait(id, null)); return; }
+  const key = `${kind}|${rawText(run.stage, "")}|${rawText(run.zone, "")}`;
+  if (acRunSeen.key !== key) { acRunSeen.key = key; acRunSeen.at = Date.now(); }
+  const what = kind === "TRANSFER" ? "Transfer pump: filling the mixing tank from the reservoir"
+    : `Booster pump: sending the water to column ${rawText(run.zone, "?")}`;
+  const [state, title, text] = acWaitWords(kind, what, true);
+  // Without the motor's own report the reminder can't be cleared by it: it goes once the start has had its time.
+  const show = state !== "unconfirmed" || Date.now() - acRunSeen.at < AC_UNCONFIRMED_SHOW_MS;
+  ids.forEach(id => setAcWait(id, show ? state : null, title, text));
+}
+
+// A Manual/Test start that has a command row (timed test, pump exercise): from ESP1's pick-up until it answers.
+function renderCommandAcWait(id, type, pumpOf) {
+  const latest = latestCommandOfType(type);
+  const kind = latest ? pumpOf(latest.payload || {}) : null;
+  const age = latest ? serverNow() - Number(latest.requestedAt || 0) : Infinity;
+  // Still going: picked up or started, and not answered. A row older than 3 minutes is left to Command status.
+  const going = latest && ["queued", "received", "accepted"].includes(latest.status) && age < 180000;
+  if (!kind || !going) { setAcWait(id, null); return; }
+  if (latest.status === "queued") { setAcWait(id, "starting", "Sent. Waiting for the system to pick it up…", AC_START_NOTE); return; }
+  const [state, title, text] = acWaitWords(kind);
+  const show = state !== "unconfirmed" || age < AC_UNCONFIRMED_SHOW_MS + 10000;
+  setAcWait(id, show ? state : null, title, text);
+}
+
+// Hold-to-run: while a transfer or booster button is held.
+function renderHoldAcWait() {
+  const target = mtHoldActiveBtn?.dataset.holdTarget;
+  const kind = AC_TARGET_PUMP[target];
+  if (!kind) { setAcWait("holdAcWait", null); return; }
+  const [state, title, text] = acWaitWords(kind);
+  setAcWait("holdAcWait", state, state === "running" ? title : `Keep holding: starting the ${AC_PUMP_WORDS[kind]}…`,
+    state === "running" ? text : "The pump selector switches first, then the inverter turns on, so the motor starts a few seconds after you press.");
+}
+
+function renderAcWaits() {
+  renderRunAcWait();
+  renderCommandAcWait("pulseAcWait", "TEST_PULSE", p => AC_TARGET_PUMP[p.target] || null);
+  renderCommandAcWait("exAcWait", "RUN_PUMP_TEST", p => AC_TARGET_PUMP[p.pump] || null);
+  renderHoldAcWait();
+}
 
 /* ---- Refresh (2026-11-17; "link lite" since 18 Nov 2026 g) ----------------------------------------------------------
  * The owner, 18 Nov 2026 (evening): "make the website communication back to before, no longer high realtime update ...
@@ -7539,7 +8015,7 @@ function syncRefreshProgress() {
     refreshAnsweredAt = answer;
     const took = Math.max(0, answer - refreshAskedAt);
     refreshStatusText(liveData.meta?.linkMode === "busy"
-      ? `ESP1 answered in ${(took / 1000).toFixed(1)} s: it's connected. Its report follows (up to 30 s while the rig works on a watering)…`
+      ? `ESP1 answered in ${(took / 1000).toFixed(1)} s: it's connected. Its report follows (up to 30 s while the system works on a watering)…`
       : `ESP1 answered in ${(took / 1000).toFixed(1)} s: it's connected. Its report follows…`);
     syncFreshness();
     syncControlAvailability();
@@ -7559,8 +8035,8 @@ function finishRefresh(gotReport, message) {
   if (gotReport) refreshStatusText(`Fresh report from ESP1 in ${(took / 1000).toFixed(1)} s`, 8000);
   else if (message) refreshStatusText(message, 15000);
   // Connected, report lost on the way (19 Nov 2026): ESP1 counts as online; the numbers stay as old as they say.
-  else if (answered) refreshStatusText(`ESP1 is connected (it answered in ${(answeredIn / 1000).toFixed(1)} s), but its full report didn't get through: often weak Wi-Fi or low memory at the rig. The controls work; the numbers are from its last report. Its next regular report will still come.`, 20000);
-  else refreshStatusText(`No answer from ESP1 in ${Math.round(took / 1000)} s: it isn't connected to Firebase (${esp1HeardText()}). If this lasts, restart ESP1 at the rig: the power, or its LCD menu.`, 20000);
+  else if (answered) refreshStatusText(`ESP1 is connected (it answered in ${(answeredIn / 1000).toFixed(1)} s), but its full report didn't get through: often weak Wi-Fi or low memory at the system. The controls work; the numbers are from its last report. Its next regular report will still come.`, 20000);
+  else refreshStatusText(`No answer from ESP1 in ${Math.round(took / 1000)} s: it isn't connected to Firebase (${esp1HeardText()}). If this lasts, restart ESP1 at the system: the power, or its LCD menu.`, 20000);
 }
 document.getElementById("refreshBtn")?.addEventListener("click", requestRefresh);
 
@@ -7613,9 +8089,9 @@ function logStateText(entry) {
       return `${kb > 0 && kb < 1 ? "Under 1" : kb.toFixed(0)} KB${entry.partial ? " (the day so far)" : ""}, ${entry.sync === "auto" ? "kept up to date by ESP1" : "sent"}${when}`;
     }
     case "uploading": return logUploadStalled(entry)
-      ? `Stopped while being sent${when}. Ask again with Upload from the rig`
-      : `Being sent from the rig${when}…`;
-    case "missing":   return `Not on the rig's SD card${when}`;
+      ? `Stopped while being sent${when}. Ask again with Upload from the system`
+      : `Being sent from the system${when}…`;
+    case "missing":   return `Not on the system's SD card${when}`;
     case "failed":    return `Sending failed${when}; ESP1 tries again`;
     default:          return rawText(entry?.state, "Unknown");
   }
@@ -7626,7 +8102,7 @@ function renderLogs() {
   if (!list) return;
   const days = Object.keys(logsIndex).filter(day => /^\d{8}$/.test(day)).sort().reverse();
   if (!days.length) {
-    list.innerHTML = `<li class="muted">No logs here yet. Finished days arrive after midnight; use Upload from the rig for one now.</li>`;
+    list.innerHTML = `<li class="muted">No logs here yet. Finished days arrive after midnight; use Upload from the system for one now.</li>`;
     return;
   }
   list.innerHTML = days.map(day => {
@@ -7651,7 +8127,7 @@ async function downloadLog(day, button) {
     const chunks = Number(logsIndex[String(day)]?.chunks);
     const keys = Object.keys(pieces).sort((a, b) => Number(a) - Number(b))
       .filter(key => !(Number.isInteger(chunks) && chunks > 0) || Number(key) < chunks);
-    if (!keys.length) { setText("logsNote", `${logDayLabel(day)}: no data in Firebase. Use Upload from the rig.`); return; }
+    if (!keys.length) { setText("logsNote", `${logDayLabel(day)}: no data in Firebase. Use Upload from the system.`); return; }
     const text = keys.map(key => String(pieces[key] ?? "")).join("");
     const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
     const link = document.createElement("a");
@@ -7672,7 +8148,7 @@ function sendLogRequest(day, noteId) {
   if (!db) return Promise.resolve(false);
   return db.ref("irrigation/logRequest").set({ day, at: firebase.database.ServerValue.TIMESTAMP })
     .then(() => {
-      setText(noteId, `Asked the rig for ${logDayLabel(day)}. It is sent as it goes (about 2–3 minutes per megabyte); ESP1 checks for a request every 30 seconds.`);
+      setText(noteId, `Asked the system for ${logDayLabel(day)}. It is sent as it goes (about 2–3 minutes per megabyte); ESP1 checks for a request every 30 seconds.`);
       return true;
     })
     .catch(error => {
@@ -7710,7 +8186,7 @@ function selectedLogDay() {
 function logRequestBlockReason() {
   if (!esp1Online()) return "ESP1 isn't connected, so it can't be asked.";
   const state = liveData.system?.state || "";
-  if (!["IDLE_STATE", "SAFE_MODE"].includes(state)) return `Only while the rig is idle (it reports ${state || "nothing"}).`;
+  if (!["IDLE_STATE", "SAFE_MODE"].includes(state)) return `Only while the system is idle (it reports ${state || "nothing"}).`;
   if (liveData.system?.masterWorkOrderActive || liveData.diagnostics?.system?.workOrderActive) return "Only while no run is in progress.";
   const a = liveData.actuators || {};
   if (a.transferRunning || a.boosterRunning || a.mixerRunning) return "Only while no pump is running.";
@@ -7769,9 +8245,9 @@ function renderLogToday() {
   setText("logTodayNote", ready
     ? `On the website: ${sizeText}, up to ${when}. ${entry.sync === "auto"
       ? "ESP1 adds the new lines by itself every hour, and soon after a run or a fault."
-      : "Sent when someone pressed Upload from the rig. ESP1's next firmware (Plan B) keeps it up to date by itself."}`
-    : entry?.state === "uploading" ? `Being sent from the rig now${at ? `, since ${agoText(Math.max(0, serverNow() - at))}` : ""}…`
-    : "Today's log isn't on the website yet. ESP1's next firmware (Plan B) sends it by itself every hour; until it is on the rig, use Upload from the rig below.");
+      : "Sent when someone pressed Upload from the system. ESP1's next firmware (Plan B) keeps it up to date by itself."}`
+    : entry?.state === "uploading" ? `Being sent from the system now${at ? `, since ${agoText(Math.max(0, serverNow() - at))}` : ""}…`
+    : "Today's log isn't on the website yet. ESP1's next firmware (Plan B) sends it by itself every hour; until it is on the system, use Upload from the system below.");
 }
 document.getElementById("logTodayBtn")?.addEventListener("click", event => downloadLog(String(todayLogDay()), event.currentTarget));
 
@@ -7825,6 +8301,7 @@ setInterval(() => {
   updateFaultBanner();
   renderTankCheck();                   // its button follows freshness and the rig's state
   renderSimpleDashboard();             // Simple mode: ages, countdowns and "unknown" when ESP1 goes quiet
+  renderAcWaits();                     // the AC pump reminders: "starting…" until the motor runs (25 Nov 2026)
 }, 1000);
 
 /* Info icons ------------------------------------------------------------------------------------
@@ -7927,12 +8404,20 @@ function helpEntryAllowed(entryId) {
   const entry = document.getElementById(entryId);
   return Boolean(entry) && helpAudienceAllowed(entry.dataset.for);
 }
+// Simple mode (25 Nov 2026, the owner: "summarize everything, only the essentials"): Help starts with the guides and the
+// plain words; the technical entries (data-detail in index.html) wait behind "Show all topics". A search, or an (i)
+// icon's "Read more", still reaches every entry.
+let helpShowAll = false;
 function filterHelp(query) {
   const words = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const short = uiMode() === "simple" && !helpShowAll && !words.length;
   let shown = 0;
+  let folded = 0;
   document.querySelectorAll("#help .help-item").forEach(item => {
     const allowed = helpAudienceAllowed(item.dataset.for);
-    const match = allowed && words.every(word => item.textContent.toLowerCase().includes(word));
+    const detail = item.dataset.detail !== undefined;
+    const match = allowed && words.every(word => item.textContent.toLowerCase().includes(word)) && !(short && detail);
+    if (allowed && short && detail) folded++;
     item.hidden = !match;
     if (match) shown++;
     item.open = words.length > 0 && match;     // a search opens what it found; clearing it folds them back
@@ -7942,12 +8427,23 @@ function filterHelp(query) {
   });
   const none = document.getElementById("helpNoMatch");
   if (none) none.hidden = !words.length || shown > 0;
+  const more = document.getElementById("helpShowAll");
+  if (more) {
+    more.hidden = !helpShowAll && !folded;
+    more.setAttribute("aria-expanded", String(helpShowAll));
+    sSet("helpShowAllText", helpShowAll ? "Show only the main topics" : `Show all topics (${folded} more)`);
+  }
 }
 document.getElementById("helpSearch")?.addEventListener("input", event => filterHelp(event.target.value));
+document.getElementById("helpShowAll")?.addEventListener("click", () => {
+  helpShowAll = !helpShowAll;
+  filterHelp(document.getElementById("helpSearch")?.value || "");
+});
 
 function openHelpEntry(entryId) {
   const entry = document.getElementById(entryId);
   if (!entry || !helpEntryAllowed(entryId)) return;
+  if (entry.dataset.detail !== undefined && !helpShowAll) { helpShowAll = true; filterHelp(""); }   // Simple's short list
   const search = document.getElementById("helpSearch");
   if (search?.value) { search.value = ""; filterHelp(""); }   // a leftover search could be hiding it
   document.querySelector('.tab[data-view="help"]')?.click();
@@ -7988,6 +8484,10 @@ function applyUiMode(mode, { save = false, focus = false } = {}) {
   if (next === "simple" && document.querySelector(".tab.active")?.classList.contains("complete-tab")) {
     document.querySelector('.tab[data-view="dashboard"]')?.click();
   }
+  // 25 Nov 2026: the plan's default and Help's short list follow the mode.
+  syncDashPlanToggle();
+  renderDashPlan();
+  filterHelp(document.getElementById("helpSearch")?.value || "");
   renderSimpleDashboard();
 }
 
@@ -8106,7 +8606,7 @@ function simpleSituation() {
   // No running age in this sentence: the card is a live region, and the age (in the Controller chip) changes every
   // minute, which would make a screen reader repeat the whole card.
   // Connected, old report (19 Nov 2026): online, but what it is doing right now is only as new as that report.
-  if (!deviceIsFresh() && esp1Online()) return { tone: "warn", icon: "si-clock", title: "Connected, report delayed", text: "The controller answers, but its full report hasn't come through (often weak Wi-Fi or low memory at the rig). Controls work; the numbers below are from its last report." };
+  if (!deviceIsFresh() && esp1Online()) return { tone: "warn", icon: "si-clock", title: "Connected, report delayed", text: "The controller answers, but its full report hasn't come through (often weak Wi-Fi or low memory at the system). Controls work; the numbers below are from its last report." };
   if (!deviceIsFresh()) return { tone: "lost", icon: "si-unlink", title: "Controller not connected", text: "It isn't answering, so what the system is doing now is unknown. The numbers below are from its last report." };
   const bad = [];
   const warn = [];
@@ -8116,15 +8616,13 @@ function simpleSituation() {
   if (d.esp2?.communicationLost) bad.push("The controller has lost contact with the pump board (ESP2).");
   if (hasValue(d.nano?.lastSampleAgeMs) && ageFlag(d.nano.lastSampleAgeMs) !== "ok") bad.push("The sensor board (Nano) has stopped sending readings.");
   if (d.peripherals?.rtcOk === false || sys.rtcOk === false) bad.push("The controller's clock isn't working, so its watering times can't be trusted.");
-  if (d.power?.batteryCritical) bad.push("The battery is critically low.");
   if (run.active && run.phase === "error") bad.push("The last run stopped with a problem. The controller's screen says what happened.");
   if (actuationsAreOff()) warn.push("Pumps and valves are switched off, so nothing runs, not even the schedule.");
   const res = liveData.sensors?.reservoirLevel;
   if (hasValue(res) && Number(res) < resPausePercent()) warn.push(`The reservoir is below ${resPausePercent()} %, so watering waits until it is refilled.`);
-  if (d.power?.batteryLow && !d.power?.batteryCritical) warn.push("The battery is low.");
-  // Too wet (18 Nov 2026): a warning, never a stop.
+  // Too wet (18 Nov 2026): a warning, never a stop. (25 Nov 2026, the owner: no "Check for a leak or a stuck valve.")
   const wet = ["A", "B", "C"].filter(id => simpleSoilState(id).tone === "wet");
-  if (wet.length) warn.push(`Column ${columnList(wet)} ${wet.length > 1 ? "are" : "is"} too wet. Check for a leak or a stuck valve.`);
+  if (wet.length) warn.push(`Column ${columnList(wet)} ${wet.length > 1 ? "are" : "is"} too wet.`);
   const more = n => n > 0 ? ` (${n} more thing${n === 1 ? "" : "s"} to check in Complete mode.)` : "";
   if (bad.length) return { tone: "bad", icon: "si-stop", title: "Attention needed", text: bad[0] + more(bad.length + warn.length - 1) };
   const running = run.active && (run.phase === "starting" || run.phase === "running");
@@ -8173,17 +8671,20 @@ function simpleSoilState(id) {
   const pct = Math.min(100, Math.max(0, Number(z.moisture)));
   if (live) {
     const booster = Boolean(liveData.actuators?.boosterRunning);
+    // AC on (25 Nov 2026): the booster's step can begin 10-30 s before its motor runs (the selector switches first).
+    const ac = acPumpNow();
+    if (booster && ac !== null && ac !== "BOOSTER") return { tone: "flow", word: "Pump starting", say: "The booster pump is starting: the pump selector switches first, then the water flows to it.", pct };
     return { tone: "flow", word: booster ? "Being watered" : "Water being prepared", say: booster ? "Water is flowing to it now." : "Its water is being prepared in the mixing tank.", pct };
   }
   // Too wet (18 Nov 2026, the owner's Overwatered line): a warning only, nothing stops.
-  if (pct >= wet) return { tone: "wet", word: "Too wet", pct, say: `Wetter than ${wet} %: too much water. Check for a leak or a stuck valve.` };
+  if (pct >= wet) return { tone: "wet", word: "Too wet", pct, say: `Wetter than ${wet} %: too much water.` };
   // A Manual day (ESP1 from 18 Nov 2026): no scheduled run, so don't promise one.
   const manualToday = lines.operationToday === "MANUAL";
   if (pct < start) return { tone: "dry", word: "Needs water", pct, say: manualToday
     ? `Drier than ${start} %. Manual today: use Water a column now.`
     : `Drier than ${start} %: watered at its next watering time.` };
-  if (hasValue(target) && pct < Number(target)) return { tone: "low", word: "Below target", say: `Moist enough, but under the crop's ${Number(target)} %.`, pct };
-  return { tone: "ok", word: hasValue(target) ? "On target" : "Moist enough", say: hasValue(target) ? `At or above the crop's ${Number(target)} %.` : `Wetter than ${start} %: no water needed.`, pct };
+  if (hasValue(target) && pct < Number(target)) return { tone: "low", word: "Below target", say: `Moist enough, but under its target of ${Number(target)} %.`, pct };
+  return { tone: "ok", word: hasValue(target) ? "On target" : "Moist enough", say: hasValue(target) ? `At or above its target of ${Number(target)} %.` : `Wetter than ${start} %: no water needed.`, pct };
 }
 
 function renderSimpleSoil(stale) {
@@ -8306,12 +8807,10 @@ function renderSimpleMore(fresh) {
   sSet("sLux", hasValue(s.lightLevel) ? `${Math.round(Number(s.lightLevel)).toLocaleString()} lux` : "--");
   sSet("sPh", numberText(s.waterPH, 1).replace("Unavailable", "--"));
   sSet("sEc", numberText(s.waterEC, 2, "mS/cm").replace("Unavailable", "--"));
-  sSet("sBattV", numberText(s.batteryVoltage, 1, "V").replace("Unavailable", "--"));
-  sSet("sSolarToday", numberText(s.solarEnergyTodayWh, 0, "Wh").replace("Unavailable", "--"));
-  sSet("sBatt2", numberText(s.secondaryBatteryPercent, 0, "%").replace("Unavailable", "--"));
   const stamp = Number(liveData.meta?.updatedAt || 0);
+  // Shown in both modes since 25 Nov 2026: Complete mode has every reading just below it.
   sSet("sMoreFoot", !stamp ? "Waiting for the controller's first report."
-    : `${fresh ? "From the controller's latest report" : "From the controller's last report"}, ${formatAge(Math.max(0, serverNow() - stamp))} ago. pH and EC are measured in the mixing tank. Every reading is in Complete mode.`);
+    : `${fresh ? "From the controller's latest report" : "From the controller's last report"}, ${formatAge(Math.max(0, serverNow() - stamp))} ago. pH and EC are measured in the mixing tank. ${uiMode() === "complete" ? "Every reading is under All readings, below." : "Every reading is in Complete mode."}`);
 }
 
 // Everything on the Simple dashboard. Runs with every snapshot and every second (ages, countdowns, freshness).
@@ -8326,7 +8825,7 @@ function renderSimpleDashboard() {
   sSet("sStatusTitle", sit.title);
   sSet("sStatusText", sit.text);
 
-  // The chips: the controller's link, solar and battery.
+  // The chip: the controller's link (the solar and battery chips left on 25 Nov 2026).
   const link = !stamp ? { tone: "wait", icon: "si-wifi", text: databaseListenersAttached ? "No report yet" : "Connecting…" }
     : !firebaseConnected ? { tone: "bad", icon: "si-unlink", text: "This browser is offline" }
     : fresh && deviceDelayMs() ? { tone: "warn", icon: "si-wifi", text: "Delayed" }   // 18 Nov 2026; the age is below it
@@ -8339,13 +8838,6 @@ function renderSimpleDashboard() {
   const ageMs = Math.max(0, serverNow() - stamp);
   sSet("sLinkAge", !stamp || !fresh ? "" : `${ageMs < 2000 ? "Just now" : `${formatAge(ageMs)} ago`} · ${linkPaceText()}`);
   const sensors = liveData.sensors || {};
-  const last = stale ? " · last known" : "";
-  sSet("sSolar", hasValue(sensors.solarPower) ? `${numberText(sensors.solarPower, 1, "W")}${last}` : "No reading");
-  const power = liveData.diagnostics?.power || {};
-  const battWord = power.batteryCritical ? " · critical" : power.batteryLow ? " · low" : "";
-  sSet("sBattery", hasValue(sensors.batteryPercent) ? `${numberText(sensors.batteryPercent, 0, "%")}${battWord}${last}` : "No reading");
-  sTone("sChipBattery", stale || !hasValue(sensors.batteryPercent) ? "none" : power.batteryCritical ? "bad" : power.batteryLow ? "warn" : "ok");
-  sTone("sChipSolar", stale || !hasValue(sensors.solarPower) ? "none" : "solar");
 
   // The two tanks.
   const rawTank = liveData.diagnostics?.sensorsRaw?.tank || {};
@@ -8378,19 +8870,23 @@ function renderSimpleDashboard() {
 const PLAN_HIDDEN_KEY = "planHidden";
 let dashPlanMonth = 0;
 let dashPlanKey = "";
-let dashPlanHidden = (() => { try { return localStorage.getItem(PLAN_HIDDEN_KEY) === "1"; } catch { return false; } })();
+// The person's own choice (true = hidden), or null when they never pressed the button. Without a choice the plan is
+// folded away in Simple mode ("only the essentials", 25 Nov 2026) and shown in Complete mode.
+let dashPlanChoice = (() => { try { const v = localStorage.getItem(PLAN_HIDDEN_KEY); return v === "1" ? true : v === "0" ? false : null; } catch { return null; } })();
+function dashPlanIsHidden() { return dashPlanChoice ?? uiMode() === "simple"; }
 /* ---- The watering-plan calendar on the dashboard ------------------------------------------------------------------------- */
 
 function syncDashPlanToggle() {
+  const hidden = dashPlanIsHidden();
   const card = document.getElementById("sPlanCard");
-  if (card) card.hidden = dashPlanHidden;
+  if (card && card.hidden !== hidden) { card.hidden = hidden; dashPlanKey = ""; }
   const toggle = document.getElementById("sPlanToggle");
-  if (toggle) toggle.setAttribute("aria-expanded", String(!dashPlanHidden));
-  sSet("sPlanToggleText", dashPlanHidden ? "Show plan" : "Hide plan");
+  if (toggle) toggle.setAttribute("aria-expanded", String(!hidden));
+  sSet("sPlanToggleText", hidden ? "Show plan" : "Hide plan");
 }
 document.getElementById("sPlanToggle")?.addEventListener("click", () => {
-  dashPlanHidden = !dashPlanHidden;
-  try { localStorage.setItem(PLAN_HIDDEN_KEY, dashPlanHidden ? "1" : "0"); } catch { /* storage blocked: this visit only */ }
+  dashPlanChoice = !dashPlanIsHidden();
+  try { localStorage.setItem(PLAN_HIDDEN_KEY, dashPlanChoice ? "1" : "0"); } catch { /* storage blocked: this visit only */ }
   dashPlanKey = "";
   syncDashPlanToggle();
   renderDashPlan();
@@ -8787,9 +9283,14 @@ function updateSimpleDiagram(fresh, stale) {
   const actuators = liveData.actuators || {};
   const run = liveData.diagnostics?.runProgress || {};
   const known = Boolean(liveData.meta?.updatedAt);
-  // Only a fresh report can show anything moving (the same rule as the pump lamps).
-  const transfer = fresh && Boolean(actuators.transferRunning);
-  const booster = fresh && Boolean(actuators.boosterRunning);
+  // Only a fresh report can show anything moving (the same rule as the pump lamps). AC on (25 Nov 2026): when ESP1 reports
+  // the motor itself (actuators.acPump), water moves only once it runs, and until then its pump says "starting"; a test or
+  // an exercise that runs a pump shows too. Older firmware: the step's own flag, as before.
+  const acNow = fresh ? acPumpNow() : null;
+  const transferStep = fresh && Boolean(actuators.transferRunning);
+  const boosterStep = fresh && Boolean(actuators.boosterRunning);
+  const transfer = acNow === null ? transferStep : acNow === "TRANSFER";
+  const booster = acNow === null ? boosterStep : acNow === "BOOSTER";
   const mixer = fresh && Boolean(actuators.mixerRunning);
   const dosing = fresh && Boolean(run.active) && run.stage === "Pump Nutrients";
   const doseNow = dosing ? ["A", "B", "C"].find(k => Number(run.dosesMl?.[k]?.target) > Number(run.dosesMl?.[k]?.delivered || 0)) || null : null;
@@ -8832,10 +9333,13 @@ function updateSimpleDiagram(fresh, stale) {
   svg.querySelector('[data-s-tank="res"]')?.classList.toggle("is-low", hasValue(sensors.reservoirLevel) && Number(sensors.reservoirLevel) < pause);
   svg.querySelector(".s-dg-mixer")?.classList.toggle("on", mixer);
   // Pumps: a word under each, so the state never rests on colour alone.
-  [["transfer", transfer], ["booster", booster]].forEach(([key, on]) => {
-    svg.querySelector(`[data-s-pump="${key}"]`)?.classList.toggle("on", on);
+  [["transfer", transfer, transferStep], ["booster", booster, boosterStep]].forEach(([key, on, step]) => {
+    const starting = !on && step && acNow !== null;
+    const pump = svg.querySelector(`[data-s-pump="${key}"]`);
+    pump?.classList.toggle("on", on);
+    pump?.classList.toggle("starting", starting);
     const state = svg.querySelector(`[data-s-pumpstate="${key}"]`);
-    if (state) state.textContent = !known ? "--" : !fresh ? "unknown" : on ? "ON" : "off";
+    if (state) state.textContent = !known ? "--" : !fresh ? "unknown" : on ? "ON" : starting ? "starting…" : "off";
   });
   const flowing = new Set();
   if (transfer) { flowing.add("resOut"); flowing.add("transferOut"); }
@@ -8916,6 +9420,8 @@ function initSimpleDiagram() {
  * The readings show by default and can be hidden; that choice is kept here, because renderZonesUI() rebuilds the cards.
  * Editing is untouched. */
 const zoneReadingsHidden = {};
+// Simple mode (25 Nov 2026): which cards have their readings shown with "Show readings" (folded by default there).
+const zoneDetailsOpen = {};
 function zoneHeroHtml(id) {
   return `
       <div class="s-zone-hero" data-tone="none" id="sZoneHero${id}">
@@ -8935,7 +9441,7 @@ function zoneHeroHtml(id) {
             <span class="s-zone-mark s-zone-mark-wet" id="sZoneWet${id}"></span>
             <span class="s-zone-mark s-zone-mark-crop" id="sZoneTarget${id}"></span>
           </div>
-          <p class="s-zone-legend"><span class="s-key s-key-start"></span>Waters below <span id="sZoneStartPct${id}">--</span><span class="s-key s-key-wet"></span>Too wet above <span id="sZoneWetPct${id}">--</span><span class="s-key s-key-crop"></span>Crop <span id="sZoneTargetPct${id}">--</span></p>
+          <p class="s-zone-legend"><span class="s-key s-key-start"></span>Waters below <span id="sZoneStartPct${id}">--</span><span class="s-key s-key-wet"></span>Too wet above <span id="sZoneWetPct${id}">--</span><span class="s-key s-key-crop"></span>Target <span id="sZoneTargetPct${id}">--</span></p>
         </div>
       </div>`;
 }
@@ -9024,6 +9530,20 @@ document.getElementById("dynamic-zones-container")?.addEventListener("click", ev
   zoneReadingsHidden[id] = !zoneReadingsHidden[id];
   syncZoneReadingsFold(id);
 });
+// Simple mode's "Show readings" on a zone card (25 Nov 2026). zoneDetailsOpen sits beside zoneReadingsHidden.
+document.getElementById("dynamic-zones-container")?.addEventListener("click", event => {
+  const button = event.target.closest("button[data-z-details]");
+  if (!button) return;
+  const id = button.dataset.zDetails;
+  zoneDetailsOpen[id] = !zoneDetailsOpen[id];
+  const open = zoneDetailsOpen[id];
+  button.closest(".zone-block")?.classList.toggle("s-details-open", open);
+  button.setAttribute("aria-expanded", String(open));
+  const label = button.querySelector("span");
+  if (label) label.textContent = open ? "Hide readings" : "Show readings";
+  // Opening shows the readings even if Complete mode's own Hide had folded them.
+  if (open && zoneReadingsHidden[id]) { zoneReadingsHidden[id] = false; syncZoneReadingsFold(id); }
+});
 
 // The crop library folds away in Simple mode, and opens by itself while a crop is being added or changed.
 let simpleCropOpen = false;
@@ -9055,8 +9575,15 @@ function syncDoseToggle() {
   const open = simpleDoseOpen;
   form.classList.toggle("s-doses-open", open);
   toggle.setAttribute("aria-expanded", String(open));
-  const text = set.length ? `Nutrients: ${set.map(([k, v]) => `${k} ${v} mL`).join(", ")}` : "Add nutrients (optional): now plain water";
+  // "Add nutrients (optional)" (the owner, 25 Nov 2026; it said ": now plain water" after it). A dose set earlier still
+  // shows here while the boxes are folded away.
+  const text = set.length ? `Nutrients: ${set.map(([k, v]) => `${k} ${v} mL`).join(", ")}` : "Add nutrients (optional)";
   sSet("sDoseToggleText", `${text}${open ? "" : set.length ? " (show)" : ""}`);
+  // Simple mode hides the countdown box (25 Nov 2026) and says what it holds instead.
+  const delay = Number(document.getElementById("forceDelay")?.value);
+  sSet("forceDelayWords", Number.isFinite(delay) && delay > 0
+    ? `It starts after a ${Math.round(delay)}-second countdown, so you can still cancel.`
+    : "It starts straight away (no countdown).");
 }
 document.getElementById("sDoseToggle")?.addEventListener("click", () => {
   simpleDoseOpen = !simpleDoseOpen;

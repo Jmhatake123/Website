@@ -18,3 +18,6 @@ window.FIREBASE_CONFIG = {
 // project to Vercel/Netlify first, then paste its URL here. Not a secret; the privileged
 // credentials live only in that service's own environment variables, never in this file.
 window.DELETE_USER_API_URL = "https://YOUR-PROJECT.vercel.app/api/delete-user";
+// The same project's operator-role function: adding an operator, or handing the role over, confirmed by a code emailed
+// to the operator (needs GMAIL_USER and GMAIL_APP_PASSWORD in that project's environment variables).
+window.OPERATOR_API_URL = "https://YOUR-PROJECT.vercel.app/api/operator-code";

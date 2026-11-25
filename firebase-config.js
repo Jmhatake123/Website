@@ -13,3 +13,6 @@ window.FIREBASE_CONFIG = {
 // service's own environment variables, never here). Fill in once delete-user-api/ is deployed to
 // Vercel/Netlify; see the User Management "Delete" action in script.js for where this is used.
 window.DELETE_USER_API_URL = "https://delete-user-api-xi.vercel.app/api/delete-user";
+// The same Vercel project's operator-role function (25 Nov 2026): adding an operator, or handing the role over, confirmed
+// by a code emailed to the operator. Its Gmail settings live in that project's environment variables.
+window.OPERATOR_API_URL = "https://delete-user-api-xi.vercel.app/api/operator-code";

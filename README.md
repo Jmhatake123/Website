@@ -192,6 +192,44 @@ The page works with web v.3 firmware too (no litres shown).
     account to sign in on that browser could otherwise see "ESP1 connected" from the last account's rows for a moment.
   - SD card logs: ESP1 reads "Upload from the rig" every **30 s** (since 18 Nov 2026 g), not every 10 s as the page said;
     the day now shows "asked" for 45 s (`LOG_ASK_PICKUP_MS`), so the button doesn't come back on just before ESP1 starts.
+- **25 Nov 2026, the owner's list** (backup of this folder before it: `..\..\Website_Backup_before_owner_list_2026-11-25`):
+  - **"System", not "rig"**, in every word a person reads (texts, (i) icons, Help, messages; code names and comments keep
+    `rig`). "Rig default" is just "Default".
+  - **No solar or battery readings** (the sensors may not be installed): the Solar and Battery chips, the More information
+    tiles, Complete mode's Main battery and Solar and second battery panels, their Diagnostics groups and warnings. The
+    System tab keeps the **battery switch fault**, because a latched one blocks the AC pumps.
+  - **AC pump reminder**: the transfer and booster pumps share the inverter, and the servo moves the pump selector before
+    it comes on, so a motor starts seconds after its step or test. Wherever the page starts one (Water a column now, the
+    timed test, hold-to-run, the pump exercise) and on the dashboard during any watering, a reminder says "Starting the
+    ... pump…" (`renderAcWaits()`), and with ESP1 Plan B of 25 Nov 2026 ("AC on", `actuators.acPump`: the pump ESP2
+    really powered) it turns into **"The motor is now running."**; the pump lamps say STARTING, then ON, and the picture's
+    water only moves once the motor runs. Older firmware: the reminder only, for 45 s.
+  - **Zone profiles**: the readings' notes say **Target** (was "Crop profile"), the crop picker **Crops** (was "Compared
+    with"), Today's **Not watered yet** / **Watered** is a pill (amber / green), no "Check for a leak or a stuck valve".
+    Edit settings: **"Default: 6:00 AM – 8:00 AM (once a day)"**, **"Water + Nutrients"**, and an **Automatic settings**
+    group (what it does, when it runs, the soil lines, the targets) that is hidden while the column is Manual, unless the
+    day plan still has an Automatic day.
+  - **ESP1 offline**: a column's switch and Save to system no longer wait for ESP1. The change waits in the queue (ESP1
+    runs queued rows whenever it reads the queue again); the card shows it as made, with "1 change is waiting: the system
+    is offline" and **Cancel it** (`zoneSettings()` applies pending rows, `renderZonePending()`). Only this browser being
+    offline still stops them.
+  - **Crop profiles**: an (i) on every column of the stage tables and every box of the crop editor, saying what N, P, K,
+    pH, EC, moisture, days and notes are for.
+  - **Manual/Test**: the Flow meter check is gone (the water is measured by the tank ultrasonics and run times).
+  - **Diagnostics**: operators, the backup operator, 1-hour access and Sub-operators only (Control no longer opens it);
+    `DIAG_SWEEP` needs the same tier in the rules.
+  - **User Management**: each account's actions in labelled groups (Decide, Access, Extra access, Account), every button
+    with its (i), Restrict / Block / Delete included. **Operator role** panel: **add** another operator, or **hand the role
+    over**, confirmed by a 6-digit code emailed to the operator (`..\delete-user-api\api\operator-code.js`, Gmail settings
+    in Vercel: see its README). Operators now come from the database: the backup operator always, the original operator
+    unless `operators/<uid>` is false, anyone `operators/<uid>` names true; the rules (`operators`, `operatorCodes`,
+    `operatorLog`), the page (`isOperatorUid()`) and the API use the same rule. No data needs adding first.
+  - **Simple mode, simpler**: plain hints; the watering plan, the zone readings and crop pickers ("Show readings") and
+    This week folded away; the countdown box hidden (its value in words); Help shows the guides first, then **Show all
+    topics**. **Simple's extras in Complete mode**: the pumps-and-valves picture, the "Add nutrients (optional)" fold, More
+    information, the friendlier headings and the folds. **More animation**: cards rise in as a tab opens, buttons press in,
+    pills and badges pop, the status icon breathes; all off for reduced motion and while the page is hidden.
+  - Tests: `npm run test:ownerlist` (26), `npm run test:rules-emu` (60), `npm run test:simple` (49).
 - **Connection line** (18 Nov 2026) — the connection line in the top bar
   (and the Controller chip in Simple mode) is green while ESP1's reports arrive on time, **amber "Delayed"**
   once a report is one interval plus at least 5 s late (30 s since 23 Nov) (`deviceDelayMs()`: over 60 s at the 30 s
@@ -206,8 +244,8 @@ The page works with web v.3 firmware too (no litres shown).
   the rig does the same to the website. Automatic watering carries on; Emergency stop, switching pumps and
   valves off and cancelling a forced run still work. Operators and privileged accounts can lock and unlock.
 - **Live Dashboard** — the picture of the system (the same in both modes since 18 Nov 2026) with its tanks, pumps and columns as ESP1 reports them,
-  readings grouped by what they're about (water, air and light, main battery, solar and the second
-  battery), the current run with its pumps, **Up next** beside it (each column's watering times today and
+  readings grouped by what they're about (water, air and light; the battery and solar readings left on 25 Nov 2026),
+  the current run with its pumps, **Up next** beside it (each column's watering times today and
   tomorrow with dates, a forced run counting down, each pump's next exercise), and the recent commands with
   ESP1's replies, read straight from ESP1's telemetry snapshot.
 - **Zone Profiles** — one card per column: its soil readings (compared with a crop profile you pick),
@@ -221,14 +259,16 @@ The page works with web v.3 firmware too (no litres shown).
   so while ESP1 is silent the page says to use the physical cutoff, MODE + BACK on the unit, or SMS STOP,ALL.
 - **Manual/Test** *(privileged accounts)* — direct hardware control: the pump selector switch (which pump
   the Nano's servo is on, with Transfer and Booster buttons that move it while the inverter stays off), a
-  timed test, a hold-to-run test, the pump exercise (setting and run-now), and a flow meter check, all
-  under ESP1/ESP2's own dead-man timers and safety limits.
-- **Diagnostics** — a summary, in words, of anything ESP1 reports as wrong; then ESP1's diagnostic values
-  item by item, sensor readings before conversion, an on-demand ESP2 sensor sweep, and recent events.
+  timed test, a hold-to-run test and the pump exercise (setting and run-now), all under ESP1/ESP2's own dead-man
+  timers and safety limits (the flow meter check left on 25 Nov 2026).
+- **Diagnostics** *(privileged accounts, since 25 Nov 2026)* — a summary, in words, of anything ESP1 reports as wrong;
+  then ESP1's diagnostic values item by item, sensor readings before conversion, an on-demand ESP2 sensor sweep, and
+  recent events.
 - **System** *(privileged accounts)* — remote versions of the LCD's Settings menu: the rig lock, clock,
   watering thresholds, AC voltage limits and AC current limits,
   battery-switch fault, restore factory settings.
-- **User Management** *(operators only)* — the requests waiting for an answer, then accounts grouped by
+- **User Management** *(operators only)* — the operator role (add an operator, or hand the role over, with a code
+  emailed to the operator; 25 Nov 2026), the requests waiting for an answer, then accounts grouped by
   status, waiting-for-approval first; approve, reject, restrict, or block them; give or take back control
   and zone editing; give 1-hour access or make a Sub-operator; see each account's online/offline state and
   recent activity in plain words.
@@ -280,6 +320,9 @@ CIT-U EE Smart Irrigation / Pinamungahan Automated Farm
 | `activity/$uid` | every signed-in session, its own | `{what, at}` entries: since 2026-11-05 every change made on the website (sign-in and sign-out, rig commands, column and crop edits, requests, account decisions, Manual/Test), not only commands. Read-restricted to **only** the operator accounts, not even the account's own owner — powers User Management's recent actions |
 | `users/$uid` | see `status`/`tempAccessUntil`/`subOperator`/`controlAccess`/`zoneEditAccess` | `tempAccessUntil` (ms timestamp) is a 1-hour, operator-granted Manual/Test+System elevation; `subOperator` (boolean) is the same elevation but persistent until an operator withholds it again. `controlAccess` and `zoneEditAccess` (2026-11-05, booleans): an approved account on its own only looks (Live dashboard, Zone profiles, Help); `controlAccess` opens Controls, Diagnostics, the Emergency stop and every rig command except a column's settings, `zoneEditAccess` opens the column cards and `SET_COLUMN`. All four settable only by the operator accounts, never at sign-up, and cleared by User Management the moment status leaves `'approved'`; the rules also ignore them on an account that isn't approved |
 | `accessRequests/$uid/$kind` | the account, its own; operators | 2026-11-05. `{state: 'waiting' \| 'declined', at, decidedAt?}`. `$kind` is `approval` (pending or rejected accounts), `unrestrict` (restricted), `zones` or `control` (approved without that access, not Sub-operators); blocked accounts can't ask. An account can ask once at a time (again after a decline), with the server's time, and take a waiting request back; operators read all of them and answer (accept = the grant or status plus removing the request in one write; decline = `state: 'declined'`) |
+| `operators/$uid` | the operator API only (Admin SDK) | 2026-11-25. `true` = an operator (added, or handed the role); `false` only for the original operator, after it handed the role over. Who is an operator everywhere in the rules: the backup operator always, the original one unless this says `false`, anyone this says `true`. Each account reads its own entry; operators read all. No page may write it |
+| `operatorCodes/$uid` | the operator API only | 2026-11-25. The waiting confirmation code's hash (never the code), its action and target, expiry and tries. No page may read or write it |
+| `operatorLog/$id` | the operator API only | 2026-11-25. `{at, by, byEmail, action: 'add' \| 'transfer', target, targetEmail}` for every operator change. Operators read it |
 
 ## Security rules
 

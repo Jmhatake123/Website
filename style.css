@@ -1491,3 +1491,214 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .log-today { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--s-border); border-radius: 14px; background: var(--surface-muted); }
 .log-today button { display: inline-flex; align-items: center; gap: 8px; }
 .log-today .field-note { flex: 1 1 260px; margin: 0; }
+
+/* ==== 25 Nov 2026: the owner's list ===================================================================================== */
+
+/* ---- The dashboard's top row: the status card and the controller chip (the Solar and Battery chips left). ---- */
+.s-row-top { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.s-chips { grid-template-columns: minmax(0, 1fr); align-content: stretch; }
+.s-chips > .s-chip { height: 100%; }
+@media (max-width: 1100px) { .s-row-top { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---- AC pump start reminder (#sActAcWait, #forceAcWait, #pulseAcWait, #holdAcWait, #exAcWait) ----------------------
+   data-state: starting / unconfirmed (amber: the selector lever rocks, the blades wait) and running (green: the blades
+   spin, a check pops in). Words carry every state too, so colour is never the only signal. */
+.ac-wait { display: flex; align-items: center; gap: 14px; margin: 12px 0 4px; padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--s-border)); border-radius: 16px; background: linear-gradient(100deg, var(--warn-soft), var(--surface)); box-shadow: var(--shadow); }
+.ac-wait[hidden] { display: none; }
+.ac-wait-art { width: 52px; height: 52px; flex: none; overflow: visible; }
+.ac-wait-ring { fill: var(--surface); stroke: var(--warning); stroke-width: 3; }
+.ac-wait-blades { fill: var(--warning); transform-box: fill-box; transform-origin: 50% 50%; }
+.ac-wait-lever path { stroke: var(--warning); stroke-width: 3; stroke-linecap: round; }
+.ac-wait-lever circle { fill: var(--warning); }
+.ac-wait-lever { transform-box: view-box; transform-origin: 24px 44px; }
+.ac-wait-check { opacity: 0; transform-box: fill-box; transform-origin: 50% 50%; transform: scale(.3); }
+.ac-wait-check circle { fill: var(--s-green); }
+.ac-wait-check path { fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.ac-wait-words { display: grid; gap: 2px; min-width: 0; }
+.ac-wait-title { color: var(--warning); font-size: 1.02rem; }
+.ac-wait-text { color: var(--muted); font-size: .88rem; line-height: 1.45; }
+.ac-wait[data-state="running"] { border-color: color-mix(in srgb, var(--s-green) 45%, var(--s-border)); background: linear-gradient(100deg, var(--s-green-soft), var(--surface)); }
+.ac-wait[data-state="running"] .ac-wait-ring { stroke: var(--s-green); }
+.ac-wait[data-state="running"] .ac-wait-blades { fill: var(--s-green); }
+.ac-wait[data-state="running"] .ac-wait-lever { opacity: 0; }
+.ac-wait[data-state="running"] .ac-wait-check { opacity: 1; transform: scale(1); transition: opacity .3s ease, transform .45s cubic-bezier(.3, 1.6, .5, 1); }
+.ac-wait[data-state="running"] .ac-wait-title { color: var(--s-green); }
+:root[data-theme="dark"] .ac-wait-check path { stroke: #06140c; }
+@media (prefers-reduced-motion: no-preference) {
+  .ac-wait:not([hidden]) { animation: ac-in .35s cubic-bezier(.3, 1.3, .5, 1); }
+  .ac-wait:is([data-state="starting"], [data-state="unconfirmed"]) .ac-wait-lever { animation: ac-lever 1.6s ease-in-out infinite; }
+  .ac-wait:is([data-state="starting"], [data-state="unconfirmed"]) .ac-wait-blades { animation: ac-nudge 1.6s ease-in-out infinite; }
+  .ac-wait:is([data-state="starting"], [data-state="unconfirmed"]) { animation: ac-in .35s cubic-bezier(.3, 1.3, .5, 1), ac-breathe 2.4s ease-in-out .35s infinite; }
+  .ac-wait[data-state="running"] .ac-wait-blades { animation: s-spin .6s linear infinite; }
+}
+@keyframes ac-in { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes ac-lever { 0%, 100% { transform: rotate(-28deg); } 50% { transform: rotate(28deg); } }
+@keyframes ac-nudge { 0%, 70%, 100% { transform: rotate(0deg); } 80% { transform: rotate(18deg); } 90% { transform: rotate(-8deg); } }
+@keyframes ac-breathe { 0%, 100% { box-shadow: var(--shadow); } 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 18%, transparent), var(--shadow); } }
+.page-hidden .ac-wait, .page-hidden .ac-wait * { animation-play-state: paused !important; }
+/* The system picture's pump while its motor is still starting (ESP1 "AC on"): the body pulses amber. */
+.s-dg-pump.starting .s-dg-pump-body { stroke: var(--warning); fill: color-mix(in srgb, var(--warning) 12%, var(--surface)); }
+.s-dg-pump.starting .s-dg-state { fill: var(--warning); }
+@media (prefers-reduced-motion: no-preference) {
+  .s-dg-pump.starting .s-dg-pump-body { animation: s-act-breathe 1.2s ease-in-out infinite; }
+}
+
+/* ---- Zone cards: Today's "Not watered yet" / "Watered" as a pill (the owner: highlight it) -------------------------- */
+.zt-pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 800; line-height: 1.35; }
+.zt-pill[data-state="todo"] { background: var(--warn-soft); color: var(--warning); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warning) 55%, transparent); }
+.zt-pill[data-state="done"] { background: var(--s-green); color: #fff; box-shadow: 0 3px 10px rgb(31 127 69 / .22); }
+.zt-pill[data-state="manual"], .zt-pill[data-state="off"] { background: color-mix(in srgb, var(--unknown) 16%, transparent); color: var(--muted); }
+:root[data-theme="dark"] .zt-pill[data-state="done"] { color: #06140c; }
+@media (prefers-reduced-motion: no-preference) {
+  .zt-pill { animation: zt-pop .45s cubic-bezier(.3, 1.6, .5, 1); }
+  .zt-pill[data-state="todo"] { animation: zt-pop .45s cubic-bezier(.3, 1.6, .5, 1), zt-glow 2.6s ease-in-out .45s 3; }
+}
+@keyframes zt-pop { from { transform: scale(.7); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes zt-glow { 0%, 100% { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warning) 55%, transparent); } 50% { box-shadow: inset 0 0 0 1.5px var(--warning), 0 0 0 4px color-mix(in srgb, var(--warning) 16%, transparent); } }
+
+/* ---- Edit settings: the Automatic settings group, and the Manual hint shown instead of it ------------------------- */
+.auto-settings { display: grid; gap: 14px; margin: 4px 0 2px; padding: 14px 16px 16px; border: 1px solid color-mix(in srgb, var(--s-green) 35%, var(--s-border)); border-radius: 16px; background: color-mix(in srgb, var(--s-green-soft) 55%, var(--surface)); }
+.auto-settings[hidden] { display: none; }
+.auto-settings > fieldset { margin: 0; }
+.auto-settings-head { display: grid; gap: 2px; padding-bottom: 8px; border-bottom: 1px dashed color-mix(in srgb, var(--s-green) 35%, var(--s-border)); }
+.auto-settings-head h5 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; color: var(--s-green); font-size: 1.05rem; font-weight: 800; letter-spacing: .01em; }
+.auto-settings-head h5 .si { width: 1.25em; height: 1.25em; }
+.auto-settings-note { margin: 0; color: var(--muted); font-size: .86rem; }
+.manual-hint { display: flex; align-items: flex-start; gap: 10px; margin: 4px 0 2px; padding: 12px 14px; border: 1px dashed var(--warning); border-radius: 14px; background: var(--warn-soft); line-height: 1.45; }
+.manual-hint[hidden] { display: none; }
+.manual-hint .si { margin-top: .1em; color: var(--warning); }
+@media (prefers-reduced-motion: no-preference) {
+  .auto-settings.is-revealed, .manual-hint:not([hidden]) { animation: fold-in .28s ease-out; }
+}
+
+/* ---- A column's changes waiting for the system (offline) ---------------------------------------------------------- */
+.zone-pending { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; padding: 10px 12px; border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--s-border)); border-radius: 14px; background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.zone-pending[hidden] { display: none; }
+.zone-pending > .si { color: var(--accent); }
+.zone-pending p { flex: 1 1 220px; margin: 0; font-size: .88rem; line-height: 1.45; }
+.zone-pending button { min-height: 34px; padding: 5px 12px; }
+@media (prefers-reduced-motion: no-preference) {
+  .zone-pending:not([hidden]) > .si { animation: s-spin 4s linear infinite; }
+}
+
+/* ---- Crop profiles: an (i) on every column heading ----------------------------------------------------------------- */
+.th-info { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+
+/* ---- User Management: each account as a header, its details, then its actions in labelled groups ------------------
+   (the owner: "properly arrange and add a small i on restrict, block and delete"). */
+.user-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px 16px; }
+.user-row > .user-row-info { grid-column: 1; }
+.user-row > .device-status { grid-column: 2; grid-row: 1; justify-self: end; }
+.user-row > .user-actions { grid-column: 1 / -1; }
+.user-row-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.user-avatar { display: inline-grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 999px; background: var(--s-green-soft); color: var(--s-green); font-weight: 800; }
+.user-row.is-danger .user-avatar { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.user-row.is-waiting .user-avatar { background: var(--warn-soft); color: var(--warning); }
+.user-row-names { display: grid; min-width: 0; }
+.user-row-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 6px; font-size: .86rem; }
+.user-grants { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.user-grant { padding: 2px 10px; border-radius: 999px; background: var(--s-green-soft); color: var(--s-green); font-size: .78rem; font-weight: 700; }
+.user-grant.is-extra { background: var(--mix-soft); color: var(--mix); }
+.user-actions { display: grid; gap: 8px; padding-top: 12px; border-top: 1px dashed var(--s-border); }
+.ua-group { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); align-items: center; gap: 6px 12px; }
+.ua-label { color: var(--muted); font-size: .78rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.ua-buttons { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.ua-group.is-account { padding: 8px 10px; border-radius: 12px; background: color-mix(in srgb, var(--danger) 5%, transparent); }
+.user-row .btn-with-info { gap: 4px; }
+@media (max-width: 600px) {
+  .ua-group { grid-template-columns: minmax(0, 1fr); }
+  .user-row { grid-template-columns: minmax(0, 1fr); }
+  .user-row > .device-status { grid-column: 1; grid-row: auto; justify-self: start; }
+}
+
+/* ---- User Management: the operator role (add another operator, or hand it over, confirmed by an emailed code) ------- */
+.op-panel { display: grid; gap: 14px; margin-bottom: 20px; padding: 18px 20px; border: 1px solid color-mix(in srgb, var(--s-green) 40%, var(--s-border)); border-radius: 18px; background: linear-gradient(135deg, var(--s-green-soft), var(--surface) 60%); box-shadow: var(--shadow); }
+.op-panel h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; color: var(--s-green); }
+.op-panel h3 .si { width: 1.3em; height: 1.3em; }
+.op-panel p { margin: 0; line-height: 1.5; }
+.op-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.op-list li { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 4px; border: 1px solid var(--s-border); border-radius: 999px; background: var(--surface); font-size: .9rem; }
+.op-list .user-avatar { width: 28px; height: 28px; font-size: .8rem; }
+.op-form { display: grid; grid-template-columns: minmax(12rem, 1.3fr) minmax(12rem, 1fr) auto; align-items: end; gap: 12px; }
+.op-choice { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 6px 12px 10px; border: 1px solid var(--s-border); border-radius: 12px; background: var(--surface); }
+.op-choice legend { padding: 0 6px; color: var(--muted); font-size: .84rem; font-weight: 600; }
+.op-choice label { display: flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-weight: 600; }
+.op-choice input { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--s-green); }
+.op-form > button, .op-code > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.op-code { display: grid; grid-template-columns: minmax(9rem, 12rem) max-content max-content; justify-content: start; align-items: end; gap: 12px; padding: 14px; border: 1px dashed var(--s-green); border-radius: 14px; background: var(--surface); }
+.op-code[hidden] { display: none; }
+.op-code input { font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 1.35rem; letter-spacing: .35em; text-align: center; }
+.op-code-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .86rem; }
+@media (prefers-reduced-motion: no-preference) {
+  .op-code:not([hidden]) { animation: fold-in .3s ease-out; }
+}
+@media (max-width: 760px) {
+  .op-form, .op-code { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- Simple mode's extras in Complete mode too (the owner: "copy what's on the simple mode to complete mode") ------
+   The folds that used to be Simple-only (Restart a board, the crop profiles, the nutrient boxes) work in both modes. */
+.s-collapsible:not(.s-open) > :not(.s-collapse-toggle) { display: none; }
+.s-collapsible:not(.s-open) { padding-top: 14px; padding-bottom: 14px; }
+.s-collapsible:not(.s-open) > .s-collapse-toggle { margin: 0; }
+#cropLibrary:not(.s-open) > :is(#cropEditorNew, #cropList, #cropRemoved, #cropLibraryNote),
+#cropLibrary:not(.s-open) #cropAddBtn { display: none; }
+#forceRunForm:not(.s-doses-open) #forceDoseFieldset,
+#forceRunForm:not(.s-doses-open) #forceDoseFieldset + .field-note { display: none; }
+:root[data-mode="complete"] #actSwitch { width: 74px; min-width: 74px; height: 42px; }
+:root[data-mode="complete"] #actSwitch::after { top: 4px; left: 4px; width: 32px; height: 32px; box-shadow: 0 2px 6px rgb(0 0 0 / .18); transition: transform .35s cubic-bezier(.3, 1.5, .5, 1), background .25s ease; }
+:root[data-mode="complete"] #actSwitch[aria-checked="true"]::after { transform: translateX(32px); }
+:root[data-mode="complete"] #actSwitch[aria-checked="true"] { box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 16%, transparent); }
+
+/* ---- Simple mode, simpler (the owner: "summarize everything, only the essentials, simplified text, make it clear") --
+   What is folded or left out here is all still in Complete mode. */
+:root[data-mode="simple"] .zone-week, :root[data-mode="simple"] .zone-week-note, :root[data-mode="simple"] .zone-week-head { display: none; }
+:root[data-mode="simple"] .zone-block:not(.s-details-open) .zone-now > .reading-grid,
+:root[data-mode="simple"] .zone-fold { display: none; }
+:root[data-mode="simple"] .zone-today-line.zt-sub { display: none; }
+.zone-details-toggle { display: none; }
+:root[data-mode="simple"] .zone-details-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 5px 14px; border-radius: 999px; font-size: .86rem; }
+:root[data-mode="simple"] .zone-details-toggle .s-chev { transition: transform .25s ease; }
+:root[data-mode="simple"] .zone-block.s-details-open .zone-details-toggle .s-chev { transform: rotate(180deg); }
+:root[data-mode="simple"] .zone-block:not(.s-details-open) .zone-now > .zone-compare { display: none; }
+:root[data-mode="simple"] #forceDelayLabel { display: none; }
+#helpShowAll { display: none; }
+:root[data-mode="simple"] #helpShowAll:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; margin: 6px 0 14px; }
+#helpShowAll[aria-expanded="true"] .si { transform: rotate(180deg); }
+
+/* ---- More motion everywhere (the owner: "add more animations in UI"), all off for "reduce motion" ------------------
+   Cards rise in one after another when a tab opens; buttons press in; pills, badges and chips pop when they change;
+   switches spring; the status icon and the brand leaf breathe. Nothing moves while the page is hidden. */
+@media (prefers-reduced-motion: no-preference) {
+  /* .is-entering: set by markViewEntering() in script.js for under a second when a tab opens, so a card rebuilt later
+     (a report, a presence change) doesn't rise in again. */
+  .view.is-entering :is(.s-card, .s-chip, .panel, .zone-block, .crop-card, .user-row, .request-panel, .help-group, .op-panel, .emergency-panel) { animation: rise-in .5s cubic-bezier(.2, .8, .3, 1) both; }
+  .view.is-entering :is(.s-row, .s-dash, .reading-panels, #dynamic-zones-container, .user-group, #cropList, #controlsBody) > :nth-child(2) { animation-delay: .06s; }
+  .view.is-entering :is(.s-row, .s-dash, .reading-panels, #dynamic-zones-container, .user-group, #cropList, #controlsBody) > :nth-child(3) { animation-delay: .12s; }
+  .view.is-entering :is(.s-row, .s-dash, .reading-panels, #dynamic-zones-container, .user-group, #cropList, #controlsBody) > :nth-child(4) { animation-delay: .18s; }
+  .view.is-entering :is(.s-row, .s-dash, .reading-panels, #dynamic-zones-container, .user-group, #cropList, #controlsBody) > :nth-child(5) { animation-delay: .24s; }
+  .view.is-entering :is(.s-row, .s-dash, .reading-panels, #dynamic-zones-container, .user-group, #cropList, #controlsBody) > :nth-child(n+6) { animation-delay: .3s; }
+  button:active:not(:disabled) { transform: translateY(1px) scale(.97); transition-duration: .06s; }
+  .s-card, .panel, .zone-block, .crop-card, .user-row { transition: box-shadow .25s ease, transform .25s ease, border-color .25s ease; }
+  .s-card:hover, .zone-block:hover, .crop-card:hover { box-shadow: 0 16px 34px rgb(30 70 40 / .14); }
+  .device-status, .s-pill, .zone-ops-pill, .s-act-chip, .zone-col-tag { transition: background .3s ease, color .3s ease; }
+  .device-status.active, .device-status.warn { animation: zt-pop .4s cubic-bezier(.3, 1.6, .5, 1); }
+  .s-status-icon { animation: breathe 3.6s ease-in-out infinite; }
+  .s-status[data-tone="run"] .s-status-icon .si { animation: s-spin 2.4s linear infinite; }
+  .s-brand-mark { animation: leaf-sway 6s ease-in-out infinite; transform-origin: 50% 90%; }
+  .tab .tab-icon { transition: transform .25s cubic-bezier(.3, 1.5, .5, 1); }
+  .tab:hover .tab-icon, .tab.active .tab-icon { transform: scale(1.15) rotate(-6deg); }
+  .info-icon { transition: transform .2s cubic-bezier(.3, 1.6, .5, 1), background .2s ease; }
+  .info-icon:hover { transform: scale(1.18); }
+  #infoPopover:not([hidden]) { animation: pop-in .22s cubic-bezier(.3, 1.4, .5, 1); }
+  details[open] > :not(summary) { animation: fold-in .25s ease-out; }
+  .switch::after { transition: transform .35s cubic-bezier(.3, 1.5, .5, 1), background .25s ease; }
+  .s-bar > span, .gauge-fill { transition: width .9s cubic-bezier(.3, .7, .3, 1), stroke-dashoffset .9s cubic-bezier(.3, .7, .3, 1); }
+  .control-result:not(:empty) { animation: fold-in .25s ease-out; }
+  .zone-pending:not([hidden]), .manual-hint:not([hidden]) { animation: fold-in .28s ease-out; }
+}
+@keyframes rise-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+@keyframes leaf-sway { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(4px) scale(.95); } to { opacity: 1; transform: none; } }
+.page-hidden .s-status-icon, .page-hidden .s-brand-mark, .page-hidden .zt-pill { animation-play-state: paused !important; }
