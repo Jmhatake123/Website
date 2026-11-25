@@ -1623,14 +1623,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .op-choice { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 6px 12px 10px; border: 1px solid var(--s-border); border-radius: 12px; background: var(--surface); }
 .op-choice legend { padding: 0 6px; color: var(--muted); font-size: .84rem; font-weight: 600; }
 .op-choice label { display: flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-weight: 600; }
+/* Without this, the display:flex above beats label[hidden] (same weight, later), and the backup operator saw Hand over. */
+.op-choice label[hidden] { display: none; }
 .op-choice input { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--s-green); }
 .op-form > button, .op-code > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .op-code { display: grid; grid-template-columns: minmax(9rem, 12rem) max-content max-content; justify-content: start; align-items: end; gap: 12px; padding: 14px; border: 1px dashed var(--s-green); border-radius: 14px; background: var(--surface); }
 .op-code[hidden] { display: none; }
 .op-code input { font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 1.35rem; letter-spacing: .35em; text-align: center; }
 .op-code-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .86rem; }
+/* Step down (26 Nov 2026): no account to pick, so this line takes the picker's place. */
+.op-retire-note { display: flex; align-items: center; gap: 10px; align-self: stretch; padding: 10px 14px; border: 1px dashed color-mix(in srgb, var(--s-green) 55%, var(--s-border)); border-radius: 12px; background: var(--surface); font-size: .92rem; font-weight: 600; }
+.op-retire-note[hidden] { display: none; }
+.op-retire-note .si { flex: none; width: 1.25em; height: 1.25em; color: var(--s-green); }
 @media (prefers-reduced-motion: no-preference) {
-  .op-code:not([hidden]) { animation: fold-in .3s ease-out; }
+  .op-code:not([hidden]), .op-retire-note:not([hidden]) { animation: fold-in .3s ease-out; }
 }
 @media (max-width: 760px) {
   .op-form, .op-code { grid-template-columns: minmax(0, 1fr); }

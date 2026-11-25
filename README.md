@@ -219,9 +219,10 @@ The page works with web v.3 firmware too (no litres shown).
   - **Diagnostics**: operators, the backup operator, 1-hour access and Sub-operators only (Control no longer opens it);
     `DIAG_SWEEP` needs the same tier in the rules.
   - **User Management**: each account's actions in labelled groups (Decide, Access, Extra access, Account), every button
-    with its (i), Restrict / Block / Delete included. **Operator role** panel: **add** another operator, or **hand the role
-    over**, confirmed by a 6-digit code emailed to the operator (`..\delete-user-api\api\operator-code.js`, Gmail settings
-    in Vercel: see its README). Operators now come from the database: the backup operator always, the original operator
+    with its (i), Restrict / Block / Delete included. **Operator role** panel: **add** another operator, **hand the role
+    over**, or (26 Nov 2026) **step down** with nobody new, each confirmed by a 6-digit code emailed to the operator who
+    asks (`..\delete-user-api\api\operator-code.js`, email settings in Vercel: see its README). The backup operator is
+    offered Add only. Operators now come from the database: the backup operator always, the original operator
     unless `operators/<uid>` is false, anyone `operators/<uid>` names true; the rules (`operators`, `operatorCodes`,
     `operatorLog`), the page (`isOperatorUid()`) and the API use the same rule. No data needs adding first.
   - **Simple mode, simpler**: plain hints; the watering plan, the zone readings and crop pickers ("Show readings") and
@@ -267,8 +268,8 @@ The page works with web v.3 firmware too (no litres shown).
 - **System** *(privileged accounts)* — remote versions of the LCD's Settings menu: the rig lock, clock,
   watering thresholds, AC voltage limits and AC current limits,
   battery-switch fault, restore factory settings.
-- **User Management** *(operators only)* — the operator role (add an operator, or hand the role over, with a code
-  emailed to the operator; 25 Nov 2026), the requests waiting for an answer, then accounts grouped by
+- **User Management** *(operators only)* — the operator role (add an operator, hand the role over, or step down, with a
+  code emailed to the operator who asks; 25–26 Nov 2026), the requests waiting for an answer, then accounts grouped by
   status, waiting-for-approval first; approve, reject, restrict, or block them; give or take back control
   and zone editing; give 1-hour access or make a Sub-operator; see each account's online/offline state and
   recent activity in plain words.
