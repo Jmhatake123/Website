@@ -1,5 +1,7 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# The old GitHub Pages address, https://jmhatake123.github.io/Website/ (26 Nov 2026): the website itself is published to
+# Firebase Hosting, https://citu-smart-irrigation.web.app (firebase deploy --only hosting, see README.md). GitHub Pages
+# now serves only github-pages-redirect/, which forwards every old link and bookmark to the same page at the new address.
+name: Forward the old GitHub Pages address to citu-smart-irrigation.web.app
 
 on:
   # Runs on pushes targeting the default branch
@@ -22,7 +24,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Single deploy job since we're just deploying
   deploy:
     environment:
       name: github-pages
@@ -36,8 +37,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: '.'
+          # Only the forwarding page, never the site itself
+          path: 'github-pages-redirect'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5

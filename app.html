@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-platform="desktop">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Get the app · CIT-U EE Smart Irrigation</title>
+  <meta name="description" content="Install CIT-U EE Smart Irrigation on an Android phone, an iPhone or a computer.">
+  <meta name="theme-color" content="#1f7f45">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/icon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <!-- The download page (26 Nov 2026), served at /app (firebase.json rewrites it). Self-contained styles in the site's
+       colours; the site's own light/dark choice (localStorage "theme", same site) and the device decide what shows first.
+       The Android app is a Trusted Web Activity: this same website, opened full screen by Chrome, so it is always the
+       current release. Its signing key and build steps live in "web v.4 pure ultrasonic\Android_App" (not in this repo). -->
+  <script>
+    (function () {
+      var root = document.documentElement, theme = null, ua = navigator.userAgent || "";
+      try { theme = localStorage.getItem("theme"); } catch (e) { /* storage blocked */ }
+      root.setAttribute("data-theme", theme === "dark" ? "dark" : "light");
+      var ios = /iphone|ipad|ipod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      root.setAttribute("data-platform", /android/i.test(ua) ? "android" : ios ? "ios" : "desktop");
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" media="print" onload="this.media='all'">
+  <style>
+    :root { --bg: #f3f6f0; --surface: #ffffff; --surface-muted: #f6f9f4; --border: #d5e0d3; --text: #122034; --muted: #5e718a;
+      --accent: #1f7f45; --accent-soft: #e6f4ea; --on-accent: #ffffff; --shadow: 0 10px 28px rgb(40 70 40 / .08); }
+    :root[data-theme="dark"] { --bg: #0b1410; --surface: #121e19; --surface-muted: #0e1814; --border: #263a33; --text: #eef4ff;
+      --muted: #9fb0c7; --accent: #43c47f; --accent-soft: rgb(60 196 124 / .14); --on-accent: #0b1410; --shadow: 0 14px 34px rgb(0 0 0 / .32); }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(900px 380px at 78% -6%, rgb(126 186 92 / .10), transparent 65%), var(--bg); color: var(--text);
+      font: 17px/1.55 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    a { color: var(--accent); text-underline-offset: 2px; }
+    .page { width: min(100% - 32px, 980px); margin: 0 auto; padding: 36px 0 56px; }
+    .hero { display: flex; align-items: center; gap: 20px; margin-bottom: 26px; }
+    .hero img { width: 84px; height: 84px; flex: none; border-radius: 20px; box-shadow: var(--shadow); }
+    .eyebrow { margin: 0 0 4px; color: var(--accent); font-size: .74rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(1.6rem, 4.6vw, 2.2rem); line-height: 1.2; }
+    .lead { margin: 6px 0 0; color: var(--muted); }
+    .in-app { margin: 0 0 22px; padding: 12px 16px; border-left: 4px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+    .in-app[hidden] { display: none; }
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; align-items: start; }
+    .card { position: relative; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); }
+    .card h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font-size: 1.15rem; }
+    .card h2 svg { width: 26px; height: 26px; flex: none; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .card ol { margin: 14px 0 0; padding-left: 1.3em; }
+    .card li { margin: 0 0 8px; }
+    .card p { margin: 12px 0 0; color: var(--muted); font-size: .92rem; }
+    .this-device { display: none; position: absolute; top: -11px; right: 18px; padding: 2px 10px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+    :root[data-platform="android"] #android, :root[data-platform="ios"] #iphone, :root[data-platform="desktop"] #computer { border: 2px solid var(--accent); }
+    :root[data-platform="android"] #android .this-device, :root[data-platform="ios"] #iphone .this-device, :root[data-platform="desktop"] #computer .this-device { display: block; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 50px; padding: 10px 18px; border: 2px solid var(--accent);
+      border-radius: 12px; background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; }
+    .button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .button.secondary { margin-top: 12px; background: transparent; color: var(--accent); }
+    .button[hidden] { display: none; }
+    .meta { display: block; margin-top: 6px; color: var(--muted); font-size: .82rem; text-align: center; }
+    .meta[hidden], .card ol[hidden] { display: none; }
+    .card p.no-apk { margin: 0; padding: 12px 14px; border-left: 4px solid var(--accent); border-radius: 10px; background: var(--accent-soft); color: var(--text); font-size: .95rem; }
+    .card p.no-apk[hidden] { display: none; }
+    .web { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center; margin-top: 22px; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-muted); }
+    .web h2 { margin: 0 0 6px; font-size: 1.1rem; }
+    .web p { margin: 0 0 14px; color: var(--muted); }
+    .web .link { font-weight: 700; overflow-wrap: anywhere; }
+    .qr { width: 156px; padding: 10px; border-radius: 12px; background: #ffffff; }
+    .qr svg { display: block; width: 100%; height: auto; }
+    .qr-caption { margin: 6px 0 0; color: var(--muted); font-size: .8rem; text-align: center; }
+    .open-site { display: inline-flex; width: auto; }
+    footer { margin-top: 30px; color: var(--muted); font-size: .85rem; text-align: center; }
+    @media (max-width: 860px) {
+      .cards { grid-template-columns: 1fr; }
+      :root[data-platform="android"] #android, :root[data-platform="ios"] #iphone, :root[data-platform="desktop"] #computer { order: -1; }
+      .web { grid-template-columns: 1fr; }
+      .qr-box { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <img src="icons/icon-192.png" width="84" height="84" alt="">
+      <div>
+        <p class="eyebrow">CIT-U Electrical Engineering</p>
+        <h1>Get the Smart Irrigation app</h1>
+        <p class="lead">Watch and control the Pinamungahan Automated Farm from your phone or computer. Same account, same readings, same controls as the website.</p>
+      </div>
+    </header>
+
+    <p class="in-app" id="inAppNote" hidden>You're already using the app. This page is for setting it up on another phone or computer.</p>
+
+    <div class="cards">
+      <section class="card" id="android" aria-labelledby="androidTitle">
+        <span class="this-device">This device</span>
+        <h2 id="androidTitle"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>Android phone or tablet</h2>
+        <a class="button" id="apkLink" href="download/CIT-U-Smart-Irrigation.apk" download="CIT-U-Smart-Irrigation.apk">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4.5 19.5h15"/></svg>Download the app
+        </a>
+        <span class="meta" id="apkMeta">Version 1.0 · 1.7&nbsp;MB · Android&nbsp;7 or newer</span>
+        <p class="no-apk" id="noApk" hidden>The Android download isn't available right now. In Chrome, open the menu (⋮) and choose <strong>Add to Home screen</strong> › <strong>Install</strong>: you get the same app.</p>
+        <ol id="apkSteps">
+          <li>Tap <strong>Download the app</strong>. If Chrome asks, choose <strong>Download anyway</strong>.</li>
+          <li>Open the downloaded file. If the phone asks, allow installing apps from Chrome (<strong>Settings › Allow from this source</strong>), then go back.</li>
+          <li>Tap <strong>Install</strong>. If Google Play Protect says it doesn't know this app, tap <strong>More details › Install anyway</strong>: it isn't from the Play Store, that's all.</li>
+          <li>Open <strong>Smart Irrigation</strong> and sign in with your usual account.</li>
+        </ol>
+        <button class="button secondary" type="button" data-install hidden>Or install from Chrome, no file needed</button>
+      </section>
+
+      <section class="card" id="iphone" aria-labelledby="iphoneTitle">
+        <span class="this-device">This device</span>
+        <h2 id="iphoneTitle"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="2.5" width="11" height="19" rx="3"/><path d="M10.5 5h3"/></svg>iPhone or iPad</h2>
+        <ol>
+          <li>Open <a href="./">citu-smart-irrigation.web.app</a> in <strong>Safari</strong>.</li>
+          <li>Tap <strong>Share</strong> <svg viewBox="0 0 24 24" width="18" height="18" aria-label="(the square with an arrow)" style="vertical-align:-3px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M12 3.5v11M8 7.5l4-4 4 4"/><path d="M8.5 10.5h-2a1.5 1.5 0 0 0-1.5 1.5v7a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5h-2"/></svg>, then <strong>Add to Home Screen</strong>.</li>
+          <li>Tap <strong>Add</strong>. <strong>Smart Irrigation</strong> is now on your Home Screen; sign in once inside it.</li>
+        </ol>
+        <p>Apple only lets App Store apps be downloaded, so on an iPhone the app is added from Safari instead. It works the same.</p>
+      </section>
+
+      <section class="card" id="computer" aria-labelledby="computerTitle">
+        <span class="this-device">This device</span>
+        <h2 id="computerTitle"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20"/></svg>Windows, Mac or Chromebook</h2>
+        <button class="button" type="button" data-install hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4.5 19.5h15"/></svg>Install the app
+        </button>
+        <ol>
+          <li>Open <a href="./">citu-smart-irrigation.web.app</a> in <strong>Chrome</strong> or <strong>Microsoft Edge</strong>.</li>
+          <li>Click the <strong>Install</strong> icon at the right end of the address bar (or the browser's menu › <strong>Install Smart Irrigation</strong>).</li>
+          <li>It opens in its own window, with an icon on the Start menu, desktop or dock.</li>
+        </ol>
+      </section>
+    </div>
+
+    <section class="web" aria-labelledby="webTitle">
+      <div>
+        <h2 id="webTitle">Or just use the website</h2>
+        <p>Nothing to install: open <span class="link">https://citu-smart-irrigation.web.app</span> in any browser.</p>
+        <a class="button open-site" href="./">Open the website</a>
+      </div>
+      <div class="qr-box">
+        <div class="qr" role="img" aria-label="QR code for citu-smart-irrigation.web.app/app">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29" shape-rendering="crispEdges"><path fill="#ffffff" d="M0 0h29v29H0z"/><path stroke="#000000" d="M0 0.5h7m2 0h1m1 0h1m2 0h1m1 0h5m1 0h7M0 1.5h1m5 0h1m2 0h2m1 0h1m2 0h1m2 0h1m3 0h1m5 0h1M0 2.5h1m1 0h3m1 0h1m1 0h1m2 0h1m3 0h1m3 0h1m2 0h1m1 0h3m1 0h1M0 3.5h1m1 0h3m1 0h1m1 0h2m1 0h3m1 0h3m2 0h1m1 0h1m1 0h3m1 0h1M0 4.5h1m1 0h3m1 0h1m1 0h1m1 0h2m1 0h1m2 0h1m1 0h3m1 0h1m1 0h3m1 0h1M0 5.5h1m5 0h1m1 0h1m1 0h8m4 0h1m5 0h1M0 6.5h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7M8 7.5h4m2 0h2m3 0h1M0 8.5h1m1 0h5m2 0h2m1 0h4m1 0h1m2 0h1m1 0h5M0 9.5h2m9 0h2m3 0h1m1 0h5m1 0h1m3 0h1M2 10.5h1m3 0h2m4 0h1m2 0h1m2 0h1m1 0h1m1 0h3M0 11.5h3m1 0h1m2 0h2m5 0h1m1 0h1m6 0h3m1 0h1M0 12.5h3m1 0h3m1 0h3m1 0h3m2 0h1m1 0h1m3 0h1m1 0h2M1 13.5h4m2 0h1m3 0h1m2 0h1m4 0h2m1 0h3m3 0h1M6 14.5h2m1 0h3m3 0h1m4 0h2m2 0h3M0 15.5h3m1 0h1m3 0h2m2 0h1m5 0h1m1 0h1m1 0h3m2 0h1M1 16.5h3m2 0h1m1 0h1m3 0h4m1 0h1m1 0h1m3 0h1m1 0h2M0 17.5h2m5 0h2m1 0h1m1 0h1m1 0h1m1 0h4m1 0h4m1 0h1m1 0h1M0 18.5h1m4 0h2m1 0h1m2 0h1m3 0h2m1 0h1m3 0h3m1 0h1M0 19.5h1m2 0h1m6 0h2m3 0h2m3 0h1m6 0h1M0 20.5h1m1 0h6m2 0h1m4 0h1m1 0h1m2 0h5m1 0h3M8 21.5h6m2 0h5m3 0h5M0 22.5h7m2 0h9m1 0h2m1 0h1m1 0h3M0 23.5h1m5 0h1m1 0h4m1 0h1m2 0h1m2 0h2m3 0h1M0 24.5h1m1 0h3m1 0h1m1 0h1m5 0h4m2 0h5m1 0h3M0 25.5h1m1 0h3m1 0h1m1 0h1m1 0h1m5 0h3m1 0h1m4 0h4M0 26.5h1m1 0h3m1 0h1m1 0h2m2 0h1m2 0h1m1 0h1m3 0h7M0 27.5h1m5 0h1m3 0h1m3 0h1m1 0h1m1 0h4m1 0h1m1 0h1m1 0h1M0 28.5h7m1 0h1m1 0h1m1 0h3m2 0h3m4 0h1m1 0h1"/></svg>
+        </div>
+        <p class="qr-caption">Scan to get it on a phone</p>
+      </div>
+    </section>
+
+    <footer>CIT-U Electrical Engineering · Pinamungahan Automated Farm · Smart Irrigation System</footer>
+  </div>
+
+  <script>
+    (function () {
+      // Inside the installed app already (the Android app opens /?source=twa, an installed web app ?source=pwa; index.html
+      // remembers that for the visit), or in an installed window.
+      var inApp = false;
+      try { inApp = sessionStorage.getItem("inApp") === "1"; } catch (e) { /* storage blocked */ }
+      if (inApp || navigator.standalone === true || (window.matchMedia && matchMedia("(display-mode: standalone)").matches)) {
+        document.getElementById("inAppNote").hidden = false;
+      }
+
+      // A deploy without the APK must not leave a dead download button: point Android at Chrome's own install instead.
+      var apkLink = document.getElementById("apkLink");
+      if (window.fetch) {
+        fetch(apkLink.getAttribute("href"), { method: "HEAD", cache: "no-store" }).then(function (response) {
+          if (response.ok) return;
+          apkLink.hidden = true;
+          document.getElementById("apkMeta").hidden = true;
+          document.getElementById("apkSteps").hidden = true;
+          document.getElementById("noApk").hidden = false;
+        }).catch(function () { /* offline: leave the page as it is */ });
+      }
+
+      // Chrome and Edge offer to install the website itself; show that as a button where it applies.
+      var offer = null;
+      var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-install]"));
+      window.addEventListener("beforeinstallprompt", function (event) {
+        event.preventDefault();
+        offer = event;
+        buttons.forEach(function (button) { button.hidden = false; });
+      });
+      buttons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          if (!offer) return;
+          offer.prompt();
+          offer.userChoice.finally(function () {
+            offer = null;
+            buttons.forEach(function (b) { b.hidden = true; });
+          });
+        });
+      });
+      window.addEventListener("appinstalled", function () {
+        buttons.forEach(function (b) { b.hidden = true; });
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -9626,6 +9626,39 @@ document.querySelectorAll(".s-collapsible > .s-collapse-toggle").forEach(toggle 
   toggle.setAttribute("aria-expanded", String(open));
 }));
 
+/* ---- The app (26 Nov 2026) ------------------------------------------------------------------------------------------
+ * The owner: "can you make an app instead to be downloaded". The Android app (a Trusted Web Activity, built in
+ * "web v.4 pure ultrasonic\Android_App") opens this page as /?source=twa, and an installed web app as ?source=pwa
+ * (manifest.webmanifest). Inside either, the "Get the app" links ([data-get-app]) are hidden for the visit. */
+function isInstalledApp() {
+  let flagged = false;
+  try { flagged = sessionStorage.getItem("inApp") === "1"; } catch (error) { /* storage blocked */ }
+  return flagged || navigator.standalone === true || Boolean(window.matchMedia?.("(display-mode: standalone)").matches);
+}
+
+function initGetApp() {
+  try {
+    const params = new URLSearchParams(location.search);
+    if (["twa", "pwa"].includes(params.get("source"))) {
+      sessionStorage.setItem("inApp", "1");
+      params.delete("source");
+      const rest = params.toString();
+      history.replaceState(history.state, "", `${location.pathname}${rest ? `?${rest}` : ""}${location.hash}`);
+    }
+  } catch (error) { /* storage or history blocked: the links simply stay */ }
+  const inApp = isInstalledApp();
+  document.querySelectorAll("[data-get-app]").forEach(element => { element.hidden = inApp; });
+}
+
+// sw.js shows offline.html when a page can't load at all, and does nothing else. Never under automation
+// (navigator.webdriver), so the Website_Dev browser checks see the page exactly as before.
+function registerOfflinePage() {
+  if (!("serviceWorker" in navigator) || !window.isSecureContext || navigator.webdriver) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(error => console.warn("Could not set up the offline page", error));
+  });
+}
+
 initModeSwitch();
 initSimpleDiagram();
 syncDoseToggle();
@@ -9636,4 +9669,6 @@ updateDashboard();
 renderCommandHistory();
 syncControlAvailability();
 initInfoIcons();
+initGetApp();
+registerOfflinePage();
 initializeFirebase();

@@ -1,5 +1,56 @@
 {
   "database": {
     "rules": "firebase-rules.json"
+  },
+  "hosting": {
+    "site": "citu-smart-irrigation",
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      ".firebaserc",
+      "firebase-rules.json",
+      "firebase-config.example.js",
+      "**/*.md",
+      "*.log",
+      ".gitignore",
+      ".git/**",
+      ".github/**",
+      ".agents/**",
+      ".claude/**",
+      ".vscode/**",
+      "skills-lock.json",
+      "github-pages-redirect/**",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      { "source": "/app", "destination": "/app.html" }
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" },
+          { "key": "X-Content-Type-Options", "value": "nosniff" }
+        ]
+      },
+      {
+        "source": "/manifest.webmanifest",
+        "headers": [ { "key": "Content-Type", "value": "application/manifest+json" } ]
+      },
+      {
+        "source": "/.well-known/assetlinks.json",
+        "headers": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Access-Control-Allow-Origin", "value": "*" }
+        ]
+      },
+      {
+        "source": "/download/*.apk",
+        "headers": [
+          { "key": "Content-Type", "value": "application/vnd.android.package-archive" },
+          { "key": "Content-Disposition", "value": "attachment" }
+        ]
+      }
+    ]
   }
 }

@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.web.citu_smart_irrigation.twa",
+      "sha256_cert_fingerprints": [
+        "8B:3D:91:51:A0:02:36:C3:9E:C4:0B:57:B3:42:73:CC:BC:B7:B5:F0:65:B0:A3:03:4E:D3:78:86:3A:49:94:5D"
+      ]
+    }
+  }
+]

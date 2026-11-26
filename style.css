@@ -651,6 +651,11 @@ h2 .info-icon, h3 .info-icon, h4 .info-icon { transform: translateY(-1px); }
    pill instead of plain inline link text. */
 .auth-switch .link-button { display: inline; width: auto; min-height: 0; padding: 0; margin: 0; border: none; background: none; font-weight: 700; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .auth-switch .link-button:hover { color: var(--text); border-color: transparent; transform: none; }
+/* "Get the app" under the sign-in form (26 Nov 2026); hidden inside the app by initGetApp() in script.js, so [hidden]
+   must beat the flex below. */
+.get-app-line { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
+.get-app-line[hidden] { display: none; }
+.get-app-line a { color: var(--accent); font-weight: 700; text-underline-offset: 2px; }
 
 /* Own-account approval status. Same visual family as .fault-banner (danger-toned, above the tabs)
    but a separate class -- this reflects /users/{myUid}, not ESP1's telemetry, and the two must not

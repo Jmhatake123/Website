@@ -16,6 +16,18 @@
   </script>
   <meta name="description" content="Authenticated monitoring and safe remote command dashboard for the CIT-U EE smart irrigation master controller.">
   <title>CIT-U EE Smart Irrigation</title>
+  <!-- Installable as an app (26 Nov 2026): the site's own address is https://citu-smart-irrigation.web.app (Firebase
+       Hosting; the old GitHub Pages address forwards here). manifest.webmanifest names the app and its icons (icons/,
+       drawn from the sidebar's sprout-and-drop mark); the Android app (app.html, /app) opens this same page full screen. -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#1f7f45">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/icon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Smart Irrigation">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <!-- IBM Plex: designed for technical/engineering interfaces, not the Inter/system-ui default --
        Plex Mono shares the same family voice as Plex Sans, so pairing them (body copy vs. live
        sensor readouts) reads as one deliberate choice rather than two unrelated typefaces. -->
@@ -27,9 +39,10 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" media="print" onload="this.media='all'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap"></noscript>
   <!-- ?v= names the release (26 Nov 2026): change it, here and on firebase-config.js and script.js at the bottom, on every
-       push. GitHub Pages lets a browser keep these files 10 minutes, and a reload could pair a new page with an old
-       script (an owner saw the new Step down choice still asking for an account); a new ?v= makes it fetch them anew. -->
-  <link rel="stylesheet" href="style.css?v=2026-11-26.3">
+       release. GitHub Pages let a browser keep these files 10 minutes, and a reload could pair a new page with an old
+       script (an owner saw the new Step down choice still asking for an account); a new ?v= makes it fetch them anew.
+       Firebase Hosting (firebase.json) now tells browsers to check every file on each load, but keep changing ?v=. -->
+  <link rel="stylesheet" href="style.css?v=2026-11-26.4">
 </head>
 <body>
   <!-- Icons for Simple mode (18 Nov 2026): one hidden sprite, drawn for this site, used as <svg class="si"><use href="#si-…"/></svg>.
@@ -71,6 +84,7 @@
     <symbol id="si-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4.5V11h-6.5"/></symbol>
     <symbol id="si-logout" viewBox="0 0 24 24"><path d="M9.5 20.5h-4a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h4"/><path d="M15.5 16.5 20 12l-4.5-4.5M20 12H9.5"/></symbol>
     <symbol id="si-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 6.6a8 8 0 1 0 11.2 0"/></symbol>
+    <symbol id="si-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></symbol>
   </svg>
   <div id="loginScreen" class="login-screen">
     <form id="loginForm" class="login-card">
@@ -83,6 +97,8 @@
       <p id="loginError" class="login-error" role="alert"></p>
       <button type="submit">Sign in</button>
       <p class="auth-switch">Don’t have an account? <button type="button" id="showSignupBtn" class="link-button">Create account</button></p>
+      <!-- Hidden inside the installed app (initGetApp() in script.js). -->
+      <p class="auth-switch get-app-line" data-get-app><svg class="si" aria-hidden="true"><use href="#si-phone"/></svg><a href="app.html">Get the app</a> for Android, iPhone or computer</p>
     </form>
 
     <!-- New accounts are created here but start locked out of every control -- see the Firebase
@@ -1187,6 +1203,16 @@
           <p>The dashboard's <strong>Watering plan</strong> shows which days each column runs Automatic and which Manual. <strong>Hide plan</strong> (or <strong>Show plan</strong>) in Next watering hides or shows it; that choice, too, is kept in this browser only. The controller reports once a minute by itself. This page asks it for a fresh report when you open it or come back to it, and again by itself if a report is overdue; <strong>Refresh</strong> asks for one at once (during a watering, or just before one, the system comes first and may take up to 30 s to answer). Every time on the page is on the 12-hour clock (6:00 AM – 8:00 AM).</p>
           <p>Both modes use the same live report from ESP1 and the same safety checks: a button works the same, and is refused for the same reasons, in either mode. When ESP1's report is old, both say the state is unknown rather than guess. Your choice is kept in this browser only, so another phone or computer keeps its own.</p>
         </details>
+        <details class="help-item" id="help-app" data-for="all">
+          <summary>Get the app (Android, iPhone, computer)</summary>
+          <p>The app is this same website with its own icon, opened full screen: same account, same readings, same controls, and always the newest version. The website itself stays at <strong>citu-smart-irrigation.web.app</strong>.</p>
+          <ul>
+            <li><strong>Android</strong>: open <a href="app.html">Get the app</a> and tap <strong>Download the app</strong>, then open the file and tap <strong>Install</strong> (allow installing from Chrome if the phone asks).</li>
+            <li><strong>iPhone or iPad</strong>: in Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>.</li>
+            <li><strong>Computer</strong>: in Chrome or Edge, click the <strong>Install</strong> icon at the end of the address bar.</li>
+          </ul>
+          <p>If the app asks, sign in with your usual account. If the phone has no internet when you open it, the app says so, and opens by itself once the connection is back.</p>
+        </details>
         <details class="help-item" id="help-operation" data-for="all">
           <summary>Run a column by hand (Manual), and plan Manual or Automatic days</summary>
           <p>Every column has an <strong>Operation</strong>:</p>
@@ -1410,7 +1436,7 @@
     <p>CIT-U EE Smart Irrigation / Pinamungahan Automated Farm</p>
     <ul><li>Christian Jay A. Tibon</li><li>Mark Bon Q. Compuesto</li><li>Johnbert Kyle T. Nacor</li><li>John Michael N. Sugian</li><li>John Ray C. Lagamayo</li><li>John Christopher S. Cabrillos</li></ul>
     <p><a href="https://github.com/JKyle-N/Smart-Irrigation" target="_blank" rel="noreferrer">View the Smart Irrigation project on GitHub</a></p>
-    <p><a href="https://github.com/Jmhatake123/Website" target="_blank" rel="noreferrer">View this website's source on GitHub</a></p>
+    <p data-get-app><a href="app.html">Get the app for Android, iPhone or computer</a></p>
   </dialog>
 
   <!-- Shared info-icon popover. One instance, repositioned and refilled per click by
@@ -1428,12 +1454,12 @@
        runtime, starts empty. aria-live so screen readers announce each one without interrupting. -->
   <div id="toastStack" class="toast-stack" aria-live="polite" role="status"></div>
 
-  <script src="firebase-config.js?v=2026-11-26.3"></script>
+  <script src="firebase-config.js?v=2026-11-26.4"></script>
   <!-- integrity = SHA-384 of these exact versioned files: the browser refuses a file that was changed in transit
        or on the CDN. Bumping the Firebase version means recomputing all three hashes. -->
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-app-compat.js" integrity="sha384-O5/wNvM7EhstFPbW8EjQ4+EVxt5ssTrrsD5QQXo1WNSnqT8YZTNTNeWqlIn6TZuJ" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-auth-compat.js" integrity="sha384-L2TNKoX7aOgI1Y2tPR6ASBqaTfYTi4YkaNvJB7j88BVTCgE17WojiXpA4whvkpcN" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-database-compat.js" integrity="sha384-w5XaThP2kUS+dFT6tTnrl0aOOSC7uNgvw3O0fcqc+tD7NtkA2vX8ZQX6MfhyuaRD" crossorigin="anonymous"></script>
-  <script src="script.js?v=2026-11-26.3"></script>
+  <script src="script.js?v=2026-11-26.4"></script>
 </body>
 </html>

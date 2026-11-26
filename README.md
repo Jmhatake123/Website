@@ -1,10 +1,10 @@
 # Smart Irrigation — web dashboard
 
-**Live dashboard:** https://jmhatake123.github.io/Website/
+**Live dashboard:** https://citu-smart-irrigation.web.app · **Get the app:** https://citu-smart-irrigation.web.app/app
 
 Remote monitoring and control for a real hydroponic fertigation rig — built for CIT-U EE Smart
 Irrigation / Pinamungahan Automated Farm. Static site (`index.html`, `script.js`, `style.css`) on
-GitHub Pages, backed by Firebase Realtime Database and Authentication. ESP1, the rig's master
+Firebase Hosting, backed by Firebase Realtime Database and Authentication. ESP1, the rig's master
 controller, is the only writer of live telemetry; this page reads it and queues commands that the
 firmware validates before acting on — the dashboard has no authority of its own over the hardware.
 
@@ -288,14 +288,42 @@ while its page is open loses them immediately.
 ## Tech stack
 
 Vanilla HTML/CSS/JS, no framework or build step · Firebase Realtime Database + Authentication ·
-GitHub Pages, auto-deployed on push to `main` (see `.github/workflows/static.yml`) · a small Vercel
-function (`delete-user-api`) for the one operation Firebase Auth can't do client-side — permanently
-deleting a user account.
+Firebase Hosting (site `citu-smart-irrigation` in the `smart-irrigation-web2` project) · a small Vercel
+function (`delete-user-api`) for the operations Firebase Auth can't do client-side — permanently
+deleting a user account, and the operator role's emailed codes.
 
-**On every push, change the release in `index.html`** (`?v=` on `style.css`, `firebase-config.js` and `script.js`, e.g.
-`?v=2026-11-26.3` → `?v=2026-11-27.1`; 26 Nov 2026). GitHub Pages lets a browser keep those files for 10 minutes, and
+**On every release, change the release in `index.html`** (`?v=` on `style.css`, `firebase-config.js` and `script.js`, e.g.
+`?v=2026-11-26.4` → `?v=2026-11-27.1`; 26 Nov 2026). GitHub Pages let a browser keep those files for 10 minutes, and
 a reload could pair the new page with the old script: the owner saw the new Step down choice still asking for an
-account. A new `?v=` makes the browser fetch them with the page.
+account. A new `?v=` makes the browser fetch them with the page. (Firebase Hosting now tells browsers to check every file
+on each load, `Cache-Control: no-cache` in `firebase.json`, but keep changing `?v=`.)
+
+## Publishing (26 Nov 2026: Firebase Hosting, not GitHub Pages)
+
+The owner: *"The website link was my personal account's github. Can you instead make this website link a professional
+link"*. The site moved from `https://jmhatake123.github.io/Website/` to **https://citu-smart-irrigation.web.app** (also
+answers at `citu-smart-irrigation.firebaseapp.com`).
+
+1. Commit, then `git push` (GitHub keeps the source, nothing more).
+2. **`firebase deploy --only hosting`** in this folder publishes the site. `firebase.json` says what goes out: this folder
+   minus its `ignore` list (README, rules, `.github`, the forward page...), with `/app` → `app.html` and the headers for
+   the APK and `assetlinks.json`. Every deploy replaces the whole site, so deploy from a complete, up-to-date copy (the APK
+   in `download/` included). Then check the live site, hard refresh.
+3. Rules are still separate: `firebase deploy --only database` (see Security rules). A plain `firebase deploy` would do
+   both.
+
+**The old address** forwards: `.github/workflows/static.yml` publishes only `github-pages-redirect/` to GitHub Pages, and
+that page sends any old link or bookmark to the same path at the new address. To retire it, turn Pages off (GitHub >
+Settings > Pages); the repository could then be made private without affecting the site.
+
+**The app** (`manifest.webmanifest`, `icons/`, `sw.js` + `offline.html`, `app.html`, `.well-known/assetlinks.json`,
+`download/`): the site installs as an app on any phone or computer, and the Android app (`../Android_App`, a Trusted Web
+Activity) opens this same site full screen. `sw.js` only shows `offline.html` when a page can't load at all; it never
+answers from a cache otherwise. Inside the app the page drops its "Get the app" links (`initGetApp()` in `script.js`).
+Tests: `..\Website_Dev` `npm run test:app` (29 checks) and `npm run test:cors` (the Vercel API's allowed addresses).
+
+**delete-user-api** answers only the addresses in its `ALLOWED_ORIGIN` setting (several, comma-separated, since 26 Nov
+2026): `https://citu-smart-irrigation.web.app`, its `firebaseapp.com` twin, and the old GitHub address for open pages.
 
 ## Contributors
 

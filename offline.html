@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1f7f45">
+  <title>No connection · CIT-U EE Smart Irrigation</title>
+  <!-- Shown by sw.js (26 Nov 2026) when a page can't load at all. Self-contained: no file, font or script from the
+       network, because there is none. Follows the site's own light/dark choice (localStorage "theme", same site). -->
+  <script>
+    (function () {
+      var theme = null;
+      try { theme = localStorage.getItem("theme"); } catch (e) { /* storage blocked */ }
+      document.documentElement.setAttribute("data-theme", theme === "dark" ? "dark" : "light");
+    })();
+  </script>
+  <style>
+    :root { --bg: #f3f6f0; --surface: #ffffff; --border: #d5e0d3; --text: #122034; --muted: #5e718a; --accent: #1f7f45; }
+    :root[data-theme="dark"] { --bg: #0b1410; --surface: #121e19; --border: #263a33; --text: #eef4ff; --muted: #9fb0c7; --accent: #43c47f; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text);
+      font: 17px/1.5 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { width: min(100%, 420px); padding: 30px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); text-align: center; }
+    svg { width: 72px; height: 72px; }
+    h1 { margin: 14px 0 6px; font-size: 1.4rem; }
+    p { margin: 0 0 18px; color: var(--muted); }
+    button { min-height: 46px; padding: 0 26px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    :root[data-theme="dark"] button { color: #0b1410; }
+    .note { margin: 16px 0 0; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <svg viewBox="0 0 512 512" aria-hidden="true">
+      <rect width="512" height="512" rx="112" fill="#1f7f45"/>
+      <g transform="translate(256 262) scale(8.6) translate(-24 -24)">
+        <path fill="#ffffff" d="M24 40c0-12 6-21 18-24-1 13-7 22-18 24z"/>
+        <path fill="#c6ebb2" d="M24 40C23 30 17 23 6 22c1 10 7 17 18 18z"/>
+        <path fill="#8fd3ff" d="M24 8c4 5 6.5 8.5 6.5 11.5a6.5 6.5 0 0 1-13 0C17.5 16.5 20 13 24 8z"/>
+      </g>
+    </svg>
+    <h1>No internet connection</h1>
+    <p>Smart Irrigation needs the internet to reach the farm. Check your Wi-Fi or mobile data, then try again.</p>
+    <button type="button" id="retry">Try again</button>
+    <p class="note">The farm's controller keeps running on its own while you are offline.</p>
+  </main>
+  <script>
+    document.getElementById("retry").addEventListener("click", function () { location.reload(); });
+    window.addEventListener("online", function () { location.reload(); });
+  </script>
+</body>
+</html>

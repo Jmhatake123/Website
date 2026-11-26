@@ -3,7 +3,8 @@
 # Firebase Authentication and Realtime Database Rules, never by hiding it.
 
 # AI-agent skill packs and editor tooling are not part of the site (removed 18 Nov 2026; copy kept in
-# _Archive_Website_2026-11-18\Live_repo_non_site_files). GitHub Pages publishes the whole repo, so keep them out.
+# _Archive_Website_2026-11-18\Live_repo_non_site_files). Firebase Hosting publishes this folder (26 Nov 2026; GitHub Pages
+# published the whole repo before), minus the "ignore" list in firebase.json, so keep them out of both.
 .agents/
 .claude/
 skills-lock.json
