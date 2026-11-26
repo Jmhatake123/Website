@@ -285,6 +285,26 @@ by what the page shows or hides. Only approved accounts and operators can see re
 restricted, rejected and blocked accounts see only a page to ask for access, and an account restricted
 while its page is open loses them immediately.
 
+### The owner's list of 26 Nov 2026 (second round)
+
+- **Zones by name on the dashboard**: the system picture, the soil card, Next watering, Up next, the status and
+  activity cards and the watering plan say **Zone A/B/C**, or the name a zone was given on Zone profiles
+  (`zoneShownName()`; a long name wraps to two lines under its bed and is whole in its tooltip). Zone profiles,
+  Controls and Help still say "column" for the physical column.
+- **Simple mode**: the **Watering plan** shows on the dashboard (Hide plan still hides it; the choice is kept as
+  `localStorage.dashPlanHidden`, a new key so the old Simple-mode default doesn't keep it away), and each zone card shows
+  **This week** again. **More information** is Simple-only: Complete mode has All readings.
+- **Reservoir refill** is gone (the dashboard's All readings, and Diagnostics' raw tank card and calibration): the
+  inlet flow meter was removed from the rig. The nutrient and pH dosing meters' calibration stays.
+- **System lock and Emergency stop**: why either one is off is written under it and stays (`#lockBarNote`,
+  `#estopBarNote`, and `#sysLockNote` on the System tab), above all "ESP1 isn't connected", instead of a tooltip.
+- **System**: a **clock face** with the system's own time, ticking between reports (`renderSysClockFace()`); the
+  **watering thresholds** as cards whose meaning pops up when pointed at or tapped (`.th-card`, `.th-tip`); plainer words
+  throughout; an icon on each card.
+- **Manual/Test**: icons, plainer words, and the hold-to-run buttons in three groups (Water, Nutrients, pH).
+- **Diagnostics**: an icon and a status dot on each card, values coloured by what they mean, icons in the summary.
+- Test: `..\Website_Dev` `npm run test:ui26` (22 checks).
+
 ## Tech stack
 
 Vanilla HTML/CSS/JS, no framework or build step · Firebase Realtime Database + Authentication ·

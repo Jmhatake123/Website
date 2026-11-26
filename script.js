@@ -944,7 +944,7 @@ function holdBlockReason(target) {
   const state = liveData.system?.state || "";
   if (["STARTUP_SYNC", "RECOVERY_STATE", "BOOT_STATE"].includes(state)) return STATE_BUSY_TEXT[state];
   const column = /^col([ABC])$/.exec(target || "")?.[1];
-  if (column && liveData.sensors?.zones?.[column]?.enabled === false) return `column ${column} is disabled on ESP1`;
+  if (column && liveData.sensors?.zones?.[column]?.enabled === false) return `zone ${column} is switched off`;
   return "";
 }
 
@@ -1032,12 +1032,28 @@ function renderRigLock() {
       : "ESP1 isn't connected, so it can't lock or unlock right now.")
     : "";
   const word = waiting || (!known ? "Unknown" : locked ? "Locked" : "Unlocked");
+  // Why it can't be changed, said under the switches as text that stays (26 Nov 2026, the owner: "The system lock and
+  // emergency stop hovers. Can you make it stay? especially when the ESP isn't connected"): a phone never shows a tooltip.
+  const reason = !privileged ? "Operators and Sub-operators can change it."
+    : !known ? "ESP1 hasn't reported its lock yet."
+    : waiting ? ""                                   // the state word already says it is waiting
+    : !firebaseConnected ? "Can't lock or unlock now: this browser is offline."
+    : !deviceIsFresh() ? (esp1Online() ? "Can't lock or unlock now: waiting for ESP1's full report."
+      : "Can't lock or unlock now: ESP1 isn't connected.")
+    : "";
   ["lockSwitch", "sysLockSwitch"].forEach(id => {
     const toggle = document.getElementById(id);
     if (!toggle) return;
     toggle.setAttribute("aria-checked", String(known && locked));
     toggle.disabled = Boolean(block);
-    toggle.title = block;
+    toggle.title = "";
+  });
+  ["lockBarNote", "sysLockNote"].forEach(id => {
+    const note = document.getElementById(id);
+    if (!note) return;
+    if (note.textContent !== reason) note.textContent = reason;
+    note.hidden = !reason;
+    note.dataset.tone = privileged && reason ? "warn" : "info";
   });
   setText("lockState", word);
   setText("sysLockStatus", known ? word : "Unavailable");
@@ -1180,9 +1196,9 @@ function syncControlAvailability() {
     const offColumns = normalAllowed && !general ? ["A", "B", "C"].filter(id => liveData.sensors?.zones?.[id]?.enabled === false) : [];
     // A column that is simply switched off (C, on this rig) is a standing fact, not a problem, so it reads as a
     // plain note rather than an error.
-    holdNote.textContent = general ? `ESP1 won't start a hold right now: ${general}.${general === "the system is locked" ? " Unlock it first." : ""}`
-      : offColumns.length > 1 ? `ESP1 has columns ${offColumns.join(" and ")} disabled, so their hold buttons are off.`
-      : offColumns.length ? `ESP1 has column ${offColumns[0]} disabled, so its hold button is off.`
+    holdNote.textContent = general ? `The hold buttons are off right now: ${general}.${general === "the system is locked" ? " Unlock it first." : ""}`
+      : offColumns.length > 1 ? `Zones ${offColumns.join(" and ")} are switched off, so their buttons are off.`
+      : offColumns.length ? `Zone ${offColumns[0]} is switched off, so its button is off.`
       : "";
     holdNote.className = general ? "control-result error" : "field-note";
     holdNote.hidden = !holdNote.textContent;
@@ -1222,7 +1238,8 @@ function syncControlAvailability() {
   const stopBlocked = stopOfflineReason();
   document.querySelectorAll(".estop-btn").forEach(emergency => {
     emergency.disabled = !signedIn || !control || Boolean(stopBlocked);
-    emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !control ? notApprovedTitle : stopBlocked;
+    // While ESP1 can't be reached the reason is written beside both copies (the notes below), so no hover-only tooltip.
+    emergency.title = !signedIn ? "Sign in before sending an emergency-stop request." : !control ? notApprovedTitle : "";
   });
   const estopBar = document.getElementById("estopBar");
   if (estopBar) estopBar.hidden = !signedIn || !control;
@@ -1231,12 +1248,13 @@ function syncControlAvailability() {
     estopNote.hidden = !signedIn || !control || !stopBlocked;
     if (stopBlocked) estopNote.textContent = stopBlocked;
   }
-  // The bar is on every tab, so it carries a short form of the same note.
+  // The bar is on every tab, so it carries a short form of the same note, under the button, for as long as it applies.
   const barNote = document.getElementById("estopBarNote");
   if (barNote) {
     barNote.hidden = !signedIn || !control || !stopBlocked;
-    barNote.textContent = !firebaseConnected ? "Offline: stop it at the unit (MODE + BACK) or by SMS STOP,ALL."
-      : "ESP1 isn't connected: stop it at the unit (MODE + BACK) or by SMS STOP,ALL.";
+    const text = !firebaseConnected ? "Off: this browser is offline. Stop it at the system (MODE + BACK) or by SMS STOP,ALL."
+      : "Off: ESP1 isn't connected. Stop it at the system (MODE + BACK) or by SMS STOP,ALL.";
+    if (barNote.textContent !== text) barNote.textContent = text;
   }
   // This page can't see why ESP1 stopped answering, but the LCD can, so say where to look.
   const offlineHelp = document.getElementById("esp1OfflineHelp");
@@ -4692,6 +4710,20 @@ function canEditCrops() {
 function columnList(ids) {
   return ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0] || "";
 }
+// What the dashboard calls each zone (26 Nov 2026, the owner: "change the Column A, B, and C to Zone A, B and C, or in
+// what's been renamed on the zone profile cards. Also for next watering"): its Zone profiles name once someone renamed it
+// there, otherwise "Zone A". The original "SOIL ZONE A (Precise Node 01)" is too long for the picture.
+function zoneShownName(id) {
+  const key = String(id || "").toUpperCase();
+  const name = String(activeZones.find(z => z.id === key)?.name || "").trim();
+  const original = DEFAULT_ZONES.find(z => z.id === key)?.name;
+  return name && name !== original ? name : `Zone ${key}`;
+}
+// Several zones in words ("Zone A and Zone B"), from ids or from a run's columns as ESP1 writes them ("AB", "A,B").
+function zoneNamesText(ids) {
+  const list = Array.isArray(ids) ? ids : String(ids || "").toUpperCase().match(/[ABC]/g) || [];
+  return columnList([...new Set(list)].map(zoneShownName));
+}
 function columnsUsing(cropKey, stageKey) {
   return activeZones.filter(zone => zone.defaultCrop === cropKey && (stageKey === undefined || zone.defaultStage === stageKey)).map(zone => zone.id);
 }
@@ -5152,7 +5184,7 @@ function updateDashboard() {
   const rawTank = diagnostics.sensorsRaw?.tank || {};
   setText("reservoirLevel", tankReadingText(sensors.reservoirLevel, sensors.reservoirLiters, rawTank.reservoirStatus));
   setText("mixingLevel", tankReadingText(sensors.mixingLevel, sensors.mixingLiters, rawTank.mixingStatus));
-  setText("flowRate", numberText(sensors.flowRate, 1, "L/min"));
+  // (Reservoir refill, the inlet flow meter's reading, left on 26 Nov 2026: the owner removed that flow sensor.)
   setText("temperature", numberText(sensors.temperature, 1, "°C"));
   setText("humidity", numberText(sensors.humidity, 1, "%"));
   setText("lightLevel", numberText(sensors.lightLevel, 0, "lux"));
@@ -5274,7 +5306,7 @@ function syncPulseTargetOptions() {
     const column = /^col([ABC])$/.exec(option.value)?.[1];
     if (!column) return;
     if (option.dataset.label === undefined) option.dataset.label = option.textContent;
-    const label = `${option.dataset.label}${forceColumnsDisabled(column) ? " (disabled on ESP1)" : ""}`;
+    const label = `${option.dataset.label}${forceColumnsDisabled(column) ? " (switched off)" : ""}`;
     if (option.textContent !== label) option.textContent = label;
   });
 }
@@ -5321,21 +5353,57 @@ function updateRunProgress(run) {
 
 /* ---- Diagnostics: groups, health summary, link health -------------------------------------------------------------------- */
 
+/* The cards (26 Nov 2026, the owner: "improve the UI of Manual/test, System and Diagnostics"): an icon for what each card is
+ * about, every value coloured by what it means (fine, a problem, worth a look, or not reported), and a dot on the card for
+ * the worst of its values. Only exact words are judged, so a value is never coloured by a guess. */
+const DIAG_ICONS = {
+  "ESP1's report": "si-pulse", "Wi-Fi": "si-wifi", "Link to this website (Firebase)": "si-cloud", "ThingSpeak graphs": "si-pulse",
+  "Log upload": "si-calendar", "Runs and faults": "si-alert", "ESP2 (pumps and valves)": "si-chip", "Nano (sensors)": "si-chip",
+  "Clock and SD card": "si-clock", "Battery switching": "si-battery", "SMS modem (GSM)": "si-mail", "Pumps and tests": "si-tools"
+};
+function diagnosticIcon(title) {
+  if (DIAG_ICONS[title]) return DIAG_ICONS[title];
+  if (/^Calibration/i.test(title)) return "si-beaker";
+  if (/NPK|soil/i.test(title)) return "si-sprout";
+  if (/tank/i.test(title)) return "si-tank";
+  if (/light/i.test(title)) return "si-sun";
+  if (/environment|air/i.test(title)) return "si-thermo";
+  return "si-info";
+}
+const DIAG_GOOD = new Set(["OK", "Connected", "Enabled", "Configured", "Yes", "Valid", "Ready", "Registered", "Current", "Not needed", "Available", "None"]);
+const DIAG_BAD = new Set(["Failed", "Lost", "Not OK", "Invalid", "Disconnected", "Not ready", "Not registered", "No signal", "Stale or unavailable", "Denied", "STALE"]);
+const DIAG_WARN = new Set(["Disabled", "Locked", "In progress"]);
+function diagnosticTone(value) {
+  const text = String(value).trim();
+  if (DIAG_BAD.has(text) || /^(Latched|Needed:)/.test(text)) return "bad";
+  if (DIAG_WARN.has(text)) return "warn";
+  if (DIAG_GOOD.has(text)) return "good";
+  if (/^(Unavailable|Not reported|Not attempted|Not configured|No completed upload|never)\b/.test(text)) return "muted";
+  return "";
+}
+const DIAG_RANK = { bad: 3, warn: 2, good: 1 };
+
 function diagnosticGroup(title, rows) {
   const card = document.createElement("article");
   card.className = "diagnostic-card";
   const heading = document.createElement("h3");
-  heading.textContent = title;
+  heading.innerHTML = `<svg class="si" aria-hidden="true"><use href="#${diagnosticIcon(title)}"/></svg><span></span><span class="diag-dot" aria-hidden="true"></span>`;
+  heading.querySelector("span").textContent = title;
   card.appendChild(heading);
   const list = document.createElement("dl");
+  let worst = "";
   rows.forEach(([label, value]) => {
     const term = document.createElement("dt");
     const description = document.createElement("dd");
     term.textContent = label;
     description.textContent = rawText(value);
+    const tone = diagnosticTone(description.textContent);
+    if (tone) description.className = `dv-${tone}`;
+    if ((DIAG_RANK[tone] || 0) > (DIAG_RANK[worst] || 0)) worst = tone;
     list.append(term, description);
   });
   card.appendChild(list);
+  if (worst) card.dataset.tone = worst;
   return card;
 }
 
@@ -5384,7 +5452,7 @@ function calibrationGroups(c) {
     ["Calibration: pumps (set on the LCD)", [["Transfer pump", line(r.transferLpm, r.transferStartL)], ["Booster pump", line(r.boosterLpm, r.boosterStartL)],
       ["Nutrient A pump", nut(0)], ["Nutrient B pump", nut(1)], ["Nutrient C pump", nut(2)]]],
     ["Calibration: flow meters (pulses per litre)", [["Nutrient A", num(k.nutA, 0)], ["Nutrient B", num(k.nutB, 0)], ["Nutrient C", num(k.nutC, 0)],
-      ["Nutrient D", num(k.nutD, 0)], ["pH up", num(k.phUp, 0)], ["pH down", num(k.phDn, 0)], ["Reservoir refill scale", num(k.reservoirScale, 3)]]],
+      ["Nutrient D", num(k.nutD, 0)], ["pH up", num(k.phUp, 0)], ["pH down", num(k.phDn, 0)]]],
     ["Calibration: tanks and probes", [["Reservoir sensor, empty / full", `${num(t.resEmptyCm, 1, "cm")} / ${num(t.resFullCm, 1, "cm")}`],
       ["Mixing tank sensor, empty / full", `${num(t.mixEmptyCm, 1, "cm")} / ${num(t.mixFullCm, 1, "cm")}`],
       ["pH probe (slope, offset)", `${num(p.phM, 6)}, ${num(p.phB, 3)}`], ["EC probe (slope, offset)", `${num(p.ecM, 6)}, ${num(p.ecB, 3)}`],
@@ -5449,10 +5517,13 @@ function renderHealthSummary() {
     list.innerHTML = '<li class="muted">Waiting for ESP1\'s report.</li>';
     return;
   }
+  // An icon for each line (26 Nov 2026), so the worst reads at a glance; the words still say it all.
+  const icons = { bad: "si-stop", warn: "si-alert", ok: "si-check" };
   items.forEach(({ tone, text }) => {
     const li = document.createElement("li");
     if (tone) li.className = tone;
-    li.textContent = text;
+    li.innerHTML = `<svg class="si" aria-hidden="true"><use href="#${icons[tone] || "si-info"}"/></svg><span></span>`;
+    li.querySelector("span").textContent = text;
     list.appendChild(li);
   });
 }
@@ -6332,9 +6403,11 @@ function upNextItems(now) {
     // A Manual day (18 Nov 2026): ESP1 skips the column's watering times, so they are left out and the day says why.
     const manualOn = day => s.operation !== null && operationOn(s, ymdOfDate(day)) === "MANUAL";
     const manualNote = "Manual: no scheduled watering. Water it with Water a column now.";
-    if (manualOn(today)) items.push({ day: today, at: -1, time: "All day", what: `Column ${id}`, note: manualNote });
+    // The zone's own name (26 Nov 2026, zoneShownName()); id keeps which one it is.
+    const what = zoneShownName(id);
+    if (manualOn(today)) items.push({ id, day: today, at: -1, time: "All day", what, note: manualNote });
     // The day closed by a STOP reply or a lost fault (ESP1 from 18 Nov 2026): nothing more today.
-    else if (s.skippedToday) items.push({ day: today, at: -1, time: "Rest of today", what: `Column ${id}`, note: "Skipped: a STOP reply or a lost fault closed the day." });
+    else if (s.skippedToday) items.push({ id, day: today, at: -1, time: "Rest of today", what, note: "Skipped: a STOP reply or a lost fault closed the day." });
     else s.windows.forEach(w => {
       const [a, b] = w;
       // ESP1 counts both ends as inside a window (windowAt() in its main.cpp), so 12:00–13:00 is still open at 13:00.
@@ -6343,16 +6416,16 @@ function upNextItems(now) {
       if (open && done >= started) return;                          // it has watered in this one already
       // Resting after repeated faults (ESP1 from 18 Nov 2026): a time inside the rest is passed over until it ends.
       const rest = s.restMin && (open || a < nowMin + s.restMin) ? ` Resting about ${s.restMin} more min after repeated faults first.` : "";
-      items.push({ day: today, at: open ? nowMin : a, time: span(w), what: `Column ${id}`, note: (open ? `Open now. ${ifDry}.` : `${ifDry}.`) + rest, open });
+      items.push({ id, day: today, at: open ? nowMin : a, time: span(w), what, note: (open ? `Open now. ${ifDry}.` : `${ifDry}.`) + rest, open });
     });
-    if (manualOn(tomorrow)) items.push({ day: tomorrow, at: -1, time: "All day", what: `Column ${id}`, note: manualNote });
-    else s.windows.forEach(w => items.push({ day: tomorrow, at: w[0], time: span(w), what: `Column ${id}`, note: `${ifDry}.` }));
+    if (manualOn(tomorrow)) items.push({ id, day: tomorrow, at: -1, time: "All day", what, note: manualNote });
+    else s.windows.forEach(w => items.push({ id, day: tomorrow, at: w[0], time: span(w), what, note: `${ifDry}.` }));
   });
   if (forceArmedInfo) {
     const start = new Date(now.getTime() + Math.max(0, forceArmedInfo.left) * 1000);
     items.push({
       day: dayStart(start), at: start.getHours() * 60 + start.getMinutes(), time: clockText(start), forced: true,
-      what: `Forced run, column ${rawText(forceArmedInfo.columns, "?")}`,
+      what: `Forced run, ${zoneNamesText(forceArmedInfo.columns) || "?"}`,
       note: `${numberText(forceArmedInfo.liters, 1, "L")}, ${forceArmedInfo.fert ? "with nutrients" : "plain water"}. Counting down.`
     });
   }
@@ -6391,9 +6464,9 @@ function upNextBlockText() {
   else if (d.fault?.held) reasons.push("A fault is held: none of this runs until someone chooses how to continue.");
   if (actuationsAreOff()) reasons.push("Pumps and valves are off: none of this runs until they are switched back on.");
   if (d.webManual?.held === true) reasons.push("Manual/Test is open: nothing starts by itself until it is closed.");
-  if (d.tankCheck?.needed === true) reasons.push("The mixing tank must be checked first: no column is watered by the schedule until someone confirms it (the banner at the top).");
+  if (d.tankCheck?.needed === true) reasons.push("The mixing tank must be checked first: no zone is watered by the schedule until someone confirms it (the banner at the top).");
   const reservoir = Number(liveData.sensors?.reservoirLevel);
-  if (hasValue(liveData.sensors?.reservoirLevel) && reservoir < resPausePercent()) reasons.push(`The reservoir is under ${resPausePercent()} %: no column is watered until it is refilled.`);
+  if (hasValue(liveData.sensors?.reservoirLevel) && reservoir < resPausePercent()) reasons.push(`The reservoir is under ${resPausePercent()} %: no zone is watered until it is refilled.`);
   return reasons.join(" ");
 }
 
@@ -6429,8 +6502,8 @@ function renderUpNext() {
     if (ex && !ex.enabled) html += `<p class="next-foot">Pump exercise is switched off.</p>`;
     else if (ex?.enabled && !Array.isArray(ex.nextDueMin)) html += `<p class="next-foot">Each pump is exercised every 2 days. This firmware doesn't say when each is due.</p>`;
     const on = ["A", "B", "C"].map(zoneSettings).filter(s => s.known && s.enabled);
-    if (!on.length) html += `<p class="next-foot">No column is switched on, so ESP1 has nothing to water.</p>`;
-    else if (!on.some(s => s.sched !== null && s.windows?.length)) html += `<p class="next-foot">ESP1 hasn't reported the columns' watering times yet.</p>`;
+    if (!on.length) html += `<p class="next-foot">No zone is switched on, so ESP1 has nothing to water.</p>`;
+    else if (!on.some(s => s.sched !== null && s.windows?.length)) html += `<p class="next-foot">ESP1 hasn't reported the zones' watering times yet.</p>`;
   }
   const key = `${note}\u0000${html}`;
   if (key === upNextKey) return;
@@ -6469,7 +6542,6 @@ function renderRawSensors() {
       nano.appendChild(diagnosticGroup("Tank (raw)", [
         ["Reservoir distance", numberText(r.tank?.reservoirCm, 1, "cm")],
         ["Mixing distance", numberText(r.tank?.mixingCm, 1, "cm")],
-        ["Reservoir refill flow", numberText(r.tank?.flowLpm, 2, "L/min")],
         ["Sensor status", r.tank?.reservoirStatus || r.tank?.mixingStatus
           ? `reservoir ${TANK_STATUS_WORDS[r.tank?.reservoirStatus] || (r.tank?.reservoirStatus === "K" ? "OK" : "not reported")}, mixing tank ${TANK_STATUS_WORDS[r.tank?.mixingStatus] || (r.tank?.mixingStatus === "K" ? "OK" : "not reported")}`
           : "Not reported by this firmware"],
@@ -6834,7 +6906,7 @@ document.getElementById("sysClockSendBtn")?.addEventListener("click", () => {
   if (![y, mo, d, h, mi].every(Number.isFinite)) { show("Date/time could not be read. Nothing was sent."); return; }
   // ESP1's RTC_YEAR_MIN/MAX. Outside them it only answers "clock fields out of range", which doesn't say why.
   if (y < RTC_YEAR_MIN || y > RTC_YEAR_MAX) { show(`ESP1 only accepts a year from ${RTC_YEAR_MIN} to ${RTC_YEAR_MAX}. Nothing was sent.`); return; }
-  if (!confirm(`Set ESP1's clock to ${dateVal} ${timeVal}? This affects every column's irrigation schedule.`)) return;
+  if (!confirm(`Set the system's clock to ${dateVal} ${timeVal}? Every zone's watering time follows it.`)) return;
   sendFromPanel(show, "SET_CLOCK", { clkY: y, clkMo: mo, clkD: d, clkH: h, clkMi: mi }, { operatorOnly: true });
 });
 
@@ -6847,8 +6919,50 @@ document.getElementById("sysClockNowBtn")?.addEventListener("click", () => {
   const time = document.getElementById("sysClockTime");
   if (date) date.value = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   if (time) time.value = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  resultLine("sysClockResult")("Filled in the time now. Check it, then press Set ESP1's clock.");
+  resultLine("sysClockResult")("Filled in the time now. Check it, then press Set the clock.");
 });
+
+/* ---- The clock face on the System tab (26 Nov 2026, the owner: "for Clock in system, make a clock shape") ------------
+ * The system's own time, from rigNow() (ESP1's clock at its last report plus the report's age), so it ticks between
+ * reports. A clock that can't be read shows a "?" and no hands. Redrawn every second while the System tab is open. */
+function buildSysClockTicks() {
+  const ticks = document.getElementById("sysClockTicks");
+  if (!ticks || ticks.childElementCount) return;
+  let html = "";
+  for (let i = 0; i < 60; i++) {
+    const major = i % 5 === 0;
+    const a = i * Math.PI / 30;
+    const r1 = major ? 74 : 79, r2 = 84;
+    html += `<line class="${major ? "cf-tick-major" : "cf-tick"}" x1="${(100 + r1 * Math.sin(a)).toFixed(2)}" y1="${(100 - r1 * Math.cos(a)).toFixed(2)}" x2="${(100 + r2 * Math.sin(a)).toFixed(2)}" y2="${(100 - r2 * Math.cos(a)).toFixed(2)}"/>`;
+  }
+  for (let h = 1; h <= 12; h++) {
+    const a = h * Math.PI / 6;
+    html += `<text class="cf-num" x="${(100 + 62 * Math.sin(a)).toFixed(2)}" y="${(100 - 62 * Math.cos(a) + 5).toFixed(2)}" text-anchor="middle">${h}</text>`;
+  }
+  ticks.innerHTML = html;
+}
+function renderSysClockFace() {
+  const face = document.getElementById("sysClockFace");
+  if (!face) return;
+  buildSysClockTicks();
+  const now = liveData.system ? rigNow() : null;
+  face.classList.toggle("is-unknown", !now);
+  const turn = (id, deg) => document.getElementById(id)?.setAttribute("transform", `rotate(${deg.toFixed(2)} 100 100)`);
+  if (now) {
+    const s = now.getSeconds(), m = now.getMinutes() + s / 60, h = (now.getHours() % 12) + m / 60;
+    turn("sysClockHour", h * 30);
+    turn("sysClockMinute", m * 6);
+    turn("sysClockSecond", s * 6);
+  }
+  const title = document.getElementById("sysClockFaceTitle");
+  const words = now ? `The system's clock: ${clockText(now)}, ${now.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" })}` : "The system's clock can't be read";
+  if (title && title.textContent !== words) title.textContent = words;
+  sSet("sysClockBig", now ? clockText(now) : "--:--");
+  sSet("sysClockDay", now ? now.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : !liveData.system ? "Waiting for the system's report"
+    : liveData.system.rtcOk === false ? "The clock chip isn't working: set the clock below"
+    : "The clock can't be read: set it below");
+}
 
 document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
   const result = document.getElementById("sysThreshResult");
@@ -6875,10 +6989,10 @@ document.getElementById("sysThreshSendBtn")?.addEventListener("click", () => {
   if (newLines && (!Number.isInteger(res) || res < RIG_RES_LOW_PCT || res > RES_PAUSE_MAX)) {
     show(`The reservoir pause must be a whole number from ${RIG_RES_LOW_PCT} to ${RES_PAUSE_MAX} %. It can't go under ${RIG_RES_LOW_PCT} %: the reservoir's sensor can't see the water below its filter, so the pumps could run dry. Nothing was sent.`); return;
   }
-  if (start === 0 && !confirm("Soil start 0% means no column will ever be dry enough, so scheduled watering stops. Send it anyway?")) { show("Nothing was sent.", false); return; }
+  if (start === 0 && !confirm("Soil start 0% means no zone will ever be dry enough, so scheduled watering stops. Send it anyway?")) { show("Nothing was sent.", false); return; }
   const level = liveData.sensors?.reservoirLevel;
   if (newLines && res > resPausePercent() && hasValue(level) && Number(level) < res &&
-      !confirm(`The reservoir is at ${Math.round(Number(level))} % now, under the new pause of ${res} %. No column will be watered until it is refilled above ${res} %. Send it anyway?`)) {
+      !confirm(`The reservoir is at ${Math.round(Number(level))} % now, under the new pause of ${res} %. No zone will be watered until it is refilled above ${res} %. Send it anyway?`)) {
     show("Nothing was sent.", false); return;
   }
   const payload = { thStart: start, thGap: gap };
@@ -6935,12 +7049,12 @@ document.getElementById("sysAcAmpSendBtn")?.addEventListener("click", () => {
     show(`Both limits must be from ${ampsFromTenthsText(AC_AMP_LIMIT_LOW10)} to ${ampsFromTenthsText(AC_AMP_LIMIT_HIGH10)} A. Nothing was sent.`, true); return;
   }
   if (high10 - low10 < AC_AMP_MIN_GAP10) {
-    show(`The no-current limit must be at least ${ampsFromTenthsText(AC_AMP_MIN_GAP10)} A under the overcurrent limit. Nothing was sent.`, true); return;
+    show(`The low limit must be at least ${ampsFromTenthsText(AC_AMP_MIN_GAP10)} A under the high limit. Nothing was sent.`, true); return;
   }
   const system = liveData.system || {};
   const now = hasValue(system.acAmpMin10) && hasValue(system.acAmpMax10)
     ? ` They are ${ampsFromTenthsText(system.acAmpMin10)} A and ${ampsFromTenthsText(system.acAmpMax10)} A now.` : "";
-  if (!confirm(`Set the AC current limits to no-current ${ampsFromTenthsText(low10)} A and overcurrent ${ampsFromTenthsText(high10)} A?${now} A pump on the inverter stops at once above the overcurrent limit, and after 30 seconds below the no-current limit.`)) {
+  if (!confirm(`Set the AC current limits to low ${ampsFromTenthsText(low10)} A and high ${ampsFromTenthsText(high10)} A?${now} A pump stops at once above the high limit, and after 30 seconds below the low limit.`)) {
     show("Nothing was sent.");
     return;
   }
@@ -6952,16 +7066,16 @@ document.getElementById("sysAcAmpSendBtn")?.addEventListener("click", () => {
 document.getElementById("sysClearBattSwitchBtn")?.addEventListener("click", () => {
   const result = document.getElementById("sysBattSwitchResult");
   const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
-  if (!confirm("Clear the battery-switch fault? Check the hold-up first: this fault means a battery switch reset the controllers, and clearing it allows the next inverter use to switch again.")) return;
+  if (!confirm("Clear the battery switch fault? Check the backup power (hold-up) first: the fault means switching batteries restarted the controllers. After clearing it, the pumps on the inverter can run again.")) return;
   sendFromPanel(show, "CLEAR_BATT_SWITCH", {}, { operatorOnly: true });
 });
 
 document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () => {
   const result = document.getElementById("sysRestoreResult");
   const show = (text, error = true) => { if (result) { result.textContent = text; result.className = `control-result${error ? " error" : ""}`; } };
-  if (!confirm("Restore Defaults? This resets every column's mode, targets, name, and schedule window, " +
-               "plus the global thresholds, to factory values. This CANNOT be undone. Calibration, " +
-               "column-enabled wiring, and WiFi/ThingSpeak setup are kept.")) return;
+  if (!confirm("Restore factory settings? Every zone's mode, targets, name and watering times, and the watering thresholds, " +
+               "go back to how they came. This CAN'T be undone. Calibration, which zones are on, and the Wi-Fi and " +
+               "ThingSpeak setup are kept.")) return;
   sendFromPanel(show, "RESTORE_DEFAULTS", {}, { operatorOnly: true });
 });
 
@@ -6969,6 +7083,7 @@ document.getElementById("sysRestoreDefaultsBtn")?.addEventListener("click", () =
 function updateSystemTab() {
   setText("sysClockCurrent", deviceTimeText(liveData.system?.deviceTime));
   setText("sysClockRtcOk", booleanText(liveData.system?.rtcOk, "OK", "Not OK"));
+  renderSysClockFace();
   const system = liveData.system || {};
   setText("sysBattSwitching", v3Only(booleanText(system.secondaryBattSwitching, "On", "Off in this firmware")));
   setText("sysBattSwitchFault", v3Only(booleanText(system.battSwitchFault, "Latched: all inverter use is blocked", "None")));
@@ -7024,7 +7139,7 @@ function updateAcVoltPanel(system) {
 function updateAcAmpPanel(system) {
   const known = hasValue(system.acAmpMin10) && hasValue(system.acAmpMax10);
   setText("sysAcAmpCurrent", known
-    ? `No-current ${ampsFromTenthsText(system.acAmpMin10)} A, overcurrent ${ampsFromTenthsText(system.acAmpMax10)} A`
+    ? `Low ${ampsFromTenthsText(system.acAmpMin10)} A, high ${ampsFromTenthsText(system.acAmpMax10)} A`
     : liveData.system ? "Not reported by this firmware: update ESP1 (16 Nov 2026)" : "Unavailable");
   const snapshotAge = hasValue(liveData.meta?.updatedAt) ? Math.max(0, serverNow() - Number(liveData.meta.updatedAt)) : 0;
   setText("sysAcAmpLast", hasValue(system.acAmpLast)
@@ -7428,13 +7543,13 @@ function updatePulseNote() {
   if (MT_DOSING[t] && s > 0) {
     const ml = (50 * s / 60).toFixed(1);
     const corrosive = (t === "phUp" || t === "phDn");
-    note.textContent = `This dispenses roughly ${ml} mL of ${corrosive ? "pH adjuster (corrosive)" : "nutrient concentrate"} into the mixing tank.`;
+    note.textContent = `This puts about ${ml} mL of ${corrosive ? "pH liquid (corrosive)" : "nutrient concentrate"} into the mixing tank.`;
     note.className = corrosive ? "control-result error" : "field-note";
   } else if (t === "servoL" || t === "servoR") {
-    note.textContent = "Moves only the pump-selector servo on the Nano, with the inverter OFF, so no pump runs; the Pump selector switch above does the same in one press. Give it 10 to 15 seconds: ESP2 first waits for the inverter to be dead, and ESP1 from 16 Nov 2026 ends the test as soon as the move is settled. The result says whether the Nano confirmed the move.";
+    note.textContent = "Moves only the pump selector, with the inverter off, so no pump runs (the Pump selector switch above does the same in one press). Give it 10 to 15 seconds. The result says whether the move was confirmed.";
     note.className = "field-note";
   } else if (t === "mixer") {
-    note.textContent = "The mixer is a 12 V DC motor on its own relay (no inverter). It has no flow meter, so this reports no flow reading — only that the relay ran.";
+    note.textContent = "The mixer has its own switch (no inverter). The result only says that it ran.";
     note.className = "field-note";
   } else {
     note.textContent = "";
@@ -8334,6 +8449,7 @@ setInterval(() => {
   renderTankCheck();                   // its button follows freshness and the rig's state
   renderSimpleDashboard();             // Simple mode: ages, countdowns and "unknown" when ESP1 goes quiet
   renderAcWaits();                     // the AC pump reminders: "starting…" until the motor runs (25 Nov 2026)
+  renderSysClockFace();                // the System tab's clock face ticks between reports (26 Nov 2026)
 }, 1000);
 
 /* Info icons ------------------------------------------------------------------------------------
@@ -8654,21 +8770,21 @@ function simpleSituation() {
   if (hasValue(res) && Number(res) < resPausePercent()) warn.push(`The reservoir is below ${resPausePercent()} %, so watering waits until it is refilled.`);
   // Too wet (18 Nov 2026): a warning, never a stop. (25 Nov 2026, the owner: no "Check for a leak or a stuck valve.")
   const wet = ["A", "B", "C"].filter(id => simpleSoilState(id).tone === "wet");
-  if (wet.length) warn.push(`Column ${columnList(wet)} ${wet.length > 1 ? "are" : "is"} too wet.`);
+  if (wet.length) warn.push(`${zoneNamesText(wet)} ${wet.length > 1 ? "are" : "is"} too wet.`);
   const more = n => n > 0 ? ` (${n} more thing${n === 1 ? "" : "s"} to check in Complete mode.)` : "";
   if (bad.length) return { tone: "bad", icon: "si-stop", title: "Attention needed", text: bad[0] + more(bad.length + warn.length - 1) };
   const running = run.active && (run.phase === "starting" || run.phase === "running");
   if (running) {
     const what = run.operation === "fertigation" ? "Feeding" : "Watering";
-    return { tone: "run", icon: "si-drop", title: "System is running", text: `${what} column ${rawText(run.zone, "?")}: ${lowerFirst(simpleStageText(run))}.${warn.length ? ` Also: ${warn[0]}` : ""}` };
+    return { tone: "run", icon: "si-drop", title: "System is running", text: `${what} ${zoneNamesText(run.zone) || "a zone"}: ${lowerFirst(simpleStageText(run))}.${warn.length ? ` Also: ${warn[0]}` : ""}` };
   }
   if (simpleTesting()) return { tone: "warn", icon: "si-hand", title: "Testing in progress", text: "Someone is testing the pumps and valves by hand. Scheduled watering waits until the test is closed." };
   if (warn.length) return { tone: "warn", icon: "si-alert", title: "Attention needed", text: warn[0] + more(warn.length - 1) };
   if (["BOOT_STATE", "STARTUP_SYNC", "RECOVERY_STATE"].includes(sys.state)) {
     return { tone: "warn", icon: "si-clock", title: "Getting ready", text: `${(STATE_BUSY_TEXT[sys.state] || "ESP1 is starting up").replace(/^ESP1/, "The controller")}.` };
   }
-  if (run.active && run.phase === "finishing") return { tone: "ok", icon: "si-check", title: "Watering finished", text: `Column ${rawText(run.zone, "?")} has just been ${run.operation === "fertigation" ? "fed" : "watered"}. All pumps are off.` };
-  return { tone: "ok", icon: "si-check", title: "System is idle", text: "All pumps are off. It waters each column at its watering time when the soil is dry." };
+  if (run.active && run.phase === "finishing") return { tone: "ok", icon: "si-check", title: "Watering finished", text: `${zoneNamesText(run.zone) || "The zone"} has just been ${run.operation === "fertigation" ? "fed" : "watered"}. All pumps are off.` };
+  return { tone: "ok", icon: "si-check", title: "System is idle", text: "All pumps are off. It waters each zone at its watering time when the soil is dry." };
 }
 
 // The reservoir or mixing tank card.
@@ -8724,6 +8840,7 @@ function renderSimpleSoil(stale) {
     const s = simpleSoilState(id);
     const zone = activeZones.find(item => item.id === id);
     const crop = zone ? zoneCrop(zone) : {};
+    sSet(`sColName${id}`, zoneShownName(id));
     sSet(`sColCrop${id}`, crop.crop ? `${crop.crop.name}${crop.stage ? `, ${crop.stage.name.toLowerCase()}` : ""}` : "");
     sSet(`sColPct${id}`, s.pct === null ? "--" : `${Math.round(s.pct)} %`);
     sSet(`sColState${id}`, s.word);
@@ -8735,7 +8852,7 @@ function renderSimpleSoil(stale) {
   // Each column's own Soil start since 18 Nov 2026 (b); one number when they all agree.
   const starts = ["A", "B", "C"].filter(id => zoneSettings(id).enabled || !zoneSettings(id).known).map(id => [id, zoneStartPercent(id)]);
   const same = starts.every(([, v]) => v === starts[0]?.[1]);
-  sSet("sSoilHint", !starts.length ? "No column is switched on."
+  sSet("sSoilHint", !starts.length ? "No zone is switched on."
     : same ? `Watered at its time when drier than ${starts[0][1]} %.`
     : `Watered at its time when drier than: ${starts.map(([id, v]) => `${id} ${v} %`).join(" · ")}.`);
 }
@@ -8749,12 +8866,12 @@ function renderSimpleActivity(fresh) {
   if (!liveData.meta?.updatedAt) { title = "Waiting for the system"; text = "The controller hasn't reported yet."; }
   else if (!fresh) {
     title = "Unknown right now"; tone = "lost";
-    text = run.active ? `Its last report showed column ${rawText(run.zone, "?")} being ${run.operation === "fertigation" ? "fed" : "watered"}. This page can't tell whether that is still going.`
+    text = run.active ? `Its last report showed ${zoneNamesText(run.zone) || "a zone"} being ${run.operation === "fertigation" ? "fed" : "watered"}. This page can't tell whether that is still going.`
       : esp1Online() ? "The controller is connected, but its full report is late, so this page can't tell what it is doing right now."
       : "The controller isn't connected, so this page can't tell what it is doing.";
   } else if (run.active && (run.phase === "starting" || run.phase === "running")) {
     tone = "run";
-    title = `${run.operation === "fertigation" ? "Feeding" : "Watering"} column ${rawText(run.zone, "?")}`;
+    title = `${run.operation === "fertigation" ? "Feeding" : "Watering"} ${zoneNamesText(run.zone) || "a zone"}`;
     const step = hasValue(run.stageOrdinal) && hasValue(run.stageTotal) ? ` (step ${run.stageOrdinal} of ${run.stageTotal})` : "";
     text = `${simpleStageText(run)}${step}.`;
     // As on the Complete dashboard (updateRunProgress()): the Release stage under way counts toward the total.
@@ -8766,7 +8883,7 @@ function renderSimpleActivity(fresh) {
     }
   } else if (run.active && run.phase === "finishing") {
     tone = "ok"; title = "Just finished";
-    text = `Column ${rawText(run.zone, "?")} has been ${run.operation === "fertigation" ? "fed" : "watered"}. All pumps are off.`;
+    text = `${zoneNamesText(run.zone) || "The zone"} has been ${run.operation === "fertigation" ? "fed" : "watered"}. All pumps are off.`;
   } else if (run.active && run.phase === "error") {
     tone = "bad"; title = "Last run stopped";
     text = "The last run stopped with a problem. The controller's screen says what happened.";
@@ -8776,7 +8893,7 @@ function renderSimpleActivity(fresh) {
     text = d.actuator?.pumpTestActive && ex >= 0 ? `${EXERCISE_PUMPS[ex]}: a short run to keep it healthy (pump exercise).` : "Someone is testing the pumps and valves. Scheduled watering waits.";
   } else if (forceArmedInfo) {
     tone = "run"; title = "Forced run counting down";
-    text = `Column ${rawText(forceArmedInfo.columns, "?")}, ${numberText(forceArmedInfo.liters, 1, "L")}, starts in ${Math.max(0, forceArmedInfo.left)} s. Cancel it on Controls.`;
+    text = `${zoneNamesText(forceArmedInfo.columns) || "A zone"}, ${numberText(forceArmedInfo.liters, 1, "L")}, starts in ${Math.max(0, forceArmedInfo.left)} s. Cancel it on Controls.`;
   } else {
     tone = "ok"; title = "Nothing running"; text = "All pumps are off.";
   }
@@ -8808,7 +8925,8 @@ function renderSimpleNext(fresh) {
   let what = "--", when = "Waiting for the controller's report.", note = "";
   if (liveData.system && !now) { when = "Unknown"; note = "The controller's clock can't be read, so its watering times are unknown."; }
   else if (now) {
-    const items = upNextItems(now).filter(item => !/exercise$/.test(item.what));
+    // Waterings only (a zone's, or a forced run), not the pump exercises.
+    const items = upNextItems(now).filter(item => item.id || item.forced);
     const next = items.find(item => item.forced || item.at >= 0);
     const manual = items.filter(item => item.at < 0 && item.day.getTime() === dayStart(now).getTime()).map(item => item.what);
     if (next) {
@@ -8820,9 +8938,9 @@ function renderSimpleNext(fresh) {
       what = "Nothing planned";
       when = "No watering time ahead";
       const on = ["A", "B", "C"].map(zoneSettings).filter(s => s.known && s.enabled);
-      note = on.length ? "" : "No column is switched on.";
+      note = on.length ? "" : "No zone is switched on.";
     }
-    if (manual.length) note = `${note}${note ? " " : ""}${columnList(manual.map(w => w.replace(/^Column /, "")))} ${manual.length === 1 ? "is" : "are"} not watered by the schedule today.`;
+    if (manual.length) note = `${note}${note ? " " : ""}${columnList(manual)} ${manual.length === 1 ? "is" : "are"} not watered by the schedule today.`;
     const block = simpleNextBlockText();
     if (block) note = `${block} ${note}`.trim();
   }
@@ -8840,9 +8958,10 @@ function renderSimpleMore(fresh) {
   sSet("sPh", numberText(s.waterPH, 1).replace("Unavailable", "--"));
   sSet("sEc", numberText(s.waterEC, 2, "mS/cm").replace("Unavailable", "--"));
   const stamp = Number(liveData.meta?.updatedAt || 0);
-  // Shown in both modes since 25 Nov 2026: Complete mode has every reading just below it.
+  // Simple mode only again since 26 Nov 2026 (the owner: "In complete mode dashboard, remove the more information"):
+  // Complete mode has every reading under All readings.
   sSet("sMoreFoot", !stamp ? "Waiting for the controller's first report."
-    : `${fresh ? "From the controller's latest report" : "From the controller's last report"}, ${formatAge(Math.max(0, serverNow() - stamp))} ago. pH and EC are measured in the mixing tank. ${uiMode() === "complete" ? "Every reading is under All readings, below." : "Every reading is in Complete mode."}`);
+    : `${fresh ? "From the controller's latest report" : "From the controller's last report"}, ${formatAge(Math.max(0, serverNow() - stamp))} ago. pH and EC are measured in the mixing tank. Every reading is in Complete mode.`);
 }
 
 // Everything on the Simple dashboard. Runs with every snapshot and every second (ages, countdowns, freshness).
@@ -8898,14 +9017,16 @@ function renderSimpleDashboard() {
  * which day is manual or automatic ... In default it shows, but I can hide it"). A month, by ESP1's own date, each day
  * with every switched-on column in green (Automatic) or amber (Manual), and the letter on it so colour is never the only
  * sign. Read-only: the plan is changed in a column's Edit settings. Shown unless hidden with the Plan button; that choice
- * stays in this browser only (localStorage "planHidden"). */
-const PLAN_HIDDEN_KEY = "planHidden";
+ * stays in this browser only (localStorage "dashPlanHidden"). */
+// 26 Nov 2026 (the owner: "show the watering plan in dashboard at simple mode"): shown in both modes unless hidden with
+// the button. From 25 Nov it was folded away in Simple mode; the key is new so a "hidden" saved then doesn't keep it away.
+const PLAN_HIDDEN_KEY = "dashPlanHidden";
+try { localStorage.removeItem("planHidden"); } catch { /* storage blocked */ }
 let dashPlanMonth = 0;
 let dashPlanKey = "";
-// The person's own choice (true = hidden), or null when they never pressed the button. Without a choice the plan is
-// folded away in Simple mode ("only the essentials", 25 Nov 2026) and shown in Complete mode.
+// The person's own choice (true = hidden), or null when they never pressed the button: shown then.
 let dashPlanChoice = (() => { try { const v = localStorage.getItem(PLAN_HIDDEN_KEY); return v === "1" ? true : v === "0" ? false : null; } catch { return null; } })();
-function dashPlanIsHidden() { return dashPlanChoice ?? uiMode() === "simple"; }
+function dashPlanIsHidden() { return dashPlanChoice ?? false; }
 /* ---- The watering-plan calendar on the dashboard ------------------------------------------------------------------------- */
 
 function syncDashPlanToggle() {
@@ -8937,8 +9058,8 @@ function renderDashPlan() {
     ["A", "B", "C"].map(id => { const s = zoneSettings(id); return [s.known, s.enabled, activeZones.find(z => z.id === id)?.name]; })]);
   if (key === dashPlanKey) return;
   dashPlanKey = key;
-  sSet("sPlanNote", !known ? "" : !cols.length ? "No column is switched on."
-    : planOn ? "By the controller's own date. Change a column's days in Zone profiles, Edit settings."
+  sSet("sPlanNote", !known ? "" : !cols.length ? "No zone is switched on."
+    : planOn ? "By the controller's own date. Change a zone's days in Zone profiles, Edit settings."
     : "Every day is Automatic: Manual days need ESP1's firmware of 18 Nov 2026.");
   if (!known) { box.innerHTML = `<p class="s-hint">Waiting for the controller's report.</p>`; return; }
   const y = Math.floor(dashPlanMonth / 10000), m = Math.floor(dashPlanMonth / 100) % 100;
@@ -8956,16 +9077,16 @@ function renderDashPlan() {
     const inRange = n >= todayN && n <= lastN;
     const marks = inRange ? cols.map(([id, s]) => [id, s.operation ? operationOn(s, ymd) : "AUTOMATIC", Boolean(s.plan?.[ymd])]) : [];
     const words = `${ymdLabel(ymd)}${n === todayN ? ", today" : ""}: ${!inRange ? (n < todayN ? "already past" : "past the plan") : marks.length
-      ? marks.map(([id, op]) => `column ${id} ${OPERATION_SHORT[op]}`).join(", ") : "no column on"}`;
+      ? marks.map(([id, op]) => `${zoneShownName(id)} ${OPERATION_SHORT[op]}`).join(", ") : "no zone on"}`;
     cells.push(`<li class="dp-day${n === todayN ? " is-today" : ""}${inRange ? "" : " is-out"}"><span class="s-visually-hidden">${escapeHtml(words)}</span>` +
       `<span class="dp-num" aria-hidden="true">${d}</span><span class="dp-cols" aria-hidden="true">${marks.map(([id, op, set]) =>
         `<span class="dp-col ${op === "MANUAL" ? "is-manual" : "is-auto"}${set ? " is-set" : ""}">${id}</span>`).join("")}</span></li>`);
   }
   const dows = Array.from({ length: 7 }, (_, i) => weekdayShort(dayNumberToYmd(ymdToDayNumber(20261101) + i)));
-  // Beside the month: each column in words, its default and the days that differ from it.
+  // Beside the month: each zone in words, its default and the days that differ from it.
   const side = ["A", "B", "C"].map(id => {
     const s = zoneSettings(id);
-    const name = activeZones.find(z => z.id === id)?.name || `Column ${id}`;
+    const name = zoneShownName(id);
     let words;
     if (!s.known) words = "Not reported yet";
     else if (!s.enabled) words = "Switched off: no watering";
@@ -8979,12 +9100,13 @@ function renderDashPlan() {
     }
     const op = !s.known || !s.enabled ? "off" : s.operation === "MANUAL" ? "manual" : "auto";
     return `<li class="dp-side-row" data-op="${op}"><span class="dp-col ${op === "manual" ? "is-manual" : op === "auto" ? "is-auto" : "is-off"}" aria-hidden="true">${id}</span>` +
-      `<span><strong>${escapeHtml(name)}</strong><span class="dp-side-words">Column ${id} · ${escapeHtml(words)}</span></span></li>`;
+      // A renamed zone also says which letter it is, as the calendar marks it.
+      `<span><strong>${escapeHtml(name)}</strong><span class="dp-side-words">${name === `Zone ${id}` ? "" : `Zone ${id} · `}${escapeHtml(words)}</span></span></li>`;
   }).join("");
   box.innerHTML = `<div class="dp-main"><div class="plan-cal-head">${nav(-1, dashPlanMonth > monthOfYmd(today), "Previous month")}<span class="plan-month">${escapeHtml(title)}</span>${nav(1, dashPlanMonth < lastMonth, "Next month")}</div>` +
     `<ol class="dp-grid">${dows.map(w => `<li class="dp-dow" aria-hidden="true">${escapeHtml(w)}</li>`).join("")}${cells.join("")}</ol>` +
-    `<p class="dp-legend"><span class="dp-col is-auto">A</span>Automatic: waters when dry <span class="dp-col is-manual">A</span>Manual: no scheduled watering <span class="dp-legend-note">The letter is the column; today has a ring.</span></p></div>` +
-    `<ul class="dp-side" aria-label="Each column's plan">${side}</ul>`;
+    `<p class="dp-legend"><span class="dp-col is-auto">A</span>Automatic: waters when dry <span class="dp-col is-manual">A</span>Manual: no scheduled watering <span class="dp-legend-note">The letter is the zone; today has a ring.</span></p></div>` +
+    `<ul class="dp-side" aria-label="Each zone's plan">${side}</ul>`;
 }
 document.getElementById("sPlanCal")?.addEventListener("click", event => {
   const nav = event.target.closest("button[data-dash-plan]");
@@ -9248,6 +9370,27 @@ function simpleBottlesSvg(L) {
   }).join("");
 }
 
+// A zone's name under its bed in the picture (26 Nov 2026): two short lines at most, so names never run into each other;
+// a longer one ends in "…" and is whole in its tooltip and in the picture's description.
+function diagramNameLines(name, max = 13) {
+  const lines = [];
+  String(name).trim().split(/\s+/).filter(Boolean).forEach(word => {
+    let rest = word;
+    while (rest.length > max) { lines.push(rest.slice(0, max)); rest = rest.slice(max); }
+    const last = lines.length ? lines[lines.length - 1] : null;
+    if (last !== null && `${last} ${rest}`.length <= max) lines[lines.length - 1] = `${last} ${rest}`;
+    else if (rest) lines.push(rest);
+  });
+  return lines.length <= 2 ? lines : [lines[0], `${lines[1].slice(0, max - 1)}…`];
+}
+function setDiagramZoneName(el, name) {
+  if (!el || el.dataset.name === name) return;
+  el.dataset.name = name;
+  const x = el.getAttribute("x");
+  el.innerHTML = `<title>${escapeHtml(name)}</title>` +
+    diagramNameLines(name).map((line, i) => `<tspan x="${x}"${i ? ` dy="1.15em"` : ""}>${escapeHtml(line)}</tspan>`).join("");
+}
+
 function buildSimpleDiagram(name) {
   const host = document.getElementById("sDiagram");
   if (!host) return;
@@ -9279,7 +9422,7 @@ function buildSimpleDiagram(name) {
         <line class="s-dg-wetline" data-s-wetline="${id}" x1="${x + 6}" x2="${x + L.cols.w - 6}" y1="${top}" y2="${top}"/>
         <rect class="s-dg-col-pill" x="${cx - 28}" y="${top + L.cols.h / 2 - 12}" width="56" height="24" rx="12"/>
         <text class="s-dg-col-value" x="${cx}" y="${top + L.cols.h / 2 + 5}" text-anchor="middle" data-s-colvalue="${id}">--</text>
-        <text class="s-dg-label" x="${cx}" y="${top + L.cols.h + 20}" text-anchor="middle">Column ${id}</text>
+        <text class="s-dg-label s-dg-colname" x="${cx}" y="${top + L.cols.h + 20}" text-anchor="middle" data-s-colname="${id}"><tspan x="${cx}">Zone ${id}</tspan></text>
       </g>`;
   }).join("");
   host.innerHTML = `<svg class="s-dg s-dg-${name}" viewBox="0 0 ${L.w} ${L.h}" role="img" aria-labelledby="sDiagramDesc">
@@ -9406,12 +9549,13 @@ function updateSimpleDiagram(fresh, stale) {
     if (value) value.textContent = off ? "off" : has ? `${Math.round(pct)} %` : "--";
     svg.querySelector(`[data-s-valve="${id}"]`)?.classList.toggle("open", booster && zone.includes(id));
     svg.querySelector(`[data-s-drops="${id}"]`)?.classList.toggle("on", booster && zone.includes(id));
-    words.push(`column ${id} ${off ? "switched off" : has ? `${Math.round(pct)} % moist${pct >= lines.wetPct ? ", too wet" : ""}` : "no reading"}`);
+    setDiagramZoneName(svg.querySelector(`[data-s-colname="${id}"]`), zoneShownName(id));
+    words.push(`${zoneShownName(id)} ${off ? "switched off" : has ? `${Math.round(pct)} % moist${pct >= lines.wetPct ? ", too wet" : ""}` : "no reading"}`);
   });
   const note = !known ? "Waiting for the controller's report."
     : !fresh ? (esp1Online() ? "The controller is connected, but its full report is late, so this is its last report and nothing is shown moving."
       : "The controller isn't connected, so this is its last report and nothing is shown moving.")
-    : booster ? `Water is flowing from the mixing tank to column ${columnList([...zone].filter(ch => "ABC".includes(ch))) || "?"}.`
+    : booster ? `Water is flowing from the mixing tank to ${zoneNamesText(zone) || "a zone"}.`
     : mixer ? "The mixer is stirring the water and nutrients."
     : doseNow ? `${NUTRIENT_WORDS[doseNow]} is being added to the mixing tank.`
     : transfer ? "Water is flowing from the reservoir into the mixing tank."
