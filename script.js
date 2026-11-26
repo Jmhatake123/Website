@@ -1308,6 +1308,9 @@ function syncControlAvailability() {
 }
 
 function initializeFirebase() {
+  // A copy opened on the old GitHub Pages address is already on its way to the website's own address (the script at the
+  // top of index.html, 26 Nov 2026): it must not sign anyone in or write anything first.
+  if (window.FORWARDING_TO_SITE) return;
   const config = window.FIREBASE_CONFIG;
   if (!config || !config.databaseURL || config.apiKey === "PASTE_YOUR_API_KEY") {
     setConnection(false, "Firebase not configured");
@@ -9653,7 +9656,7 @@ function initGetApp() {
 // sw.js shows offline.html when a page can't load at all, and does nothing else. Never under automation
 // (navigator.webdriver), so the Website_Dev browser checks see the page exactly as before.
 function registerOfflinePage() {
-  if (!("serviceWorker" in navigator) || !window.isSecureContext || navigator.webdriver) return;
+  if (!("serviceWorker" in navigator) || !window.isSecureContext || navigator.webdriver || window.FORWARDING_TO_SITE) return;
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").catch(error => console.warn("Could not set up the offline page", error));
   });

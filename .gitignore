@@ -7,5 +7,7 @@
 # published the whole repo before), minus the "ignore" list in firebase.json, so keep them out of both.
 .agents/
 .claude/
+# Firebase CLI's own cache of what a hosting deploy uploaded (26 Nov 2026).
+.firebase/
 skills-lock.json
 node_modules/

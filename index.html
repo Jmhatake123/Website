@@ -3,6 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- The website's own address is https://citu-smart-irrigation.web.app (26 Nov 2026). GitHub Pages may still publish a
+       copy of these files at the old github.io address (when Pages deploys from the branch rather than the forwarding
+       workflow), so a copy opened there goes straight to the same page at the new address, and script.js doesn't start
+       Firebase in it (FORWARDING_TO_SITE). -->
+  <script>
+    if (/\.github\.io$/i.test(location.hostname)) {
+      window.FORWARDING_TO_SITE = true;
+      location.replace("https://citu-smart-irrigation.web.app" + location.pathname.replace(/^\/Website(\/|$)/i, "/") + location.search + location.hash);
+    }
+  </script>
   <!-- Theme and display mode before the first paint (18 Nov 2026), so a saved choice never flashes the default first.
        Light theme and Simple mode are the defaults for a first visit; anything unexpected in storage falls back to them.
        localStorage "theme" (light/dark) and "uiMode" (simple/complete) are this browser's own preferences only. -->
@@ -42,7 +52,7 @@
        release. GitHub Pages let a browser keep these files 10 minutes, and a reload could pair a new page with an old
        script (an owner saw the new Step down choice still asking for an account); a new ?v= makes it fetch them anew.
        Firebase Hosting (firebase.json) now tells browsers to check every file on each load, but keep changing ?v=. -->
-  <link rel="stylesheet" href="style.css?v=2026-11-26.4">
+  <link rel="stylesheet" href="style.css?v=2026-11-26.5">
 </head>
 <body>
   <!-- Icons for Simple mode (18 Nov 2026): one hidden sprite, drawn for this site, used as <svg class="si"><use href="#si-…"/></svg>.
@@ -1454,12 +1464,12 @@
        runtime, starts empty. aria-live so screen readers announce each one without interrupting. -->
   <div id="toastStack" class="toast-stack" aria-live="polite" role="status"></div>
 
-  <script src="firebase-config.js?v=2026-11-26.4"></script>
+  <script src="firebase-config.js?v=2026-11-26.5"></script>
   <!-- integrity = SHA-384 of these exact versioned files: the browser refuses a file that was changed in transit
        or on the CDN. Bumping the Firebase version means recomputing all three hashes. -->
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-app-compat.js" integrity="sha384-O5/wNvM7EhstFPbW8EjQ4+EVxt5ssTrrsD5QQXo1WNSnqT8YZTNTNeWqlIn6TZuJ" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-auth-compat.js" integrity="sha384-L2TNKoX7aOgI1Y2tPR6ASBqaTfYTi4YkaNvJB7j88BVTCgE17WojiXpA4whvkpcN" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/12.10.0/firebase-database-compat.js" integrity="sha384-w5XaThP2kUS+dFT6tTnrl0aOOSC7uNgvw3O0fcqc+tD7NtkA2vX8ZQX6MfhyuaRD" crossorigin="anonymous"></script>
-  <script src="script.js?v=2026-11-26.4"></script>
+  <script src="script.js?v=2026-11-26.5"></script>
 </body>
 </html>

@@ -26,6 +26,13 @@
     "rewrites": [
       { "source": "/app", "destination": "/app.html" }
     ],
+    "redirects": [
+      {
+        "source": "/download/CIT-U-Smart-Irrigation.apk",
+        "destination": "https://citu-smart-irrigation.vercel.app/CIT-U-Smart-Irrigation.apk",
+        "type": 302
+      }
+    ],
     "headers": [
       {
         "source": "**",
@@ -43,13 +50,6 @@
         "headers": [
           { "key": "Content-Type", "value": "application/json" },
           { "key": "Access-Control-Allow-Origin", "value": "*" }
-        ]
-      },
-      {
-        "source": "/download/*.apk",
-        "headers": [
-          { "key": "Content-Type", "value": "application/vnd.android.package-archive" },
-          { "key": "Content-Disposition", "value": "attachment" }
         ]
       }
     ]

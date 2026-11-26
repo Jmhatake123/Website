@@ -15,6 +15,10 @@
        The Android app is a Trusted Web Activity: this same website, opened full screen by Chrome, so it is always the
        current release. Its signing key and build steps live in "web v.4 pure ultrasonic\Android_App" (not in this repo). -->
   <script>
+    // A copy on the old GitHub Pages address goes to the same page at the website's own address (see index.html).
+    if (/\.github\.io$/i.test(location.hostname)) {
+      location.replace("https://citu-smart-irrigation.web.app" + location.pathname.replace(/^\/Website(\/|$)/i, "/") + location.search + location.hash);
+    }
     (function () {
       var root = document.documentElement, theme = null, ua = navigator.userAgent || "";
       try { theme = localStorage.getItem("theme"); } catch (e) { /* storage blocked */ }

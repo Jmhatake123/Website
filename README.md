@@ -293,7 +293,7 @@ function (`delete-user-api`) for the operations Firebase Auth can't do client-si
 deleting a user account, and the operator role's emailed codes.
 
 **On every release, change the release in `index.html`** (`?v=` on `style.css`, `firebase-config.js` and `script.js`, e.g.
-`?v=2026-11-26.4` → `?v=2026-11-27.1`; 26 Nov 2026). GitHub Pages let a browser keep those files for 10 minutes, and
+`?v=2026-11-26.5` → `?v=2026-11-27.1`; 26 Nov 2026). GitHub Pages let a browser keep those files for 10 minutes, and
 a reload could pair the new page with the old script: the owner saw the new Step down choice still asking for an
 account. A new `?v=` makes the browser fetch them with the page. (Firebase Hosting now tells browsers to check every file
 on each load, `Cache-Control: no-cache` in `firebase.json`, but keep changing `?v=`.)
@@ -306,21 +306,31 @@ answers at `citu-smart-irrigation.firebaseapp.com`).
 
 1. Commit, then `git push` (GitHub keeps the source, nothing more).
 2. **`firebase deploy --only hosting`** in this folder publishes the site. `firebase.json` says what goes out: this folder
-   minus its `ignore` list (README, rules, `.github`, the forward page...), with `/app` → `app.html` and the headers for
-   the APK and `assetlinks.json`. Every deploy replaces the whole site, so deploy from a complete, up-to-date copy (the APK
-   in `download/` included). Then check the live site, hard refresh.
+   minus its `ignore` list (README, rules, `.github`, the forward page, `download/`...), with `/app` → `app.html`,
+   `assetlinks.json` as JSON, and the APK link forwarded (below). Every deploy replaces the whole site, so deploy from a
+   complete, up-to-date copy. Then check the live site, hard refresh.
 3. Rules are still separate: `firebase deploy --only database` (see Security rules). A plain `firebase deploy` would do
    both.
 
-**The old address** forwards: `.github/workflows/static.yml` publishes only `github-pages-redirect/` to GitHub Pages, and
-that page sends any old link or bookmark to the same path at the new address. To retire it, turn Pages off (GitHub >
-Settings > Pages); the repository could then be made private without affecting the site.
+**The APK isn't on Firebase**: the free (Spark) plan refuses executable files ("Executable files are forbidden on the
+Spark billing plan"). The page's link, `/download/CIT-U-Smart-Irrigation.apk`, is a 302 in `firebase.json` to
+https://citu-smart-irrigation.vercel.app/CIT-U-Smart-Irrigation.apk, a free Vercel project (team website-29bb) that holds
+only the file: `../Android_App/download-site` (its README). If it can't be reached, `app.html` hides the button and sends
+Android to Chrome's own install.
 
-**The app** (`manifest.webmanifest`, `icons/`, `sw.js` + `offline.html`, `app.html`, `.well-known/assetlinks.json`,
-`download/`): the site installs as an app on any phone or computer, and the Android app (`../Android_App`, a Trusted Web
-Activity) opens this same site full screen. `sw.js` only shows `offline.html` when a page can't load at all; it never
-answers from a cache otherwise. Inside the app the page drops its "Get the app" links (`initGetApp()` in `script.js`).
-Tests: `..\Website_Dev` `npm run test:app` (29 checks) and `npm run test:cors` (the Vercel API's allowed addresses).
+**The old address** forwards in two ways: `.github/workflows/static.yml` publishes only `github-pages-redirect/`, and, since
+GitHub Pages is still set to *Deploy from a branch* (its own "pages build and deployment" also runs on every push and
+publishes the whole repo; whichever finishes last wins), `index.html` and `app.html` forward themselves at once when
+opened on any `*.github.io` address (`script.js` then starts neither Firebase nor the offline page:
+`FORWARDING_TO_SITE`). To make GitHub serve only the forwarding page, set GitHub > Settings > Pages > Source to
+**GitHub Actions**. To retire the old address, turn Pages off; the repository could then be made private without
+affecting the site.
+
+**The app** (`manifest.webmanifest`, `icons/`, `sw.js` + `offline.html`, `app.html`, `.well-known/assetlinks.json`): the
+site installs as an app on any phone or computer, and the Android app (`../Android_App`, a Trusted Web Activity) opens
+this same site full screen. `sw.js` only shows `offline.html` when a page can't load at all; it never answers from a cache
+otherwise. Inside the app the page drops its "Get the app" links (`initGetApp()` in `script.js`).
+Tests: `..\Website_Dev` `npm run test:app` (31 checks) and `npm run test:cors` (the Vercel API's allowed addresses).
 
 **delete-user-api** answers only the addresses in its `ALLOWED_ORIGIN` setting (several, comma-separated, since 26 Nov
 2026): `https://citu-smart-irrigation.web.app`, its `firebaseapp.com` twin, and the old GitHub address for open pages.
