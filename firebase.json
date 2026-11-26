@@ -20,6 +20,7 @@
       ".vscode/**",
       "skills-lock.json",
       "github-pages-redirect/**",
+      "download/**",
       "**/node_modules/**"
     ],
     "rewrites": [
