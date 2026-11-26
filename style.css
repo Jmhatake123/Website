@@ -390,10 +390,12 @@ button.danger { min-width: 200px; border-color: var(--danger); background: var(-
 .form-card button { margin-top: 4px; }
 .field-note { margin: 0; font-size: .82rem; line-height: 1.4; }
 
-/* Emergency stop that stays on screen on every tab. A solid full-width band rather than a floating
-   button: content scrolls underneath it, so the stop can never sit on top of another control and take
-   a click meant for that control. */
-.estop-bar { position: sticky; z-index: 5; top: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin: -10px 0 14px; padding: 10px 0; background: var(--bg); }
+/* Emergency stop and the system lock, the first thing on every tab: a full-width band, never a floating button, so the
+   stop can never sit on top of another control and take a click meant for it. 26 Nov 2026 (the owner: "dont hover the
+   system lock and emergency stop. They must be pin at top"): pinned in its place at the top of the page; until then it
+   stuck to the top of the window and the page scrolled under it (on a phone, with its reasons, a good part of the screen).
+   Controls has its own Emergency stop too. */
+.estop-bar { position: static; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin: -10px 0 14px; padding: 10px 0; background: var(--bg); }
 .estop-bar[hidden] { display: none; }
 button.estop-top { min-width: 0; width: auto; }
 /* While ESP1 isn't reporting the stop button is off (6 Nov 2026), and this says how else to stop the rig. Since 26 Nov

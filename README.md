@@ -297,7 +297,9 @@ while its page is open loses them immediately.
 - **Reservoir refill** is gone (the dashboard's All readings, and Diagnostics' raw tank card and calibration): the
   inlet flow meter was removed from the rig. The nutrient and pH dosing meters' calibration stays.
 - **System lock and Emergency stop**: why either one is off is written under it and stays (`#lockBarNote`,
-  `#estopBarNote`, and `#sysLockNote` on the System tab), above all "ESP1 isn't connected", instead of a tooltip.
+  `#estopBarNote`, and `#sysLockNote` on the System tab), above all "ESP1 isn't connected", instead of a tooltip. And the
+  bar is pinned at the top of the page, above the header, instead of floating over the page while scrolling (the owner:
+  "dont hover the system lock and emergency stop. They must be pin at top"; release 2026-11-26.7).
 - **System**: a **clock face** with the system's own time, ticking between reports (`renderSysClockFace()`); the
   **watering thresholds** as cards whose meaning pops up when pointed at or tapped (`.th-card`, `.th-tip`); plainer words
   throughout; an icon on each card.
